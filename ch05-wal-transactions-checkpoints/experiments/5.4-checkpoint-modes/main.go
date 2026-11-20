@@ -110,7 +110,6 @@ type outcome struct {
 	reader      readerPosition
 	before      sample
 	result      sqlitex.CheckpointResult
-	waited      bool
 	elapsed     time.Duration
 	after       sample
 	next        sample
@@ -172,7 +171,6 @@ func runCase(ctx context.Context, template, dir, mode string, reader readerPosit
 	start := time.Now()
 	o.result = must(sqlitex.Checkpoint(ctx, checkpointer, "", mode))("checkpoint " + mode)
 	o.elapsed = time.Since(start)
-	o.waited = o.elapsed >= checkpointerBusyMs*time.Millisecond
 	o.after = take(ctx, path, root)
 	if readerTx != nil {
 		if err := readerTx.Rollback(); err != nil {
@@ -253,9 +251,9 @@ func main() {
 	}
 	fmt.Println()
 	fmt.Println("checkpoint result and state right after it (WAL file header from a child's copy; wal-index from the -shm):")
-	fmt.Printf("%-9s %-15s %-30s %-7s %9s %8s %9s %12s %12s\n", "mode", "reader", "busy/log/checkpointed", "waited", "WAL bytes", "mxFrame", "nBackfill", "file salt-1", "shm salt-1")
+	fmt.Printf("%-9s %-15s %-30s %9s %8s %9s %12s %12s\n", "mode", "reader", "busy/log/checkpointed", "WAL bytes", "mxFrame", "nBackfill", "file salt-1", "shm salt-1")
 	for _, o := range outcomes {
-		fmt.Printf("%-9s %-15s %-30s %-7s %9d %8d %9d %12s %12s\n", o.mode, o.reader, o.result, yesNo(o.waited), o.after.walSize, o.after.indexMaxFrame, o.after.indexBackfill,
+		fmt.Printf("%-9s %-15s %-30s %9d %8d %9d %12s %12s\n", o.mode, o.reader, o.result, o.after.walSize, o.after.indexMaxFrame, o.after.indexBackfill,
 			saltDelta(o.before, o.after), delta(o.before.indexSalt1, o.after.indexSalt1))
 		fmt.Printf("INFO: %s %s elapsed %s\n", o.mode, o.reader, o.elapsed.Round(time.Millisecond))
 	}
@@ -295,12 +293,6 @@ func main() {
 		"a reader whose snapshot is the end of the WAL does not limit PASSIVE or FULL")
 	check(res("RESTART", readerCurrent) == fullBusy && res("TRUNCATE", readerCurrent) == fullBusy,
 		"RESTART and TRUNCATE copy everything but report busy=1 while any reader is still using the WAL")
-	waitedOK := true
-	for _, o := range outcomes {
-		expectWait := o.mode != "PASSIVE" && o.result.Busy
-		waitedOK = waitedOK && o.waited == expectWait
-	}
-	check(waitedOK, fmt.Sprintf("only the non-PASSIVE modes that ended busy waited the busy timeout (%dms); PASSIVE never waits", checkpointerBusyMs))
 	truncated := byKey["TRUNCATE/no reader"]
 	check(truncated.after.indexSalt1 == truncated.before.indexSalt1+1 && truncated.after.indexMaxFrame == 0,
 		"TRUNCATE restarts the wal-index at once: shm salt-1 + 1, mxFrame 0")

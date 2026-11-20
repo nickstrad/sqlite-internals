@@ -25,9 +25,8 @@ const (
 	quietSteps        = 8
 	spillBaseStep     = 8
 	spillCommitted    = 10
-	spillOpenStep     = 11
 	spillCacheSize    = 10
-	spillExtraUpdate  = "UPDATE events SET note = upper(note)"
+	spillExtraUpdate  = "UPDATE documents SET title = upper(title)"
 	databaseName      = "r.db"
 	replayOutputName  = "replayed.db"
 	recoveryDirectory = "sqlite-recovery"
@@ -151,6 +150,11 @@ func compareAndInspect(ctx context.Context, label, ours, theirs string, wantStep
 	check(version == wantStep && integrity == "ok" && before == after, fmt.Sprintf("the replay is a valid database at recipe step %d", wantStep))
 }
 
+func onlyUncommittedIgnored(report walfile.ReplayReport) bool {
+	return len(report.Ignored) == 1 && report.Ignored[0].FirstFrame == report.LastCommitFrame+1 &&
+		report.Ignored[0].LastFrame == report.FramesInFile && report.ValidFrames == report.FramesInFile && report.PartialFrameBytes == 0
+}
+
 func partA(ctx context.Context, dir string) {
 	fmt.Println()
 	fmt.Printf("== A. a quiet moment: steps 1-%d committed on one connection (wal_autocheckpoint=0), nothing in flight\n", quietSteps)
@@ -193,8 +197,8 @@ func partA(ctx context.Context, dir string) {
 
 func partBC(ctx context.Context, dir string) {
 	fmt.Println()
-	fmt.Printf("== B. mid-transaction: steps %d-%d committed, then step %d plus %q left open with cache_size=%d so dirty pages spill into the -wal before any commit\n",
-		spillBaseStep+1, spillCommitted, spillOpenStep, spillExtraUpdate, spillCacheSize)
+	fmt.Printf("== B. mid-transaction: steps %d-%d committed, then %q left open with cache_size=%d so dirty pages spill into the -wal before any commit\n",
+		spillBaseStep+1, spillCommitted, spillExtraUpdate, spillCacheSize)
 	r := recipe.Default()
 	root := mkdir(filepath.Join(dir, "b-mid-transaction"))
 	path := filepath.Join(root, databaseName)
@@ -214,11 +218,7 @@ func partBC(ctx context.Context, dir string) {
 	}
 	committedOnly := must(walfile.ReadLiveState(ctx, path, root))("live state")
 	fmt.Printf("after the commits: -wal %d bytes, %d frames, last commit frame %d\n", committedOnly.WALSize, len(committedOnly.WAL.Frames), committedOnly.WAL.LastCommitFrame)
-	step := must(r.Step(spillOpenStep))("plan step")
 	tx := must(db.BeginTx(ctx, nil))("begin")
-	if err := step.ExecIn(ctx, tx); err != nil {
-		fatal("open step", err)
-	}
 	if _, err := tx.ExecContext(ctx, spillExtraUpdate); err != nil {
 		fatal("update", err)
 	}
@@ -229,9 +229,12 @@ func partBC(ctx context.Context, dir string) {
 	fmt.Printf("the captured -wal: %d frames; last commit frame %d; %d frames after it were written by the open transaction (spilled pages)\n",
 		len(captured.Frames), captured.LastCommitFrame, spilled)
 	check(captured.LastCommitFrame == committedOnly.WAL.LastCommitFrame && spilled > 0, "the open transaction spilled frames into the -wal before committing, after the last commit frame")
+	check(captured.ValidFrames == len(captured.Frames) && captured.ValidFrames > captured.LastCommitFrame,
+		"every spilled frame passes the checksum and salt checks: the frames after the last commit frame are valid, only uncommitted")
 	ours, report := replayCopy(captureDir)
-	check(report.IgnoredFrameCount() == spilled && report.LastCommitFrame == committedOnly.WAL.LastCommitFrame,
-		"the replayer stops at the last commit frame and reports every spilled frame as ignored")
+	check(report.IgnoredFrameCount() == spilled && report.LastCommitFrame == committedOnly.WAL.LastCommitFrame &&
+		report.AppliedFrames+report.SkippedBeyondSize == report.LastCommitFrame && onlyUncommittedIgnored(report),
+		"the replayer stops at the last commit frame: it applies frames up to it and ignores every valid spilled frame after it because no commit frame follows")
 	recovered := sqliteRecoveryOfCopy(ctx, captureDir, recoveryDirectory, "")
 	compareAndInspect(ctx, "SQLite's recovery and checkpoint of the same captured files", ours, recovered, spillCommitted)
 	// Pass a -shm taken from part A (different database, different salts,
@@ -258,7 +261,7 @@ func partBC(ctx context.Context, dir string) {
 	rollbackDir := filepath.Join(root, "capture-after-rollback")
 	liveCopy(ctx, path, rollbackDir)
 	oursAfter, reportAfter := replayCopy(rollbackDir)
-	check(reportAfter.IgnoredFrameCount() > 0 && reportAfter.LastCommitFrame == captured.LastCommitFrame,
+	check(reportAfter.IgnoredFrameCount() > 0 && reportAfter.LastCommitFrame == captured.LastCommitFrame && onlyUncommittedIgnored(reportAfter),
 		"the replayer ignores the rolled-back frames because no commit frame follows them")
 	result := must(sqlitex.Checkpoint(ctx, db, "", sqlitex.CheckpointTruncate))("checkpoint")
 	if err := db.Close(); err != nil {

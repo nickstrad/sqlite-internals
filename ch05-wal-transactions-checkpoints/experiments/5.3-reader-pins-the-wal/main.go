@@ -134,11 +134,14 @@ func header(label string) {
 }
 
 func row(label string, s sample, readerRows, writerRows int) {
-	reader := "-"
-	if readerRows >= 0 {
-		reader = fmt.Sprintf("%d", readerRows)
+	fmt.Printf("%-24s %9d %8d %9d  %-22s %11s %11s\n", label, s.walSize, s.maxFrame, s.backfill, marksText(s.marks), rowsText(readerRows), rowsText(writerRows))
+}
+
+func rowsText(rows int) string {
+	if rows < 0 {
+		return "-"
 	}
-	fmt.Printf("%-24s %9d %8d %9d  %-22s %11s %11d\n", label, s.walSize, s.maxFrame, s.backfill, marksText(s.marks), reader, writerRows)
+	return fmt.Sprintf("%d", rows)
 }
 
 func prepare(ctx context.Context, dir, name string) (string, string) {
@@ -164,12 +167,13 @@ func partA(ctx context.Context, dir string) {
 	}
 	header("moment")
 	start := take(ctx, path, scratch)
-	row(fmt.Sprintf("after step %d", readerStartsAfter), start, -1, count(ctx, writer))
+	row(fmt.Sprintf("after step %d", readerStartsAfter), start, -1, -1)
 	reader, tx, readerRows := openReader(ctx, path)
+	writerRows := count(ctx, writer)
 	pinned := take(ctx, path, scratch)
-	row("reader began", pinned, readerRows, count(ctx, writer))
+	row("reader began", pinned, readerRows, writerRows)
 	snapshot := pinned.maxFrame
-	check(snapshot == start.maxFrame && hasMark(pinned.marks, snapshot) && pinned.backfill < snapshot,
+	check(snapshot == start.maxFrame && !hasMark(start.marks, snapshot) && hasMark(pinned.marks, snapshot) && pinned.backfill < snapshot,
 		"the reader's snapshot is a read mark equal to mxFrame when it began, and that WAL content was not yet checkpointed")
 	samples := []sample{pinned}
 	readerStable, marksHeld, backfillBounded := true, true, true
@@ -178,9 +182,10 @@ func partA(ctx context.Context, dir string) {
 		if err := r.ApplyStep(ctx, writer, k); err != nil {
 			fatal("step", err)
 		}
+		writerRows := count(ctx, writer)
 		s := take(ctx, path, scratch)
 		rows := count(ctx, tx)
-		row(fmt.Sprintf("step %d committed", k), s, rows, count(ctx, writer))
+		row(fmt.Sprintf("step %d committed", k), s, rows, writerRows)
 		readerStable = readerStable && rows == readerRows
 		marksHeld = marksHeld && hasMark(s.marks, snapshot)
 		backfillBounded = backfillBounded && s.backfill <= snapshot
@@ -210,19 +215,22 @@ func partA(ctx context.Context, dir string) {
 	if err := reader.Close(); err != nil {
 		fatal("close reader", err)
 	}
+	writerRows = count(ctx, writer)
 	ended := take(ctx, path, scratch)
-	row("reader ended", ended, -1, count(ctx, writer))
+	row("reader ended", ended, -1, writerRows)
 	result := must(sqlitex.Checkpoint(ctx, writer, "", sqlitex.CheckpointPassive))("checkpoint")
+	writerRows = count(ctx, writer)
 	afterCheckpoint := take(ctx, path, scratch)
-	row("PASSIVE checkpoint", afterCheckpoint, -1, count(ctx, writer))
+	row("PASSIVE checkpoint", afterCheckpoint, -1, writerRows)
 	fmt.Printf("wal_checkpoint(PASSIVE) -> %s\n", result)
 	check(!result.Busy && afterCheckpoint.backfill == afterCheckpoint.maxFrame && afterCheckpoint.walSize == last.walSize,
 		"with the reader gone one checkpoint brings nBackfill to mxFrame; the WAL file keeps its size")
 	if err := r.ApplyStep(ctx, writer, nextWriteStep); err != nil {
 		fatal("step", err)
 	}
+	writerRows = count(ctx, writer)
 	restarted := take(ctx, path, scratch)
-	row(fmt.Sprintf("step %d committed", nextWriteStep), restarted, -1, count(ctx, writer))
+	row(fmt.Sprintf("step %d committed", nextWriteStep), restarted, -1, writerRows)
 	fmt.Printf("after the next write: WAL header checkpoint-seq %d -> %d, salt-1 advanced by %d; valid frames %d of %d in the file (the rest are the old generation)\n",
 		pinned.sequence, restarted.sequence, restarted.salt1-pinned.salt1, restarted.validCount, restarted.frames)
 	check(restarted.maxFrame < last.maxFrame && restarted.validCount == int(restarted.maxFrame) && restarted.salt1 == pinned.salt1+1 && restarted.sequence == pinned.sequence+1 && restarted.walSize == last.walSize,
@@ -245,15 +253,16 @@ func partB(ctx context.Context, dir string) {
 	fmt.Printf("wal_checkpoint(PASSIVE) after step %d -> %s\n", readerStartsAfter, result)
 	header("moment")
 	before := take(ctx, path, scratch)
-	row("checkpointed", before, -1, count(ctx, writer))
+	row("checkpointed", before, -1, -1)
 	// With nBackfill == mxFrame, walTryBeginRead takes WAL_READ_LOCK(0) shared
 	// instead of setting a mark in slots 1..4 (src/wal.c:3134-3163). The writer
 	// can restart the WAL because walRestartLog only locks slots 1..4
 	// (src/wal.c:3885), but walCheckpoint cannot backfill a single page because
 	// it must take WAL_READ_LOCK(0) exclusively first (src/wal.c:2260).
 	reader, tx, readerRows := openReader(ctx, path)
+	writerRows := count(ctx, writer)
 	began := take(ctx, path, scratch)
-	row("reader began", began, readerRows, count(ctx, writer))
+	row("reader began", began, readerRows, writerRows)
 	check(began.backfill == began.maxFrame && began.marks == before.marks, "the WAL was fully checkpointed, so the reader took no read mark in 1..4 (it holds read lock 0 and ignores the WAL)")
 	readerStable, backfillZero := true, true
 	var samples []sample
@@ -261,9 +270,10 @@ func partB(ctx context.Context, dir string) {
 		if err := r.ApplyStep(ctx, writer, k); err != nil {
 			fatal("step", err)
 		}
+		writerRows := count(ctx, writer)
 		s := take(ctx, path, scratch)
 		rows := count(ctx, tx)
-		row(fmt.Sprintf("step %d committed", k), s, rows, count(ctx, writer))
+		row(fmt.Sprintf("step %d committed", k), s, rows, writerRows)
 		readerStable = readerStable && rows == readerRows
 		backfillZero = backfillZero && s.backfill == 0
 		samples = append(samples, s)
@@ -281,8 +291,9 @@ func partB(ctx context.Context, dir string) {
 		fatal("close reader", err)
 	}
 	result = must(sqlitex.Checkpoint(ctx, writer, "", sqlitex.CheckpointPassive))("checkpoint")
+	writerRows = count(ctx, writer)
 	after := take(ctx, path, scratch)
-	row("reader ended + PASSIVE", after, -1, count(ctx, writer))
+	row("reader ended + PASSIVE", after, -1, writerRows)
 	fmt.Printf("wal_checkpoint(PASSIVE) -> %s\n", result)
 	check(after.backfill == after.maxFrame, "once the reader ends, a checkpoint copies everything")
 	if err := writer.Close(); err != nil {
