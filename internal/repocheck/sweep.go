@@ -10,8 +10,13 @@ import (
 	"strings"
 )
 
+// PathSweepExclude lists tracked paths exempted from CheckPaths because they
+// hold internal working scripts, vendored tooling, or handoff notes.
 var PathSweepExclude = []string{"agent_work", "kb", "STATE.md"}
 
+// ForbiddenPathFragment is the machine-local home directory prefix banned from
+// reader-facing files. It is built by concatenation so this source file does
+// not match its own check.
 const ForbiddenPathFragment = "/" + "root" + "/"
 
 func nestedModuleDirs(files []string) []string {
@@ -24,6 +29,8 @@ func nestedModuleDirs(files []string) []string {
 	return dirs
 }
 
+// CheckGofmt verifies that every tracked .go file in the root module (skipping
+// kb/ and nested probe modules that own their own go.mod) matches go/format.Source.
 func CheckGofmt(root string) ([]Problem, int, error) {
 	files, err := TrackedFiles(root)
 	if err != nil {
@@ -56,6 +63,8 @@ func CheckGofmt(root string) ([]Problem, int, error) {
 	return problems, checked, nil
 }
 
+// CheckPaths scans every tracked file outside PathSweepExclude and reports any
+// line containing ForbiddenPathFragment.
 func CheckPaths(root string) ([]Problem, int, error) {
 	files, err := TrackedFiles(root)
 	if err != nil {

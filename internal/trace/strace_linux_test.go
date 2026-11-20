@@ -16,6 +16,7 @@ import (
 
 const helperEnv = "TRACE_TEST_HELPER_DB"
 
+// TestMain dispatches into helperWriter when re-invoked as a traced child process.
 func TestMain(m *testing.M) {
 	if path := os.Getenv(helperEnv); path != "" {
 		runtime.LockOSThread()
@@ -55,6 +56,7 @@ func requireStrace(t *testing.T) {
 	}
 }
 
+// TestRunGoProcessUnderStrace traces the Go helper child and checks for WAL pwrite64 and sync syscalls.
 func TestRunGoProcessUnderStrace(t *testing.T) {
 	requireStrace(t)
 	dir := t.TempDir()
@@ -90,6 +92,7 @@ func TestRunGoProcessUnderStrace(t *testing.T) {
 	}
 }
 
+// TestKillAtFirstSync verifies that strace SIGKILL injection stops the writer on entry to its first sync.
 func TestKillAtFirstSync(t *testing.T) {
 	requireStrace(t)
 	dir := t.TempDir()
@@ -115,6 +118,7 @@ func TestKillAtFirstSync(t *testing.T) {
 	}
 }
 
+// TestKillAtRejectsBadPoint ensures Run rejects a KillAt with When < 1 or no syscalls.
 func TestKillAtRejectsBadPoint(t *testing.T) {
 	requireStrace(t)
 	_, err := Run(context.Background(), Options{Command: []string{"true"}, KillAt: &KillAt{When: 0}})
@@ -123,6 +127,7 @@ func TestKillAtRejectsBadPoint(t *testing.T) {
 	}
 }
 
+// TestRunCLIMergedLive runs the pinned CLI under strace and verifies that WAL xSync encloses fsync or fdatasync.
 func TestRunCLIMergedLive(t *testing.T) {
 	requireStrace(t)
 	ctx := context.Background()

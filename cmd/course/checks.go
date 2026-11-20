@@ -11,6 +11,8 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/repocheck"
 )
 
+// report collects PASS/FAIL output across one or more repository checks so
+// "check all" runs every check before exiting 1 on failure.
 type report struct {
 	failed bool
 }
@@ -39,6 +41,7 @@ func (r *report) exit() error {
 	return nil
 }
 
+// runInline implements "course inline [-check] <chapter.md>...".
 func runInline(root string, args []string) error {
 	flags := flag.NewFlagSet("inline", flag.ContinueOnError)
 	check := flags.Bool("check", false, "fail if any block differs from its file instead of rewriting")
@@ -72,6 +75,8 @@ func inlineOne(r *report, name string, check bool) {
 	r.result(label, result.Problems, summary)
 }
 
+// chapterArg consumes a leading positional chapter selector (such as "ch01")
+// before flag parsing so flags may appear after it.
 func chapterArg(args []string) (string, []string) {
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		return args[0], args[1:]
@@ -79,6 +84,7 @@ func chapterArg(args []string) (string, []string) {
 	return "", args
 }
 
+// runCheck dispatches every "course check <subcommand>" check.
 func runCheck(ctx context.Context, root string, args []string) error {
 	if len(args) == 0 {
 		return usageError("check needs a subcommand")
@@ -179,9 +185,13 @@ func runCheck(ctx context.Context, root string, args []string) error {
 	return r.exit()
 }
 
+// stringList implements flag.Value for repeatable flags such as -exclude.
 type stringList []string
 
-func (s *stringList) String() string     { return strings.Join(*s, ",") }
+// String formats the collected values as a comma-separated list for flag.Value.
+func (s *stringList) String() string { return strings.Join(*s, ",") }
+
+// Set appends one flag value to the list for flag.Value.
 func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
 func relative(root, name string) string {
@@ -191,6 +201,8 @@ func relative(root, name string) string {
 	return name
 }
 
+// checkTree runs either CheckSources or CheckSpans against the pinned tree
+// ($SQLITE_SRC or _src/sqlite-3.53.4) for matching chapter directories.
 func checkTree(r *report, root, kind, only string) {
 	label := "check " + kind
 	chapters, err := repocheck.Chapters(root, only)

@@ -9,22 +9,28 @@ import (
 	"github.com/nickstrad/sqlite-internals/sqlite"
 )
 
+// PinMismatchError reports that a Go driver or sqlite3 CLI binary reported a
+// sqlite_source_id() different from sqlite/PIN.
 type PinMismatchError struct {
 	Got  string
 	Want string
 	What string
 }
 
+// Error formats the mismatch naming the component, observed ID, and pinned ID.
 func (e *PinMismatchError) Error() string {
 	return fmt.Sprintf("%s reports sqlite_source_id %q, the pin is %q", e.What, e.Got, e.Want)
 }
 
+// SourceID queries SELECT sqlite_source_id() on q.
 func SourceID(ctx context.Context, q Querier) (string, error) {
 	var id string
 	err := q.QueryRowContext(ctx, "SELECT sqlite_source_id()").Scan(&id)
 	return id, err
 }
 
+// CheckPin queries sqlite_source_id() on q and returns a *PinMismatchError if
+// it does not match sqlite.Current().SourceID.
 func CheckPin(ctx context.Context, q Querier) (string, error) {
 	id, err := SourceID(ctx, q)
 	if err != nil {
@@ -33,6 +39,8 @@ func CheckPin(ctx context.Context, q Querier) (string, error) {
 	return id, CheckSourceID("the Go driver", id)
 }
 
+// CheckSourceID compares id against sqlite.Current().SourceID and returns a
+// *PinMismatchError tagged with what on a mismatch.
 func CheckSourceID(what, id string) error {
 	want := sqlite.Current().SourceID
 	if id != want {
@@ -41,6 +49,8 @@ func CheckSourceID(what, id string) error {
 	return nil
 }
 
+// PinLine formats the standard first output line printed by every experiment,
+// indicating whether id equals the pinned revision.
 func PinLine(id string) string {
 	pin := sqlite.Current()
 	if id == pin.SourceID {
@@ -49,6 +59,8 @@ func PinLine(id string) string {
 	return fmt.Sprintf("sqlite_source_id: %s (NOT the pin %s, want %s)", id, pin.Release, pin.SourceID)
 }
 
+// WritePinCheck queries sqlite_source_id() on q, writes PinLine to w, and
+// returns an error if the ID does not match the pin.
 func WritePinCheck(ctx context.Context, w io.Writer, q Querier) error {
 	id, err := SourceID(ctx, q)
 	if err != nil {
@@ -59,6 +71,8 @@ func WritePinCheck(ctx context.Context, w io.Writer, q Querier) error {
 	return CheckSourceID("the Go driver", id)
 }
 
+// MustPinCheck writes the pin check line to stdout and exits 1 if q does not
+// run the pinned SQLite revision.
 func MustPinCheck(ctx context.Context, q Querier) {
 	if err := WritePinCheck(ctx, os.Stdout, q); err != nil {
 		fmt.Fprintln(os.Stderr, "FAIL:", err)
@@ -66,6 +80,8 @@ func MustPinCheck(ctx context.Context, q Querier) {
 	}
 }
 
+// MustPinCheckMemory opens a temporary in-memory database, prints the pin check
+// line to stdout, and exits 1 if the Go driver does not match sqlite/PIN.
 func MustPinCheckMemory(ctx context.Context) {
 	db, err := openMemory(ctx)
 	if err != nil {

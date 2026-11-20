@@ -1,3 +1,6 @@
+// Package trace captures and parses Linux syscall traces (strace), SQLite
+// Virtual File System (VFS) traces from the pinned sqlite3 CLI's -vfstrace
+// option, and merged streams pairing each VFS method with the syscalls it triggers.
 package trace
 
 import (
@@ -10,6 +13,8 @@ import (
 	"strings"
 )
 
+// Lock describes a POSIX byte-range lock passed in a struct flock argument to
+// fcntl (used by SQLite's Unix VFS in os_unix.c for database and -shm locks).
 type Lock struct {
 	Command string
 	Type    string
@@ -18,6 +23,8 @@ type Lock struct {
 	Length  int64
 }
 
+// Syscall holds one parsed system call from strace output, ordered by call entry.
+// FD, Offset, and Length are -1 when not applicable to the syscall.
 type Syscall struct {
 	Index      int
 	PID        int
@@ -37,21 +44,28 @@ type Syscall struct {
 	Raw        string
 }
 
+// ProcessExit records one process or thread termination line ("+++ exited..."
+// or "+++ killed by...") in a strace log.
 type ProcessExit struct {
 	PID    int
 	Code   int
 	Signal string
 }
 
+// StraceLog holds the ordered system calls and exit records parsed from strace output.
 type StraceLog struct {
 	Calls []Syscall
 	Exits []ProcessExit
 }
 
+// Succeeded reports whether the syscall finished without an errno and returned >= 0.
 func (s Syscall) Succeeded() bool {
 	return !s.Unfinished && s.Errno == "" && s.Result >= 0
 }
 
+// String formats s as a deterministic one-line summary for experiment evidence.
+// Raw descriptor numbers on open/openat ("= fd") and return addresses on mmap
+// ("= ok") are normalized away because they vary across runs.
 func (s Syscall) String() string {
 	var b strings.Builder
 	b.WriteString(s.Name)
@@ -121,6 +135,9 @@ type straceParser struct {
 	fdPaths map[int]map[int]string
 }
 
+// ParseStrace reads strace output produced with "-f" (pid-prefixed lines,
+// optionally with "-y" path annotations), rejoining split unfinished/resumed
+// calls at their entry index and marking calls interrupted by a kill as Unfinished.
 func ParseStrace(r io.Reader) (*StraceLog, error) {
 	parser := &straceParser{pending: map[int]pendingCall{}, fdPaths: map[int]map[int]string{}}
 	scanner := bufio.NewScanner(r)
@@ -141,6 +158,7 @@ func ParseStrace(r io.Reader) (*StraceLog, error) {
 	return &parser.log, nil
 }
 
+// ParseStraceText parses strace output from a string.
 func ParseStraceText(text string) (*StraceLog, error) {
 	return ParseStrace(strings.NewReader(text))
 }
@@ -271,6 +289,8 @@ func (p *straceParser) clearFD(pid, fd int) {
 	delete(p.fdPaths[pid], fd)
 }
 
+// pathForFD falls back across sibling threads' tables when -y annotations are
+// absent because threads in one process share file descriptors.
 func (p *straceParser) pathForFD(pid, fd int) string {
 	if path, ok := p.fdPaths[pid][fd]; ok {
 		return path
@@ -378,6 +398,7 @@ func (p *straceParser) fillArgs(call *Syscall, argText string) {
 		call.Flags = at(3)
 		p.parseFD(call, at(4))
 		call.Offset = parseInt(at(5))
+		// Anonymous mappings pass fd -1 and have no backing file.
 		if call.FD < 0 {
 			call.Path = ""
 		}
@@ -396,6 +417,9 @@ func (p *straceParser) fillArgs(call *Syscall, argText string) {
 	}
 }
 
+// SplitArgs splits a strace or vfstrace argument list at top-level commas,
+// ignoring commas inside quoted strings, nested braces/brackets/parentheses,
+// and strace -y path annotations like 3</dir, name/file> or AT_FDCWD</dir, name>.
 func SplitArgs(text string) []string {
 	var args []string
 	depth := 0
@@ -419,6 +443,7 @@ func SplitArgs(text string) []string {
 		case '}', ']', ')':
 			depth--
 		case '<':
+			// Skip across fd<path> or AT_FDCWD<path> so commas inside paths do not split args.
 			if i > 0 && text[i-1] >= '0' && text[i-1] <= '9' || i > 0 && text[i-1] == 'D' {
 				end := strings.IndexByte(text[i:], '>')
 				if end > 0 {
@@ -438,6 +463,8 @@ func SplitArgs(text string) []string {
 	return args
 }
 
+// Unquote decodes a strace C-escaped string literal and reports whether a
+// trailing "..." indicates that strace truncated the buffer at its -s limit.
 func Unquote(arg string) (string, bool) {
 	arg = strings.TrimSpace(arg)
 	truncated := strings.HasSuffix(arg, "...")
@@ -497,6 +524,7 @@ func isHex(c byte) bool {
 	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
 }
 
+// Filter returns every syscall in l for which keep returns true.
 func (l *StraceLog) Filter(keep func(Syscall) bool) []Syscall {
 	var out []Syscall
 	for _, call := range l.Calls {
@@ -507,6 +535,8 @@ func (l *StraceLog) Filter(keep func(Syscall) bool) []Syscall {
 	return out
 }
 
+// UnderDir returns a Filter predicate matching syscalls whose Path is dir itself
+// (such as a directory fsync) or any file inside dir.
 func UnderDir(dir string) func(Syscall) bool {
 	clean := filepath.Clean(dir)
 	return func(call Syscall) bool {
@@ -514,6 +544,7 @@ func UnderDir(dir string) func(Syscall) bool {
 	}
 }
 
+// Named returns a Filter predicate matching syscalls whose Name is in names.
 func Named(names ...string) func(Syscall) bool {
 	set := map[string]bool{}
 	for _, name := range names {
@@ -522,10 +553,13 @@ func Named(names ...string) func(Syscall) bool {
 	return func(call Syscall) bool { return set[call.Name] }
 }
 
+// Both returns a Filter predicate that succeeds only when both a and b succeed.
 func Both(a, b func(Syscall) bool) func(Syscall) bool {
 	return func(call Syscall) bool { return a(call) && b(call) }
 }
 
+// RelativeTo returns a copy of calls with dir stripped from each Path (dir
+// itself becomes ".") so trace output does not contain machine-local paths.
 func RelativeTo(dir string, calls []Syscall) []Syscall {
 	clean := filepath.Clean(dir)
 	out := make([]Syscall, len(calls))
@@ -541,6 +575,7 @@ func RelativeTo(dir string, calls []Syscall) []Syscall {
 	return out
 }
 
+// KilledBy returns the first terminating signal recorded in l.Exits, or "".
 func (l *StraceLog) KilledBy() string {
 	for _, exit := range l.Exits {
 		if exit.Signal != "" {

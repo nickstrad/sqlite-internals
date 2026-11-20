@@ -1,3 +1,9 @@
+// Command course manages the pinned SQLite source tree, builds companion C
+// tools (sqlite3, showwal, dbhash), synchronizes inlined code blocks in chapter
+// markdown files, and runs the repository verification checks.
+//
+// Exit codes: 0 on success, 1 when a check or command fails, and 2 on invalid
+// arguments or when run outside the repository checkout.
 package main
 
 import (
@@ -26,8 +32,10 @@ commands:
   check all [-runs N] [-skip-evidence] every check that needs no revisions
 `
 
+// exitError carries a process exit code back to main without printing an extra FAIL line.
 type exitError struct{ code int }
 
+// Error implements error for exitError.
 func (e exitError) Error() string { return fmt.Sprintf("exit %d", e.code) }
 
 func main() {

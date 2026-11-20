@@ -16,6 +16,7 @@ func readTestdata(t *testing.T, name string) string {
 	return string(data)
 }
 
+// TestParseStraceCLI checks parsing, filtering, path normalization, and formatting on a recorded CLI WAL trace.
 func TestParseStraceCLI(t *testing.T) {
 	log, err := ParseStraceText(readTestdata(t, "cli-wal.strace"))
 	if err != nil {
@@ -52,6 +53,7 @@ func TestParseStraceCLI(t *testing.T) {
 	}
 }
 
+// TestParseStraceUnfinishedAndKilled verifies resumed calls, errno parsing, and SIGKILL interruption handling.
 func TestParseStraceUnfinishedAndKilled(t *testing.T) {
 	log, err := ParseStraceText(readTestdata(t, "go-killed.strace"))
 	if err != nil {
@@ -89,6 +91,7 @@ func TestParseStraceUnfinishedAndKilled(t *testing.T) {
 	}
 }
 
+// TestSplitArgsAndUnquote checks top-level comma splitting across annotations and C escape decoding with truncation.
 func TestSplitArgsAndUnquote(t *testing.T) {
 	args := SplitArgs(`3</a, b/c.db>, "x, \"y\"", {l_type=F_RDLCK, l_len=1}, [1, 2], 7`)
 	want := []string{`3</a, b/c.db>`, `"x, \"y\""`, `{l_type=F_RDLCK, l_len=1}`, `[1, 2]`, `7`}
@@ -101,6 +104,7 @@ func TestSplitArgsAndUnquote(t *testing.T) {
 	}
 }
 
+// TestParseVFSTrace checks extraction of method names, sizes, offsets, shm lock slots, and relative paths from -vfstrace output.
 func TestParseVFSTrace(t *testing.T) {
 	parsed, err := ParseVFSTrace(strings.NewReader(readTestdata(t, "cli-wal.vfstrace")))
 	if err != nil {
@@ -146,6 +150,7 @@ func TestParseVFSTrace(t *testing.T) {
 	}
 }
 
+// TestMergeStdoutVFS checks that MergeStdoutVFS pairs each -vfstrace call with the syscalls it encloses.
 func TestMergeStdoutVFS(t *testing.T) {
 	log, err := ParseStraceText(readTestdata(t, "cli-wal.strace"))
 	if err != nil {
@@ -198,6 +203,7 @@ func TestMergeStdoutVFS(t *testing.T) {
 	}
 }
 
+// TestMergeRejectsTruncatedStdout verifies that a truncated fd-1 write causes MergeStdoutVFS to return an error.
 func TestMergeRejectsTruncatedStdout(t *testing.T) {
 	log, _ := ParseStraceText(`1 write(1<pipe:[1]>, "trace.xWrite(t.db"..., 40) = 40` + "\n")
 	if _, err := MergeStdoutVFS(log, 1, nil); err == nil {
@@ -205,6 +211,7 @@ func TestMergeRejectsTruncatedStdout(t *testing.T) {
 	}
 }
 
+// TestLinuxOnlyMessage verifies the prefix and Docker run command produced by LinuxOnlyMessage.
 func TestLinuxOnlyMessage(t *testing.T) {
 	message := LinuxOnlyMessage("strace of the commit", "ch01-architecture-and-execution-path/experiments/1.2-one-insert")
 	if !strings.HasPrefix(message, "LINUX-ONLY: strace of the commit skipped on "+runtime.GOOS) ||
@@ -213,6 +220,7 @@ func TestLinuxOnlyMessage(t *testing.T) {
 	}
 }
 
+// TestWritevMergesLikeWrite confirms that writev fragments on stdout merge identically to write fragments.
 func TestWritevMergesLikeWrite(t *testing.T) {
 	text := `7 writev(1<pipe:[9]>, [{iov_base="trace.xSync(t.db-wal,FULL)", iov_len=26}, {iov_base=NULL, iov_len=0}], 2) = 26
 7 fdatasync(4</w/t.db-wal>) = 0

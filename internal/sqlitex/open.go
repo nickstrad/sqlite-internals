@@ -15,23 +15,30 @@ import (
 	"modernc.org/sqlite"
 )
 
+// Querier is satisfied by *sql.DB, *sql.Conn, and *sql.Tx so helpers that read
+// pragmas or run checkpoints work on any of them.
 type Querier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
+// DB wraps *sql.DB with the filesystem path and Options used to open it.
 type DB struct {
 	*sql.DB
 	Path    string
 	Options Options
 }
 
+// configuredConnector intercepts every physical connection database/sql opens
+// so per-connection pragmas are applied uniformly across the pool.
 type configuredConnector struct {
 	base    driver.Connector
 	options Options
 }
 
+// Driver returns the underlying modernc.org/sqlite driver.
 func (c *configuredConnector) Driver() driver.Driver { return c.base.Driver() }
 
+// Connect opens a raw connection and applies file and per-connection pragmas before returning it to the pool.
 func (c *configuredConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	conn, err := c.base.Connect(ctx)
 	if err != nil {
@@ -44,15 +51,20 @@ func (c *configuredConnector) Connect(ctx context.Context) (driver.Conn, error) 
 	return conn, nil
 }
 
+// FileURI converts a filesystem path and query parameters into an SQLite file
+// URI with percent-escaped special characters (such as spaces, '?', and '#').
 func FileURI(path string, query url.Values) (string, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
 	}
+	// Go formats an empty-host file URL as "file:///path"; SQLite expects "file:/path".
 	uri := url.URL{Scheme: "file", Path: filepath.ToSlash(absolute), RawQuery: query.Encode()}
 	return strings.Replace(uri.String(), "file://", "file:", 1), nil
 }
 
+// DSN builds the modernc.org/sqlite data source name for path and options,
+// encoding _txlock=immediate and mode=ro when requested.
 func DSN(path string, options Options) (string, error) {
 	query := url.Values{}
 	if options.ImmediateTx {
@@ -64,6 +76,9 @@ func DSN(path string, options Options) (string, error) {
 	return FileURI(path, query)
 }
 
+// Open validates options, opens path through modernc.org/sqlite, applies
+// file and per-connection pragmas on every physical connection, and verifies
+// that an existing database matches the requested file settings.
 func Open(ctx context.Context, path string, options Options) (*DB, error) {
 	if err := options.File.Validate(); err != nil {
 		return nil, err
@@ -104,6 +119,7 @@ func Open(ctx context.Context, path string, options Options) (*DB, error) {
 	return &DB{DB: db, Path: path, Options: options}, nil
 }
 
+// OpenDefault opens path with DefaultOptions.
 func OpenDefault(ctx context.Context, path string) (*DB, error) {
 	return Open(ctx, path, DefaultOptions())
 }
@@ -123,6 +139,7 @@ func configureConnection(ctx context.Context, conn driver.Conn, options Options)
 		}
 		return nil
 	}
+	// Apply busy_timeout first so the remaining pragmas wait for locks instead of failing immediately.
 	pragmas := options.Conn.pragmas()
 	if err := run(pragmas[0]); err != nil {
 		return err
@@ -132,6 +149,7 @@ func configureConnection(ctx context.Context, conn driver.Conn, options Options)
 		if err != nil {
 			return err
 		}
+		// page_size, auto_vacuum, and encoding only take effect on an empty file before page 1 is written.
 		if pageCount == 0 {
 			for _, statement := range options.File.creationPragmas() {
 				if err := run(statement); err != nil {
@@ -139,6 +157,8 @@ func configureConnection(ctx context.Context, conn driver.Conn, options Options)
 				}
 			}
 		}
+		// Run journal_mode on every connection: WAL persists in the file header,
+		// whereas rollback modes (DELETE, TRUNCATE, PERSIST, MEMORY, OFF) apply per connection.
 		mode, err := driverQueryString(ctx, queryer, options.File.journalPragma())
 		if err != nil {
 			return err
@@ -232,6 +252,7 @@ func readConnSettings(ctx context.Context, queryInt func(string) (int64, error))
 	return settings, nil
 }
 
+// ReadConnSettings queries SQLite for the live per-connection pragma values on q.
 func ReadConnSettings(ctx context.Context, q Querier) (ConnSettings, error) {
 	return readConnSettings(ctx, func(query string) (int64, error) {
 		var value int64
@@ -240,6 +261,8 @@ func ReadConnSettings(ctx context.Context, q Querier) (ConnSettings, error) {
 	})
 }
 
+// ReadFileSettings queries SQLite for the persistent header settings of the
+// database attached to q.
 func ReadFileSettings(ctx context.Context, q Querier) (FileSettings, error) {
 	var settings FileSettings
 	var pageSize, autoVacuum int64
@@ -272,6 +295,8 @@ func compareConnSettings(want, got ConnSettings) error {
 	return nil
 }
 
+// compareFileSettings skips user_version because workload recipes advance it
+// as a step counter on existing files.
 func compareFileSettings(want, got FileSettings) error {
 	var differences []string
 	if want.PageSize != got.PageSize {

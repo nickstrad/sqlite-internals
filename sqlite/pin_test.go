@@ -7,6 +7,7 @@ import (
 	"testing"
 )
 
+// TestCurrentPinParses checks that the embedded sqlite/PIN file parses to release 3.53.4 with matching IDs.
 func TestCurrentPinParses(t *testing.T) {
 	pin := Current()
 	if pin.Release != "3.53.4" || pin.Tag != "version-3.53.4" {
@@ -17,6 +18,7 @@ func TestCurrentPinParses(t *testing.T) {
 	}
 }
 
+// TestPinMatchesGoMod verifies that go.mod and the compiled binary use the driver version recorded in sqlite/PIN.
 func TestPinMatchesGoMod(t *testing.T) {
 	data, err := os.ReadFile("../go.mod")
 	if err != nil {
@@ -36,6 +38,7 @@ func TestPinMatchesGoMod(t *testing.T) {
 	}
 }
 
+// TestParsePinRejectsBadInput ensures malformed lines, duplicates, missing keys, and mismatched IDs fail to parse.
 func TestParsePinRejectsBadInput(t *testing.T) {
 	cases := map[string]string{
 		"missing equals": "release 3.53.4\n",

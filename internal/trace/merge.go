@@ -5,14 +5,17 @@ import (
 	"strings"
 )
 
+// EventKind tags each item in a Merged VFS-and-syscall stream.
 type EventKind int
 
+// Event kinds produced by MergeStdoutVFS.
 const (
 	EventVFS EventKind = iota
 	EventSyscall
 	EventOutput
 )
 
+// String returns the three-letter prefix ("VFS", "SYS", or "OUT") for k.
 func (k EventKind) String() string {
 	switch k {
 	case EventVFS:
@@ -25,6 +28,9 @@ func (k EventKind) String() string {
 	return "?"
 }
 
+// Event is one entry in a merged stream: a VFS call, an OS syscall, or a line
+// of SQL query output. For EventSyscall, Enclosed holds the index of the open
+// EventVFS that triggered it, or -1 if no VFS line was in progress.
 type Event struct {
 	Kind     EventKind
 	VFS      *VFSCall
@@ -33,11 +39,14 @@ type Event struct {
 	Enclosed int
 }
 
+// Merged holds the ordered VFS, syscall, and output events extracted from a
+// strace log of the sqlite3 CLI running with -vfstrace.
 type Merged struct {
 	Events []Event
 	Log    *StraceLog
 }
 
+// String renders e on one line, indenting syscalls that occurred inside an open VFS call.
 func (e Event) String() string {
 	switch e.Kind {
 	case EventVFS:
@@ -53,6 +62,12 @@ func (e Event) String() string {
 	return "?"
 }
 
+// MergeStdoutVFS reconstructs one ordered stream from a strace log of
+// "sqlite3 -vfstrace". Because vfstrace flushes "trace.xName(args)" to stdout
+// before calling the real VFS method (ext/misc/vfstrace.c:420, shell.c.in:12911)
+// and flushes " -> rc\n" after it returns, syscalls observed between those two
+// writes on stdoutFD belong to that VFS call. Methods that print only after
+// returning (such as xOpen) leave their syscalls unenclosed (Enclosed == -1).
 func MergeStdoutVFS(log *StraceLog, stdoutFD int, includeSyscall func(Syscall) bool) (*Merged, error) {
 	merged := &Merged{Log: log}
 	var line strings.Builder
@@ -114,6 +129,7 @@ func MergeStdoutVFS(log *StraceLog, stdoutFD int, includeSyscall func(Syscall) b
 	return merged, nil
 }
 
+// VFSCalls extracts all EventVFS entries in m in order.
 func (m *Merged) VFSCalls() []VFSCall {
 	var out []VFSCall
 	for _, event := range m.Events {
@@ -124,6 +140,7 @@ func (m *Merged) VFSCalls() []VFSCall {
 	return out
 }
 
+// SyscallsWithin returns every syscall enclosed by the VFS event at index vfsEvent.
 func (m *Merged) SyscallsWithin(vfsEvent int) []Syscall {
 	var out []Syscall
 	for _, event := range m.Events {
@@ -134,6 +151,7 @@ func (m *Merged) SyscallsWithin(vfsEvent int) []Syscall {
 	return out
 }
 
+// Relative returns a copy of m with dir stripped from all VFS and syscall paths.
 func (m *Merged) Relative(dir string) *Merged {
 	out := &Merged{Log: m.Log, Events: make([]Event, len(m.Events))}
 	for i, event := range m.Events {

@@ -13,6 +13,8 @@ var includeMarker = regexp.MustCompile(`^<!-- include: (\S+)(?: lines=(\d+)-(\d+
 
 var fenceOpen = regexp.MustCompile("^(`{3,})(\\S*)\\s*$")
 
+// Include describes one "<!-- include: rel/path [lines=A-B] -->" marker and
+// the fenced code block immediately following it in a chapter markdown file.
 type Include struct {
 	MarkerLine int
 	Target     string
@@ -25,6 +27,8 @@ type Include struct {
 	Body       string
 }
 
+// InlineResult holds the parsed include blocks, any detected drift or syntax
+// problems, the regenerated markdown text, and the count of blocks that changed.
 type InlineResult struct {
 	Includes []Include
 	Problems []Problem
@@ -66,12 +70,15 @@ func includeContent(baseDir string, include Include) (string, error) {
 		}
 		text = strings.Join(lines[include.FromLine-1:include.ToLine], "")
 	}
+	// Fenced markdown blocks always end on a newline before the closing fence.
 	if text != "" && !strings.HasSuffix(text, "\n") {
 		text += "\n"
 	}
 	return text, nil
 }
 
+// fenceFor chooses a backtick fence longer than any backtick run inside content
+// so raw Go strings containing triple backticks cannot close the block early.
 func fenceFor(content string) string {
 	longest := 0
 	run := 0
@@ -86,6 +93,9 @@ func fenceFor(content string) string {
 	return strings.Repeat("`", max(3, longest+1))
 }
 
+// FindIncludeBlocks scans markdown text and returns every include marker paired
+// with its immediately following closed fenced block (used by CheckProse to
+// exempt inlined code from prose authorship checks).
 func FindIncludeBlocks(text string) []Include {
 	lines := splitKeepingNewlines(text)
 	var blocks []Include
@@ -109,6 +119,9 @@ func FindIncludeBlocks(text string) []Include {
 	return blocks
 }
 
+// ProcessInline resolves every include marker in text relative to markdownPath's
+// directory, reports any missing or stale blocks in Result.Problems, and builds
+// the synchronized markdown output.
 func ProcessInline(markdownPath string, text string) InlineResult {
 	baseDir := filepath.Dir(markdownPath)
 	lines := splitKeepingNewlines(text)
@@ -209,6 +222,10 @@ func firstDifference(got, want string) string {
 	return "identical"
 }
 
+// InlineFile checks or rewrites all include blocks in markdownPath. When check
+// is true the file is never modified; when check is false it rewrites the file
+// unless there are fatal errors (missing target files, bad line ranges, or
+// unclosed fences).
 func InlineFile(markdownPath string, check bool) (InlineResult, error) {
 	data, err := os.ReadFile(markdownPath)
 	if err != nil {

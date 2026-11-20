@@ -13,6 +13,8 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
 )
 
+// VFSCall represents one method call logged by SQLite's vfstrace shim
+// (ext/misc/vfstrace.c in the pinned tree). Amount and Offset are -1 when absent.
 type VFSCall struct {
 	Index    int
 	Method   string
@@ -34,6 +36,7 @@ var (
 	vfsShmOfst  = regexp.MustCompile(`^ofst=(\d+)\((\w+)\)$`)
 )
 
+// String formats c without the leading "trace." prefix for compact evidence listings.
 func (c VFSCall) String() string {
 	var b strings.Builder
 	b.WriteString(c.Method)
@@ -51,6 +54,8 @@ func (c VFSCall) String() string {
 	return b.String()
 }
 
+// ParseVFSLine parses one line of the form "trace.xMethod(args) -> result[, detail]"
+// (or without " -> ..." for void methods such as xShmBarrier and xRandomness).
 func ParseVFSLine(line string) (VFSCall, bool) {
 	line = strings.TrimRight(line, "\r\n")
 	m := vfsCallLine.FindStringSubmatch(line)
@@ -106,12 +111,16 @@ func ParseVFSLine(line string) (VFSCall, bool) {
 	return call, true
 }
 
+// VFSTrace separates the interleaved stdout of "sqlite3 -vfstrace" into VFS
+// calls, ordinary SQL query output lines, and non-call "trace." status lines
+// (such as trace.enabled_for("unix")).
 type VFSTrace struct {
 	Calls  []VFSCall
 	Output []string
 	Other  []string
 }
 
+// ParseVFSTrace parses the stdout stream produced by the sqlite3 CLI with -vfstrace.
 func ParseVFSTrace(r io.Reader) (*VFSTrace, error) {
 	result := &VFSTrace{}
 	scanner := bufio.NewScanner(r)
@@ -135,6 +144,7 @@ func (t *VFSTrace) addLine(line string) {
 	t.Output = append(t.Output, line)
 }
 
+// Methods returns all VFS calls whose Method name is in methods, in original order.
 func (t *VFSTrace) Methods(methods ...string) []VFSCall {
 	set := map[string]bool{}
 	for _, method := range methods {
@@ -149,6 +159,10 @@ func (t *VFSTrace) Methods(methods ...string) []VFSCall {
 	return out
 }
 
+// RelativeVFS strips dir from filenames, arguments, details, and raw lines.
+// vfstrace prints base names for open-file methods (xRead, xWrite) and full
+// paths for path-based methods (xAccess, xDelete, xFullPathname), so stripping
+// dir makes both forms stable across machines.
 func RelativeVFS(dir string, calls []VFSCall) []VFSCall {
 	prefix := filepath.Clean(dir) + string(filepath.Separator)
 	out := make([]VFSCall, len(calls))
@@ -166,6 +180,8 @@ func RelativeVFS(dir string, calls []VFSCall) []VFSCall {
 	return out
 }
 
+// CLITrace specifies the working directory, database path, and SQL script for
+// RunCLIVFSTrace and RunCLIMerged.
 type CLITrace struct {
 	Dir string
 	DB  string
@@ -180,6 +196,9 @@ func (c CLITrace) script() string {
 	return sqlitex.OpenScript(c.DB, c.SQL)
 }
 
+// RunCLIVFSTrace runs the pinned sqlite3 CLI with -vfstrace and parses its
+// stdout (shell.c.in:12911 vfstraceOut writes to p->out, which is stdout at
+// shell.c.in:13331). This works on any OS with the pinned CLI installed.
 func RunCLIVFSTrace(ctx context.Context, cli sqlitex.CLI, request CLITrace) (*VFSTrace, error) {
 	result, err := cli.Run(ctx, sqlitex.CLIRun{Args: request.args(), Stdin: strings.NewReader(request.script()), Dir: request.Dir})
 	if err != nil {

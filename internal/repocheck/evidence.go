@@ -13,6 +13,8 @@ import (
 	"strings"
 )
 
+// Experiment locates one numbered Go experiment package under a chapter and its
+// stored expected output file under evidence/.
 type Experiment struct {
 	Chapter  Chapter
 	Name     string
@@ -22,6 +24,8 @@ type Experiment struct {
 
 var experimentDirPattern = regexp.MustCompile(`^\d+\.\d+-[a-z0-9-]+$`)
 
+// Experiments lists all experiments matching "N.M-slug" under chapter/experiments/,
+// sorted numerically by chapter and experiment number so 1.2 precedes 1.10.
 func Experiments(chapter Chapter) ([]Experiment, error) {
 	dir := filepath.Join(chapter.Path, "experiments")
 	entries, err := os.ReadDir(dir)
@@ -60,6 +64,8 @@ func experimentLess(a, b string) bool {
 	return a < b
 }
 
+// StripInfo removes lines prefixed with "INFO:" so machine-local paths or
+// per-run PIDs printed for diagnostics do not break exact evidence comparisons.
 func StripInfo(text string) string {
 	var out []string
 	for _, line := range strings.Split(text, "\n") {
@@ -71,16 +77,22 @@ func StripInfo(text string) string {
 	return strings.Join(out, "\n")
 }
 
+// EvidenceOutcome holds the verification status (PASS, DIFF, FAIL, BUILD-FAIL,
+// MISSING, LINUX-ONLY, or ERROR) and explanation for one experiment.
 type EvidenceOutcome struct {
 	Experiment Experiment
 	Status     string
 	Detail     string
 }
 
+// Passed reports whether the experiment matched its stored evidence or skipped
+// cleanly as LINUX-ONLY on a non-Linux host.
 func (o EvidenceOutcome) Passed() bool {
 	return o.Status == "PASS" || o.Status == "LINUX-ONLY"
 }
 
+// CheckEvidence builds experiment once and runs it runs times from root,
+// comparing stdout (minus INFO: lines) against experiment.Evidence.
 func CheckEvidence(ctx context.Context, root string, experiment Experiment, runs int) EvidenceOutcome {
 	outcome := EvidenceOutcome{Experiment: experiment}
 	expected, err := os.ReadFile(experiment.Evidence)
@@ -95,6 +107,7 @@ func CheckEvidence(ctx context.Context, root string, experiment Experiment, runs
 	}
 	defer os.RemoveAll(binDir)
 	binary := filepath.Join(binDir, "experiment")
+	// -buildvcs=false avoids git metadata lookup errors inside mounted worktrees or containers.
 	build := exec.CommandContext(ctx, "go", "build", "-buildvcs=false", "-o", binary, experiment.Package)
 	build.Dir = root
 	if out, err := build.CombinedOutput(); err != nil {

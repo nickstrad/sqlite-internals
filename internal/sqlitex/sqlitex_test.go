@@ -24,6 +24,7 @@ func openTest(t *testing.T, options Options) *DB {
 	return db
 }
 
+// TestPinMatchesDriver verifies that WritePinCheck prints the expected ok line for the pinned Go driver.
 func TestPinMatchesDriver(t *testing.T) {
 	db := openTest(t, DefaultOptions())
 	var out bytes.Buffer
@@ -36,6 +37,7 @@ func TestPinMatchesDriver(t *testing.T) {
 	}
 }
 
+// TestPinLineReportsMismatch confirms that an unknown source ID is flagged by PinLine and CheckSourceID.
 func TestPinLineReportsMismatch(t *testing.T) {
 	line := PinLine("2000-01-01 00:00:00 deadbeef")
 	if !strings.Contains(line, "NOT the pin") {
@@ -46,6 +48,7 @@ func TestPinLineReportsMismatch(t *testing.T) {
 	}
 }
 
+// TestSettingsAppliedOnEveryPooledConnection checks that custom ConnSettings reach all four pooled connections.
 func TestSettingsAppliedOnEveryPooledConnection(t *testing.T) {
 	ctx := context.Background()
 	options := DefaultOptions()
@@ -79,6 +82,7 @@ func TestSettingsAppliedOnEveryPooledConnection(t *testing.T) {
 	}
 }
 
+// TestFileSettingsPersisted checks that page size and WAL header bytes are written to disk and mismatch on reopen fails.
 func TestFileSettingsPersisted(t *testing.T) {
 	ctx := context.Background()
 	options := DefaultOptions()
@@ -116,6 +120,7 @@ func TestFileSettingsPersisted(t *testing.T) {
 	}
 }
 
+// TestRollbackJournalModeIsPerConnection verifies that non-WAL journal modes are applied to every pooled connection.
 func TestRollbackJournalModeIsPerConnection(t *testing.T) {
 	ctx := context.Background()
 	options := DefaultOptions()
@@ -137,6 +142,7 @@ func TestRollbackJournalModeIsPerConnection(t *testing.T) {
 	}
 }
 
+// TestInvalidSettingsRejected checks that Open rejects an invalid page size or synchronous mode.
 func TestInvalidSettingsRejected(t *testing.T) {
 	options := DefaultOptions()
 	options.File.PageSize = 1000
@@ -150,6 +156,7 @@ func TestInvalidSettingsRejected(t *testing.T) {
 	}
 }
 
+// TestRawWrappers exercises db_status, file controls, checkpoint, backup, serialize/deserialize, and restore.
 func TestRawWrappers(t *testing.T) {
 	ctx := context.Background()
 	options := DefaultOptions()
@@ -260,6 +267,7 @@ func TestRawWrappers(t *testing.T) {
 	}
 }
 
+// TestBusyErrorCode confirms that a contending writer with zero busy timeout yields SQLITE_BUSY via IsBusy.
 func TestBusyErrorCode(t *testing.T) {
 	ctx := context.Background()
 	options := DefaultOptions()
@@ -293,6 +301,7 @@ func TestBusyErrorCode(t *testing.T) {
 	}
 }
 
+// TestWorkDir verifies that WorkDir creates, cleans on reuse, and rejects unsafe directory names.
 func TestWorkDir(t *testing.T) {
 	base := t.TempDir()
 	t.Setenv(WorkDirEnv, base)
@@ -318,6 +327,7 @@ func TestWorkDir(t *testing.T) {
 	}
 }
 
+// TestRepoRoot verifies that RepoRoot finds sqlite/PIN and rejects a directory outside the checkout.
 func TestRepoRoot(t *testing.T) {
 	root, err := RepoRoot()
 	if err != nil {
@@ -331,6 +341,7 @@ func TestRepoRoot(t *testing.T) {
 	}
 }
 
+// TestFileURIEscapes checks percent-escaping and opening a database in a directory containing spaces, '?', '#', and '%'.
 func TestFileURIEscapes(t *testing.T) {
 	uri, err := FileURI("/tmp/a b?c#d.db", nil)
 	if err != nil {
@@ -351,6 +362,7 @@ func TestFileURIEscapes(t *testing.T) {
 	}
 }
 
+// TestLocateCLIRespectsEnvAndPin checks that LocateCLI fails on a missing $SQLITE3_BIN or a wrong source ID.
 func TestLocateCLIRespectsEnvAndPin(t *testing.T) {
 	ctx := context.Background()
 	t.Setenv(CLIEnv, filepath.Join(t.TempDir(), "missing"))
@@ -365,6 +377,7 @@ func TestLocateCLIRespectsEnvAndPin(t *testing.T) {
 	}
 }
 
+// TestLocateCLIFindsPinnedBinary runs a query through the located pinned CLI when one is installed.
 func TestLocateCLIFindsPinnedBinary(t *testing.T) {
 	cli, err := LocateCLI(context.Background())
 	if err != nil {
@@ -376,6 +389,7 @@ func TestLocateCLIFindsPinnedBinary(t *testing.T) {
 	}
 }
 
+// TestConcurrentOpenOfNewDatabase checks that four goroutines opening the same new file concurrently all succeed.
 func TestConcurrentOpenOfNewDatabase(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "race.db")
