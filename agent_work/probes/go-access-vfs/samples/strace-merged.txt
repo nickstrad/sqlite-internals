@@ -1,0 +1,389 @@
+  VFS trace.enabled_for("unix")
+  VFS trace.xFullPathname("w.db") -> SQLITE_OK, out="w.db"
+      SYS openat(w.db) = fd 4
+  VFS trace.xOpen(w.db,flags=0x106) -> SQLITE_OK, outFlags=0x106
+  VFS trace.xDeviceCharacteristics(w.db) -> 0x00009000
+  VFS trace.xDeviceCharacteristics(w.db) -> 0x00009000
+  VFS trace.xFileControl(w.db,MMAP_SIZE,0) -> SQLITE_OK, 0
+  VFS trace.xDeviceCharacteristics(w.db) -> 0x00009000
+  VFS trace.xFileControl(w.db,MMAP_SIZE,0) -> SQLITE_OK, 0
+      SYS pread64(w.db n=100 off=0) = 0
+  VFS trace.xRead(w.db,n=100,ofst=0) -> SQLITE_IOERR_SHORT_READ
+  VFS trace.xFileControl(w.db,BUSYHANDLER) -> SQLITE_NOTFOUND
+  VFS trace.xFileControl(w.db,MMAP_SIZE,0) -> SQLITE_OK, 0
+  VFS trace.xFileControl(w.db,PDB) -> SQLITE_NOTFOUND
+==== wal-setup
+  VFS trace.xFileControl(w.db,PRAGMA,[journal_mode,wal]) -> SQLITE_NOTFOUND
+      SYS fcntl(w.db F_SETLK, {l_type=F_RDLCK, l_whence=SEEK_SET, l_start=1073741824, l_len=1}) = 0
+      SYS fcntl(w.db F_SETLK, {l_type=F_RDLCK, l_whence=SEEK_SET, l_start=1073741826, l_len=510}) = 0
+      SYS fcntl(w.db F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=1073741824, l_len=1}) = 0
+  VFS trace.xLock(w.db,SHARED) -> SQLITE_OK
+  VFS trace.xAccess("w.db-journal",0) -> SQLITE_OK, out=0
+  VFS trace.xAccess("w.db-wal",0) -> SQLITE_OK, out=0
+  VFS trace.xFileSize(w.db) -> SQLITE_OK, size=0
+  VFS trace.xDeviceCharacteristics(w.db) -> 0x00009000
+      SYS fcntl(w.db F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=0, l_len=0}) = 0
+  VFS trace.xUnlock(w.db,NONE) -> SQLITE_OK
+      SYS fcntl(w.db F_SETLK, {l_type=F_RDLCK, l_whence=SEEK_SET, l_start=1073741824, l_len=1}) = 0
+      SYS fcntl(w.db F_SETLK, {l_type=F_RDLCK, l_whence=SEEK_SET, l_start=1073741826, l_len=510}) = 0
+      SYS fcntl(w.db F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=1073741824, l_len=1}) = 0
+  VFS trace.xLock(w.db,SHARED) -> SQLITE_OK
+  VFS trace.xAccess("w.db-journal",0) -> SQLITE_OK, out=0
+      SYS pread64(w.db n=16 off=24) = 0
+  VFS trace.xRead(w.db,n=16,ofst=24) -> SQLITE_IOERR_SHORT_READ
+  VFS trace.xAccess("w.db-wal",0) -> SQLITE_OK, out=0
+  VFS trace.xFileSize(w.db) -> SQLITE_OK, size=0
+      SYS fcntl(w.db F_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=1073741825, l_len=1}) = 0
+  VFS trace.xLock(w.db,RESERVED) -> SQLITE_OK
+      SYS fcntl(w.db F_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=1073741824, l_len=1}) = 0
+      SYS fcntl(w.db F_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=1073741826, l_len=510}) = 0
+  VFS trace.xLock(w.db,EXCLUSIVE) -> SQLITE_OK
+      SYS openat(w.db-journal) = fd 5
+  VFS trace.xOpen(w.db-journal,flags=0x806) -> SQLITE_OK
+  VFS trace.xDeviceCharacteristics(w.db) -> 0x00009000
+      SYS pwrite64(w.db-journal n=512 off=0) = 512
+  VFS trace.xWrite(w.db-journal,n=512,ofst=0) -> SQLITE_OK
+  VFS trace.xDeviceCharacteristics(w.db) -> 0x00009000
+      SYS pread64(w.db-journal n=8 off=512) = 0
+  VFS trace.xRead(w.db-journal,n=8,ofst=512) -> SQLITE_IOERR_SHORT_READ
+      SYS fsync(w.db-journal ) = 0
+      SYS openat(<dir>) = fd 6
+      SYS fsync(<dir> ) = 0
+      SYS close(<dir>)
+  VFS trace.xSync(w.db-journal,FULL) -> 0
+      SYS pwrite64(w.db-journal n=12 off=0) = 12
+  VFS trace.xWrite(w.db-journal,n=12,ofst=0) -> SQLITE_OK
+      SYS fsync(w.db-journal ) = 0
+  VFS trace.xSync(w.db-journal,FULL) -> 0
+  VFS trace.xFileControl(w.db,SIZE_HINT,4096) -> SQLITE_OK
+      SYS pwrite64(w.db n=4096 off=0) = 4096
+  VFS trace.xWrite(w.db,n=4096,ofst=0) -> SQLITE_OK
+  VFS trace.xFileControl(w.db,SYNC) -> SQLITE_NOTFOUND
+      SYS fsync(w.db ) = 0
+  VFS trace.xSync(w.db,FULL) -> 0
+      SYS close(w.db-journal)
+  VFS trace.xClose(w.db-journal) -> SQLITE_OK
+      SYS unlink("w.db-journal") = 0
+  VFS trace.xDelete("w.db-journal",0) -> SQLITE_OK
+  VFS trace.xFileControl(w.db,COMMIT_PHASETWO) -> SQLITE_NOTFOUND
+      SYS fcntl(w.db F_SETLK, {l_type=F_RDLCK, l_whence=SEEK_SET, l_start=1073741826, l_len=510}) = 0
+      SYS fcntl(w.db F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=1073741824, l_len=2}) = 0
+  VFS trace.xUnlock(w.db,SHARED) -> SQLITE_OK
+  VFS trace.xDeviceCharacteristics(w.db) -> 0x00009000
+      SYS fcntl(w.db F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=0, l_len=0}) = 0
+  VFS trace.xUnlock(w.db,NONE) -> SQLITE_OK
+      SYS fcntl(w.db F_SETLK, {l_type=F_RDLCK, l_whence=SEEK_SET, l_start=1073741824, l_len=1}) = 0
+      SYS fcntl(w.db F_SETLK, {l_type=F_RDLCK, l_whence=SEEK_SET, l_start=1073741826, l_len=510}) = 0
+      SYS fcntl(w.db F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=1073741824, l_len=1}) = 0
+  VFS trace.xLock(w.db,SHARED) -> SQLITE_OK
+  VFS trace.xAccess("w.db-journal",0) -> SQLITE_OK, out=0
+      SYS pread64(w.db n=16 off=24) = 16
+  VFS trace.xRead(w.db,n=16,ofst=24) -> SQLITE_OK
+  VFS trace.xAccess("w.db-wal",0) -> SQLITE_OK, out=0
+  VFS trace.xFileSize(w.db) -> SQLITE_OK, size=4096
+      SYS openat(w.db-wal) = fd 5
+  VFS trace.xOpen(w.db-wal,flags=0x80006) -> SQLITE_OK, outFlags=0x80006
+  VFS trace.xDeviceCharacteristics(w.db) -> 0x00009000
+  VFS trace.xFileControl(w.db,MMAP_SIZE,0) -> SQLITE_OK, 0
+      SYS openat(w.db-shm) = fd 6
+      SYS fcntl(w.db-shm F_GETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=128, l_len=1, l_pid=0}) = 0
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=128, l_len=1}) = 0
+      SYS ftruncate(w.db-shm 3) = 0
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_RDLCK, l_whence=SEEK_SET, l_start=128, l_len=1}) = 0
+  VFS trace.xShmMap(w.db,iRegion=0,szRegion=32768,isWrite=0,*) -> SQLITE_OK
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=120, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=0(WRITE),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+      SYS pwrite64(w.db-shm n=1 off=4095) = 1
+      SYS pwrite64(w.db-shm n=1 off=8191) = 1
+      SYS pwrite64(w.db-shm n=1 off=12287) = 1
+      SYS pwrite64(w.db-shm n=1 off=16383) = 1
+      SYS pwrite64(w.db-shm n=1 off=20479) = 1
+      SYS pwrite64(w.db-shm n=1 off=24575) = 1
+      SYS pwrite64(w.db-shm n=1 off=28671) = 1
+      SYS pwrite64(w.db-shm n=1 off=32767) = 1
+      SYS mmap(w.db-shm, len=32768, off=0)
+  VFS trace.xShmMap(w.db,iRegion=0,szRegion=32768,isWrite=2,*) -> SQLITE_OK
+  VFS trace.xShmBarrier(w.db)
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=121, l_len=2}) = 0
+  VFS trace.xShmLock(w.db,ofst=1(CKPT),n=2,LOCK|EXCLUSIVE) -> SQLITE_OK
+  VFS trace.xFileSize(w.db-wal) -> SQLITE_OK, size=0
+  VFS trace.xShmBarrier(w.db)
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=124, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=4(READ1),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=124, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=4(READ1),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=125, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=5(READ2),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=125, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=5(READ2),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=126, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=6(READ3),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=126, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=6(READ3),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=127, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=7(READ4),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=127, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=7(READ4),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=121, l_len=2}) = 0
+  VFS trace.xShmLock(w.db,ofst=1(CKPT),n=2,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=120, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=0(WRITE),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_RDLCK, l_whence=SEEK_SET, l_start=123, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=3(READ0),n=1,LOCK|SHARED) -> SQLITE_OK
+  VFS trace.xShmBarrier(w.db)
+  VFS trace.xFileSize(w.db) -> SQLITE_OK, size=4096
+      SYS pread64(w.db n=4096 off=0) = 4096
+  VFS trace.xRead(w.db,n=4096,ofst=0) -> SQLITE_OK
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=120, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=0(WRITE),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=123, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=3(READ0),n=1,UNLOCK|SHARED) -> SQLITE_OK
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=124, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=4(READ1),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=124, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=4(READ1),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_RDLCK, l_whence=SEEK_SET, l_start=124, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=4(READ1),n=1,LOCK|SHARED) -> SQLITE_OK
+  VFS trace.xShmBarrier(w.db)
+      SYS pwrite64(w.db-wal n=32 off=0) = 32
+  VFS trace.xWrite(w.db-wal,n=32,ofst=0) -> SQLITE_OK
+      SYS fsync(w.db-wal ) = 0
+      SYS openat(<dir>) = fd 7
+      SYS fsync(<dir> ) = 0
+      SYS close(<dir>)
+  VFS trace.xSync(w.db-wal,FULL) -> 0
+      SYS pwrite64(w.db-wal n=24 off=32) = 24
+  VFS trace.xWrite(w.db-wal,n=24,ofst=32) -> SQLITE_OK
+      SYS pwrite64(w.db-wal n=4096 off=56) = 4096
+  VFS trace.xWrite(w.db-wal,n=4096,ofst=56) -> SQLITE_OK
+      SYS pwrite64(w.db-wal n=24 off=4152) = 24
+  VFS trace.xWrite(w.db-wal,n=24,ofst=4152) -> SQLITE_OK
+      SYS pwrite64(w.db-wal n=4096 off=4176) = 4096
+  VFS trace.xWrite(w.db-wal,n=4096,ofst=4176) -> SQLITE_OK
+      SYS fsync(w.db-wal ) = 0
+  VFS trace.xSync(w.db-wal,FULL) -> 0
+  VFS trace.xShmBarrier(w.db)
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=120, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=0(WRITE),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+  VFS trace.xFileControl(w.db,COMMIT_PHASETWO) -> SQLITE_NOTFOUND
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=124, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=4(READ1),n=1,UNLOCK|SHARED) -> SQLITE_OK
+==== wal-insert-commit
+  VFS trace.xShmBarrier(w.db)
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=124, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=4(READ1),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=124, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=4(READ1),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_RDLCK, l_whence=SEEK_SET, l_start=124, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=4(READ1),n=1,LOCK|SHARED) -> SQLITE_OK
+  VFS trace.xShmBarrier(w.db)
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=120, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=0(WRITE),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+      SYS pwrite64(w.db-wal n=24 off=8272) = 24
+  VFS trace.xWrite(w.db-wal,n=24,ofst=8272) -> SQLITE_OK
+      SYS pwrite64(w.db-wal n=4096 off=8296) = 4096
+  VFS trace.xWrite(w.db-wal,n=4096,ofst=8296) -> SQLITE_OK
+      SYS fsync(w.db-wal ) = 0
+  VFS trace.xSync(w.db-wal,FULL) -> 0
+  VFS trace.xShmBarrier(w.db)
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=120, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=0(WRITE),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+  VFS trace.xFileControl(w.db,COMMIT_PHASETWO) -> SQLITE_NOTFOUND
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=124, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=4(READ1),n=1,UNLOCK|SHARED) -> SQLITE_OK
+==== wal-checkpoint
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=121, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=1(CKPT),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+  VFS trace.xShmBarrier(w.db)
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=124, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=4(READ1),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=124, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=4(READ1),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=123, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=3(READ0),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+      SYS fsync(w.db-wal ) = 0
+  VFS trace.xSync(w.db-wal,FULL) -> 0
+  VFS trace.xFileControl(w.db,CKPT_START) -> SQLITE_NOTFOUND
+  VFS trace.xFileSize(w.db) -> SQLITE_OK, size=4096
+  VFS trace.xFileControl(w.db,SIZE_HINT,8192) -> SQLITE_OK
+      SYS pread64(w.db-wal n=4096 off=56) = 4096
+  VFS trace.xRead(w.db-wal,n=4096,ofst=56) -> SQLITE_OK
+      SYS pwrite64(w.db n=4096 off=0) = 4096
+  VFS trace.xWrite(w.db,n=4096,ofst=0) -> SQLITE_OK
+      SYS pread64(w.db-wal n=4096 off=8296) = 4096
+  VFS trace.xRead(w.db-wal,n=4096,ofst=8296) -> SQLITE_OK
+      SYS pwrite64(w.db n=4096 off=4096) = 4096
+  VFS trace.xWrite(w.db,n=4096,ofst=4096) -> SQLITE_OK
+  VFS trace.xFileControl(w.db,CKPT_DONE) -> SQLITE_NOTFOUND
+      SYS ftruncate(w.db 8192) = 0
+  VFS trace.xTruncate(w.db,8192) -> 0
+      SYS fsync(w.db ) = 0
+  VFS trace.xSync(w.db,FULL) -> 0
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=123, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=3(READ0),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+      SYS fcntl(w.db-shm F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=121, l_len=1}) = 0
+  VFS trace.xShmLock(w.db,ofst=1(CKPT),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+==== wal-close
+  VFS trace.xFileControl(w.db,HAS_MOVED) -> SQLITE_OK, 0
+      SYS fcntl(w.db-shm F_GETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=128, l_len=1, l_pid=0}) = 0
+      SYS fcntl(w.db F_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=1073741826, l_len=510}) = 0
+  VFS trace.xLock(w.db,EXCLUSIVE) -> SQLITE_OK
+  VFS trace.xShmBarrier(w.db)
+  VFS trace.xFileControl(w.db,PERSIST_WAL,-1) -> SQLITE_OK, 0
+      SYS unlink("w.db-shm") = 0
+      SYS close(w.db-shm)
+  VFS trace.xShmUnmap(w.db,delFlag=1) -> SQLITE_OK
+      SYS close(w.db-wal)
+  VFS trace.xClose(w.db-wal) -> SQLITE_OK
+      SYS unlink("w.db-wal") = 0
+  VFS trace.xDelete("w.db-wal",0) -> SQLITE_OK
+  VFS trace.xDeviceCharacteristics(w.db) -> 0x00009000
+      SYS fcntl(w.db F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=1073741824, l_len=2}) = 0
+      SYS fcntl(w.db F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=0, l_len=0}) = 0
+  VFS trace.xUnlock(w.db,NONE) -> SQLITE_OK
+      SYS close(w.db)
+  VFS trace.xClose(w.db) -> SQLITE_OK
+==== delete-mode-setup
+  VFS trace.xFullPathname("d.db") -> SQLITE_OK, out="d.db"
+      SYS openat(d.db) = fd 4
+  VFS trace.xOpen(d.db,flags=0x106) -> SQLITE_OK, outFlags=0x106
+  VFS trace.xDeviceCharacteristics(d.db) -> 0x00009000
+  VFS trace.xDeviceCharacteristics(d.db) -> 0x00009000
+  VFS trace.xFileControl(d.db,MMAP_SIZE,0) -> SQLITE_OK, 0
+  VFS trace.xDeviceCharacteristics(d.db) -> 0x00009000
+  VFS trace.xFileControl(d.db,MMAP_SIZE,0) -> SQLITE_OK, 0
+      SYS pread64(d.db n=100 off=0) = 0
+  VFS trace.xRead(d.db,n=100,ofst=0) -> SQLITE_IOERR_SHORT_READ
+  VFS trace.xFileControl(d.db,BUSYHANDLER) -> SQLITE_NOTFOUND
+  VFS trace.xFileControl(d.db,MMAP_SIZE,0) -> SQLITE_OK, 0
+  VFS trace.xFileControl(d.db,PDB) -> SQLITE_NOTFOUND
+  VFS trace.xFileControl(d.db,PRAGMA,[journal_mode,delete]) -> SQLITE_NOTFOUND
+      SYS fcntl(d.db F_SETLK, {l_type=F_RDLCK, l_whence=SEEK_SET, l_start=1073741824, l_len=1}) = 0
+      SYS fcntl(d.db F_SETLK, {l_type=F_RDLCK, l_whence=SEEK_SET, l_start=1073741826, l_len=510}) = 0
+      SYS fcntl(d.db F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=1073741824, l_len=1}) = 0
+  VFS trace.xLock(d.db,SHARED) -> SQLITE_OK
+  VFS trace.xAccess("d.db-journal",0) -> SQLITE_OK, out=0
+  VFS trace.xAccess("d.db-wal",0) -> SQLITE_OK, out=0
+  VFS trace.xFileSize(d.db) -> SQLITE_OK, size=0
+  VFS trace.xDeviceCharacteristics(d.db) -> 0x00009000
+      SYS fcntl(d.db F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=0, l_len=0}) = 0
+  VFS trace.xUnlock(d.db,NONE) -> SQLITE_OK
+      SYS fcntl(d.db F_SETLK, {l_type=F_RDLCK, l_whence=SEEK_SET, l_start=1073741824, l_len=1}) = 0
+      SYS fcntl(d.db F_SETLK, {l_type=F_RDLCK, l_whence=SEEK_SET, l_start=1073741826, l_len=510}) = 0
+      SYS fcntl(d.db F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=1073741824, l_len=1}) = 0
+  VFS trace.xLock(d.db,SHARED) -> SQLITE_OK
+  VFS trace.xAccess("d.db-journal",0) -> SQLITE_OK, out=0
+      SYS pread64(d.db n=16 off=24) = 0
+  VFS trace.xRead(d.db,n=16,ofst=24) -> SQLITE_IOERR_SHORT_READ
+  VFS trace.xAccess("d.db-wal",0) -> SQLITE_OK, out=0
+  VFS trace.xFileSize(d.db) -> SQLITE_OK, size=0
+      SYS fcntl(d.db F_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=1073741825, l_len=1}) = 0
+  VFS trace.xLock(d.db,RESERVED) -> SQLITE_OK
+      SYS openat(d.db-journal) = fd 5
+  VFS trace.xOpen(d.db-journal,flags=0x806) -> SQLITE_OK
+  VFS trace.xDeviceCharacteristics(d.db) -> 0x00009000
+      SYS pwrite64(d.db-journal n=512 off=0) = 512
+  VFS trace.xWrite(d.db-journal,n=512,ofst=0) -> SQLITE_OK
+      SYS fcntl(d.db F_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=1073741824, l_len=1}) = 0
+      SYS fcntl(d.db F_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=1073741826, l_len=510}) = 0
+  VFS trace.xLock(d.db,EXCLUSIVE) -> SQLITE_OK
+  VFS trace.xDeviceCharacteristics(d.db) -> 0x00009000
+      SYS pread64(d.db-journal n=8 off=512) = 0
+  VFS trace.xRead(d.db-journal,n=8,ofst=512) -> SQLITE_IOERR_SHORT_READ
+      SYS fsync(d.db-journal ) = 0
+      SYS openat(<dir>) = fd 6
+      SYS fsync(<dir> ) = 0
+      SYS close(<dir>)
+  VFS trace.xSync(d.db-journal,FULL) -> 0
+      SYS pwrite64(d.db-journal n=12 off=0) = 12
+  VFS trace.xWrite(d.db-journal,n=12,ofst=0) -> SQLITE_OK
+      SYS fsync(d.db-journal ) = 0
+  VFS trace.xSync(d.db-journal,FULL) -> 0
+  VFS trace.xFileControl(d.db,SIZE_HINT,8192) -> SQLITE_OK
+      SYS pwrite64(d.db n=4096 off=0) = 4096
+  VFS trace.xWrite(d.db,n=4096,ofst=0) -> SQLITE_OK
+      SYS pwrite64(d.db n=4096 off=4096) = 4096
+  VFS trace.xWrite(d.db,n=4096,ofst=4096) -> SQLITE_OK
+  VFS trace.xFileControl(d.db,SYNC) -> SQLITE_NOTFOUND
+      SYS fsync(d.db ) = 0
+  VFS trace.xSync(d.db,FULL) -> 0
+      SYS close(d.db-journal)
+  VFS trace.xClose(d.db-journal) -> SQLITE_OK
+      SYS unlink("d.db-journal") = 0
+  VFS trace.xDelete("d.db-journal",0) -> SQLITE_OK
+  VFS trace.xFileControl(d.db,COMMIT_PHASETWO) -> SQLITE_NOTFOUND
+      SYS fcntl(d.db F_SETLK, {l_type=F_RDLCK, l_whence=SEEK_SET, l_start=1073741826, l_len=510}) = 0
+      SYS fcntl(d.db F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=1073741824, l_len=2}) = 0
+  VFS trace.xUnlock(d.db,SHARED) -> SQLITE_OK
+  VFS trace.xDeviceCharacteristics(d.db) -> 0x00009000
+      SYS fcntl(d.db F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=0, l_len=0}) = 0
+  VFS trace.xUnlock(d.db,NONE) -> SQLITE_OK
+==== delete-mode-commit
+      SYS fcntl(d.db F_SETLK, {l_type=F_RDLCK, l_whence=SEEK_SET, l_start=1073741824, l_len=1}) = 0
+      SYS fcntl(d.db F_SETLK, {l_type=F_RDLCK, l_whence=SEEK_SET, l_start=1073741826, l_len=510}) = 0
+      SYS fcntl(d.db F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=1073741824, l_len=1}) = 0
+  VFS trace.xLock(d.db,SHARED) -> SQLITE_OK
+  VFS trace.xAccess("d.db-journal",0) -> SQLITE_OK, out=0
+      SYS pread64(d.db n=16 off=24) = 16
+  VFS trace.xRead(d.db,n=16,ofst=24) -> SQLITE_OK
+  VFS trace.xAccess("d.db-wal",0) -> SQLITE_OK, out=0
+  VFS trace.xFileSize(d.db) -> SQLITE_OK, size=8192
+      SYS fcntl(d.db F_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=1073741825, l_len=1}) = 0
+  VFS trace.xLock(d.db,RESERVED) -> SQLITE_OK
+  VFS trace.xFileControl(d.db,HAS_MOVED) -> SQLITE_OK, 0
+      SYS openat(d.db-journal) = fd 5
+  VFS trace.xOpen(d.db-journal,flags=0x806) -> SQLITE_OK
+  VFS trace.xDeviceCharacteristics(d.db) -> 0x00009000
+      SYS pwrite64(d.db-journal n=512 off=0) = 512
+  VFS trace.xWrite(d.db-journal,n=512,ofst=0) -> SQLITE_OK
+      SYS pwrite64(d.db-journal n=4 off=512) = 4
+  VFS trace.xWrite(d.db-journal,n=4,ofst=512) -> SQLITE_OK
+      SYS pwrite64(d.db-journal n=4096 off=516) = 4096
+  VFS trace.xWrite(d.db-journal,n=4096,ofst=516) -> SQLITE_OK
+      SYS pwrite64(d.db-journal n=4 off=4612) = 4
+  VFS trace.xWrite(d.db-journal,n=4,ofst=4612) -> SQLITE_OK
+      SYS fcntl(d.db F_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=1073741824, l_len=1}) = 0
+      SYS fcntl(d.db F_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=1073741826, l_len=510}) = 0
+  VFS trace.xLock(d.db,EXCLUSIVE) -> SQLITE_OK
+      SYS pwrite64(d.db-journal n=4 off=4616) = 4
+  VFS trace.xWrite(d.db-journal,n=4,ofst=4616) -> SQLITE_OK
+      SYS pwrite64(d.db-journal n=4096 off=4620) = 4096
+  VFS trace.xWrite(d.db-journal,n=4096,ofst=4620) -> SQLITE_OK
+      SYS pwrite64(d.db-journal n=4 off=8716) = 4
+  VFS trace.xWrite(d.db-journal,n=4,ofst=8716) -> SQLITE_OK
+  VFS trace.xDeviceCharacteristics(d.db) -> 0x00009000
+      SYS pread64(d.db-journal n=8 off=9216) = 0
+  VFS trace.xRead(d.db-journal,n=8,ofst=9216) -> SQLITE_IOERR_SHORT_READ
+      SYS fsync(d.db-journal ) = 0
+      SYS openat(<dir>) = fd 6
+      SYS fsync(<dir> ) = 0
+      SYS close(<dir>)
+  VFS trace.xSync(d.db-journal,FULL) -> 0
+      SYS pwrite64(d.db-journal n=12 off=0) = 12
+  VFS trace.xWrite(d.db-journal,n=12,ofst=0) -> SQLITE_OK
+      SYS fsync(d.db-journal ) = 0
+  VFS trace.xSync(d.db-journal,FULL) -> 0
+      SYS pwrite64(d.db n=4096 off=0) = 4096
+  VFS trace.xWrite(d.db,n=4096,ofst=0) -> SQLITE_OK
+      SYS pwrite64(d.db n=4096 off=4096) = 4096
+  VFS trace.xWrite(d.db,n=4096,ofst=4096) -> SQLITE_OK
+  VFS trace.xFileControl(d.db,SYNC) -> SQLITE_NOTFOUND
+      SYS fsync(d.db ) = 0
+  VFS trace.xSync(d.db,FULL) -> 0
+      SYS close(d.db-journal)
+  VFS trace.xClose(d.db-journal) -> SQLITE_OK
+      SYS unlink("d.db-journal") = 0
+  VFS trace.xDelete("d.db-journal",0) -> SQLITE_OK
+  VFS trace.xFileControl(d.db,COMMIT_PHASETWO) -> SQLITE_NOTFOUND
+      SYS fcntl(d.db F_SETLK, {l_type=F_RDLCK, l_whence=SEEK_SET, l_start=1073741826, l_len=510}) = 0
+      SYS fcntl(d.db F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=1073741824, l_len=2}) = 0
+  VFS trace.xUnlock(d.db,SHARED) -> SQLITE_OK
+  VFS trace.xDeviceCharacteristics(d.db) -> 0x00009000
+      SYS fcntl(d.db F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=0, l_len=0}) = 0
+  VFS trace.xUnlock(d.db,NONE) -> SQLITE_OK
+==== end
+  VFS trace.xFileControl(d.db,HAS_MOVED) -> SQLITE_OK, 0
+  VFS trace.xDeviceCharacteristics(d.db) -> 0x00009000
+  VFS trace.xUnlock(d.db,NONE) -> SQLITE_OK
+      SYS close(d.db)
+  VFS trace.xClose(d.db) -> SQLITE_OK

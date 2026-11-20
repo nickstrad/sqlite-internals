@@ -1,0 +1,3 @@
+cgo/amalg/sqlite3.c
+cgo/amalg/sqlite3.h
+cgo/sqlitec/vfstrace.c.inc
