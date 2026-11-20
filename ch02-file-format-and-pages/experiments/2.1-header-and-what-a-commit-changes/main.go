@@ -529,12 +529,12 @@ func main() {
 	if located, err := sqlitex.LocateCLI(ctx); err == nil {
 		cli = &located
 		fmt.Println(located.PinLine())
-		fmt.Printf("INFO: CLI %s\n", located.Path)
+		fmt.Printf("INFO: CLI found via %s\n", located.Origin)
 	} else {
 		fmt.Printf("NO-CLI: %v; the .dbinfo cross-check is skipped\n", err)
 	}
 	dir := sqlitex.MustWorkDir("2.1")
-	fmt.Printf("INFO: work dir %s\n", dir)
+	fmt.Printf("INFO: work dir %s\n", displayPath(dir))
 	partA(ctx, dir, cli)
 	partB(ctx, dir)
 	partC(ctx, dir)
@@ -550,4 +550,19 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("HEADER OK")
+}
+
+func displayPath(path string) string {
+	root, err := sqlitex.RepoRoot()
+	if err != nil {
+		return path
+	}
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	relative, err := filepath.Rel(root, path)
+	if err != nil || strings.HasPrefix(relative, "..") {
+		return path
+	}
+	return filepath.ToSlash(relative)
 }

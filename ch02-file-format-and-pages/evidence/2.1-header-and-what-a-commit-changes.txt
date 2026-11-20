@@ -1,7 +1,7 @@
 sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
 sqlite3 CLI sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: CLI /usr/local/bin/sqlite3
-INFO: work dir /root/Software/sqlite-internals-work/ch02/_work/2.1
+INFO: CLI found via PATH
+INFO: work dir _work/2.1
 
 == A. decode the header of the R0 database and compare every field with SQLite
 R0: seed=1 steps=30 journal_mode=wal, built to step 30; sha256 24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74

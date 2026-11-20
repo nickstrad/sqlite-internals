@@ -356,7 +356,7 @@ func main() {
 	ctx := context.Background()
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("2.3")
-	fmt.Printf("INFO: work dir %s\n", dir)
+	fmt.Printf("INFO: work dir %s\n", displayPath(dir))
 	original, captureDir := partA(ctx, dir)
 	partB(ctx, dir, original, captureDir)
 	partC(dir, captureDir)
@@ -370,4 +370,19 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("MANIFEST OK")
+}
+
+func displayPath(path string) string {
+	root, err := sqlitex.RepoRoot()
+	if err != nil {
+		return path
+	}
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	relative, err := filepath.Rel(root, path)
+	if err != nil || strings.HasPrefix(relative, "..") {
+		return path
+	}
+	return filepath.ToSlash(relative)
 }
