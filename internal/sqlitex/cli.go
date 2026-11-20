@@ -165,7 +165,13 @@ func (c CLI) Run(ctx context.Context, run CLIRun) (CLIResult, error) {
 // deduceDatabaseType (shell.c.in:4229-4320, 4495, 10222), adding extra syscalls
 // and -shm writes that do not belong to the statement.
 func OpenScript(dbPath, sql string) string {
-	return ".open --normal '" + strings.ReplaceAll(dbPath, "'", "''") + "'\n" + sql
+	return ".open --normal " + dotCommandQuote(dbPath) + "\n" + sql
+}
+
+var dotCommandEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`, "\r", `\r`)
+
+func dotCommandQuote(arg string) string {
+	return `"` + dotCommandEscaper.Replace(arg) + `"`
 }
 
 // Exec opens dbPath via OpenScript on stdin, executes sql, and returns stdout.

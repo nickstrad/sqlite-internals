@@ -54,6 +54,9 @@ func (c *configuredConnector) Connect(ctx context.Context) (driver.Conn, error) 
 // FileURI converts a filesystem path and query parameters into an SQLite file
 // URI with percent-escaped special characters (such as spaces, '?', and '#').
 func FileURI(path string, query url.Values) (string, error) {
+	if path == "" || path == MemoryPath {
+		return "", fmt.Errorf("FileURI needs a filesystem path, got %q; use OpenMemory for an in-memory database", path)
+	}
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
@@ -70,6 +73,15 @@ func DSN(path string, options Options) (string, error) {
 	if options.ImmediateTx {
 		query.Set("_txlock", "immediate")
 	}
+	if path == MemoryPath {
+		if options.ReadOnly {
+			return "", errors.New("an in-memory database cannot be opened read-only")
+		}
+		if len(query) == 0 {
+			return "file::memory:", nil
+		}
+		return "file::memory:?" + query.Encode(), nil
+	}
 	if options.ReadOnly {
 		query.Set("mode", "ro")
 	}
@@ -85,6 +97,11 @@ func Open(ctx context.Context, path string, options Options) (*DB, error) {
 	}
 	if err := options.Conn.Validate(); err != nil {
 		return nil, err
+	}
+	if path == MemoryPath {
+		if err := validateMemoryOptions(options); err != nil {
+			return nil, err
+		}
 	}
 	dsn, err := DSN(path, options)
 	if err != nil {
@@ -124,6 +141,30 @@ func OpenDefault(ctx context.Context, path string) (*DB, error) {
 	return Open(ctx, path, DefaultOptions())
 }
 
+const MemoryPath = ":memory:"
+
+func MemoryOptions() Options {
+	options := DefaultOptions()
+	options.File.JournalMode = JournalMemory
+	options.SingleConnection = true
+	return options
+}
+
+func OpenMemory(ctx context.Context) (*DB, error) {
+	return Open(ctx, MemoryPath, MemoryOptions())
+}
+
+func validateMemoryOptions(options Options) error {
+	if !options.SingleConnection {
+		return errors.New("an in-memory database needs SingleConnection: every pooled connection to file::memory: gets its own private database")
+	}
+	switch strings.ToLower(options.File.JournalMode) {
+	case JournalMemory, JournalOff:
+		return nil
+	}
+	return fmt.Errorf("an in-memory database supports journal_mode %s or %s, not %s", JournalMemory, JournalOff, options.File.JournalMode)
+}
+
 func configureConnection(ctx context.Context, conn driver.Conn, options Options) error {
 	execer, ok := conn.(driver.ExecerContext)
 	if !ok {
@@ -156,9 +197,18 @@ func configureConnection(ctx context.Context, conn driver.Conn, options Options)
 					return err
 				}
 			}
+		} else {
+			current, err := driverQueryString(ctx, queryer, "PRAGMA journal_mode")
+			if err != nil {
+				return err
+			}
+			currentIsWAL := strings.EqualFold(current, JournalWAL)
+			wantWAL := strings.EqualFold(options.File.JournalMode, JournalWAL)
+			if currentIsWAL != wantWAL {
+				return fmt.Errorf("existing database does not match the requested file settings: journal_mode want %s got %s (Open does not convert an existing database into or out of WAL)",
+					strings.ToLower(options.File.JournalMode), strings.ToLower(current))
+			}
 		}
-		// Run journal_mode on every connection: WAL persists in the file header,
-		// whereas rollback modes (DELETE, TRUNCATE, PERSIST, MEMORY, OFF) apply per connection.
 		mode, err := driverQueryString(ctx, queryer, options.File.journalPragma())
 		if err != nil {
 			return err
@@ -228,20 +278,24 @@ func driverQueryString(ctx context.Context, queryer driver.QueryerContext, query
 
 func readConnSettings(ctx context.Context, queryInt func(string) (int64, error)) (ConnSettings, error) {
 	var settings ConnSettings
-	values := map[string]*int64{}
 	var synchronous, foreignKeys, secureDelete, cacheSize, autocheckpoint, busyTimeout int64
-	values["PRAGMA synchronous"] = &synchronous
-	values["PRAGMA foreign_keys"] = &foreignKeys
-	values["PRAGMA secure_delete"] = &secureDelete
-	values["PRAGMA cache_size"] = &cacheSize
-	values["PRAGMA wal_autocheckpoint"] = &autocheckpoint
-	values["PRAGMA busy_timeout"] = &busyTimeout
-	for query, target := range values {
-		value, err := queryInt(query)
+	queries := []struct {
+		query  string
+		target *int64
+	}{
+		{"PRAGMA synchronous", &synchronous},
+		{"PRAGMA foreign_keys", &foreignKeys},
+		{"PRAGMA secure_delete", &secureDelete},
+		{"PRAGMA cache_size", &cacheSize},
+		{"PRAGMA wal_autocheckpoint", &autocheckpoint},
+		{"PRAGMA busy_timeout", &busyTimeout},
+	}
+	for _, q := range queries {
+		value, err := queryInt(q.query)
 		if err != nil {
 			return settings, err
 		}
-		*target = value
+		*q.target = value
 	}
 	settings.Synchronous = synchronousName(synchronous)
 	settings.ForeignKeys = foreignKeys == 1

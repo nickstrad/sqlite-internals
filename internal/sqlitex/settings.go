@@ -168,6 +168,9 @@ func (c ConnSettings) Validate() error {
 	if c.BusyTimeout < 0 {
 		return fmt.Errorf("busy timeout %v is negative", c.BusyTimeout)
 	}
+	if c.BusyTimeout%time.Millisecond != 0 {
+		return fmt.Errorf("busy timeout %v is not a whole number of milliseconds (PRAGMA busy_timeout takes milliseconds)", c.BusyTimeout)
+	}
 	if c.WALAutocheckpoint < 0 {
 		return fmt.Errorf("wal_autocheckpoint %d is negative", c.WALAutocheckpoint)
 	}

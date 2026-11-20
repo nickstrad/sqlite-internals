@@ -148,6 +148,10 @@ func Backup(ctx context.Context, source *sql.Conn, destinationPath string, pages
 			return err
 		}
 		for {
+			if err := ctx.Err(); err != nil {
+				backup.Finish()
+				return err
+			}
 			more, stepErr := backup.Step(int32(pagesPerStep))
 			if stepErr != nil {
 				backup.Finish()

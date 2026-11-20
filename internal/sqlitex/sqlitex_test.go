@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"testing"
@@ -127,8 +130,14 @@ func TestRollbackJournalModeIsPerConnection(t *testing.T) {
 	options.File.JournalMode = JournalTruncate
 	db := openTest(t, options)
 	db.SetMaxOpenConns(2)
-	a, _ := db.Conn(ctx)
-	b, _ := db.Conn(ctx)
+	a, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer a.Close()
 	defer b.Close()
 	for _, conn := range []*sql.Conn{a, b} {
@@ -229,7 +238,10 @@ func TestRawWrappers(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer memory.Close()
-	memoryConn, _ := memory.Conn(ctx)
+	memoryConn, err := memory.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer memoryConn.Close()
 	if err := Deserialize(ctx, memoryConn, image); err != nil {
 		t.Fatal(err)
@@ -244,7 +256,10 @@ func TestRawWrappers(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer second.Close()
-	secondConn, _ := second.Conn(ctx)
+	secondConn, err := second.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer secondConn.Close()
 	if err := Deserialize(ctx, secondConn, rollbackImage); err != nil {
 		t.Fatal(err)
@@ -257,7 +272,10 @@ func TestRawWrappers(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer restored.Close()
-	restoredConn, _ := restored.Conn(ctx)
+	restoredConn, err := restored.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer restoredConn.Close()
 	if err := Restore(ctx, restoredConn, filepath.Join(dir, "copy.db")); err != nil {
 		t.Fatal(err)
@@ -283,7 +301,9 @@ func TestBusyErrorCode(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer second.Close()
-	first.Exec("CREATE TABLE t(x)")
+	if _, err := first.Exec("CREATE TABLE t(x)"); err != nil {
+		t.Fatal(err)
+	}
 	tx, err := first.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -312,7 +332,9 @@ func TestWorkDir(t *testing.T) {
 	if dir != filepath.Join(base, "1.2") {
 		t.Fatalf("dir %s", dir)
 	}
-	os.WriteFile(filepath.Join(dir, "stale"), []byte("x"), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "stale"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	dir, err = WorkDir("1.2")
 	if err != nil {
 		t.Fatal(err)
@@ -351,7 +373,9 @@ func TestFileURIEscapes(t *testing.T) {
 		t.Fatalf("uri %s", uri)
 	}
 	dir := filepath.Join(t.TempDir(), "odd ?#% name")
-	os.MkdirAll(dir, 0o755)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	db, err := OpenDefault(context.Background(), filepath.Join(dir, "x.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -370,7 +394,9 @@ func TestLocateCLIRespectsEnvAndPin(t *testing.T) {
 		t.Fatal("missing $SQLITE3_BIN accepted")
 	}
 	fake := filepath.Join(t.TempDir(), "sqlite3")
-	os.WriteFile(fake, []byte("#!/bin/sh\necho '2000-01-01 00:00:00 notthepin'\n"), 0o755)
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\necho '2000-01-01 00:00:00 notthepin'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv(CLIEnv, fake)
 	if _, err := LocateCLI(ctx); err == nil {
 		t.Fatal("wrong source id accepted")
@@ -411,5 +437,223 @@ func TestConcurrentOpenOfNewDatabase(t *testing.T) {
 	close(errs)
 	for err := range errs {
 		t.Error(err)
+	}
+}
+
+func TestCLIExecQuotesAwkwardPaths(t *testing.T) {
+	cli, err := LocateCLI(context.Background())
+	if err != nil {
+		t.Skipf("no pinned CLI here: %v", err)
+	}
+	for _, name := range []string{`o'brien`, `two words`, `back\slash`, `dq"uote`, "new\nline", `mix ' " \ end`} {
+		dir := filepath.Join(t.TempDir(), name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, "t.db")
+		out, err := cli.Exec(context.Background(), path, "CREATE TABLE t(x); INSERT INTO t VALUES(42); SELECT x FROM t;")
+		if err != nil || strings.TrimSpace(out) != "42" {
+			t.Fatalf("%q: exec %q %v", name, out, err)
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("%q: %v", name, err)
+		}
+	}
+}
+
+func TestOpenScriptQuoting(t *testing.T) {
+	got := OpenScript(`/a'b/c"d\e`+"\n"+`f.db`, "SELECT 1;")
+	want := `.open --normal "/a'b/c\"d\\e\nf.db"` + "\nSELECT 1;"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestMemoryPathNeverCreatesAFile(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if _, err := FileURI(MemoryPath, nil); err == nil {
+		t.Fatal("FileURI accepted :memory:")
+	}
+	if db, err := OpenDefault(ctx, MemoryPath); err == nil {
+		db.Close()
+		t.Fatal("OpenDefault(:memory:) accepted WAL on an in-memory database")
+	}
+	options := MemoryOptions()
+	options.SingleConnection = false
+	if _, err := Open(ctx, MemoryPath, options); err == nil {
+		t.Fatal("pooled in-memory database accepted")
+	}
+	db, err := OpenMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("CREATE TABLE t(x); INSERT INTO t VALUES(1)"); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := db.QueryRow("SELECT count(*) FROM t").Scan(&count); err != nil || count != 1 {
+		t.Fatalf("count %d %v", count, err)
+	}
+	settings, err := ReadFileSettings(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.JournalMode != JournalMemory || settings.ApplicationID != CourseApplicationID || settings.PageSize != 4096 {
+		t.Fatalf("in-memory settings %s", settings)
+	}
+	if err := WritePinCheck(ctx, io.Discard, db); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("in-memory open left files behind: %v", entries)
+	}
+}
+
+func TestExistingWALDatabaseIsNotConverted(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "w.db")
+	db, err := OpenDefault(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("CREATE TABLE t(x)"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	for _, mode := range []string{JournalDelete, JournalTruncate, JournalPersist, JournalMemory, JournalOff} {
+		options := DefaultOptions()
+		options.File.JournalMode = mode
+		if db, err := Open(ctx, path, options); err == nil {
+			db.Close()
+			t.Fatalf("%s: existing WAL database opened without a mismatch error", mode)
+		} else if !strings.Contains(err.Error(), "journal_mode want "+mode+" got wal") {
+			t.Fatalf("%s: %v", mode, err)
+		}
+		header, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if header[18] != 2 || header[19] != 2 {
+			t.Fatalf("%s: header bytes 18-19 changed to %d %d", mode, header[18], header[19])
+		}
+	}
+}
+
+func TestExistingRollbackDatabaseIsNotConvertedToWAL(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "r.db")
+	options := DefaultOptions()
+	options.File.JournalMode = JournalDelete
+	db, err := Open(ctx, path, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("CREATE TABLE t(x)"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if db, err := OpenDefault(ctx, path); err == nil {
+		db.Close()
+		t.Fatal("existing rollback database converted to WAL")
+	}
+	options.File.JournalMode = JournalTruncate
+	db, err = Open(ctx, path, options)
+	if err != nil {
+		t.Fatalf("switching between rollback modes: %v", err)
+	}
+	db.Close()
+	header, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if header[18] != 1 || header[19] != 1 {
+		t.Fatalf("header bytes 18-19 %d %d", header[18], header[19])
+	}
+}
+
+func TestSubMillisecondBusyTimeoutRejected(t *testing.T) {
+	settings := DefaultConnSettings()
+	settings.BusyTimeout = 1500 * time.Microsecond
+	if err := settings.Validate(); err == nil {
+		t.Fatal("sub-millisecond busy timeout accepted")
+	}
+	options := DefaultOptions()
+	options.Conn.BusyTimeout = 500 * time.Microsecond
+	if _, err := Open(context.Background(), filepath.Join(t.TempDir(), "b.db"), options); err == nil || !strings.Contains(err.Error(), "whole number of milliseconds") {
+		t.Fatalf("Open: %v", err)
+	}
+}
+
+func TestReadOnlyOpen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "ro.db")
+	db, err := OpenDefault(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("CREATE TABLE t(x); INSERT INTO t VALUES(7)"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	options := DefaultOptions()
+	options.ReadOnly = true
+	ro, err := Open(ctx, path, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro.Close()
+	var x int
+	if err := ro.QueryRow("SELECT x FROM t").Scan(&x); err != nil || x != 7 {
+		t.Fatalf("read %d %v", x, err)
+	}
+	if _, err := ro.Exec("INSERT INTO t VALUES(8)"); err == nil {
+		t.Fatal("write through a read-only handle succeeded")
+	}
+}
+
+func TestDriverModuleVersionCheck(t *testing.T) {
+	if err := CheckDriverModules(); err != nil {
+		t.Fatal(err)
+	}
+	pin := sqlite.Current()
+	good := []*debug.Module{{Path: pin.DriverModule, Version: pin.DriverVersion}, {Path: pin.LibcModule, Version: pin.LibcVersion}}
+	if err := checkModuleVersions(good, pin); err != nil {
+		t.Fatal(err)
+	}
+	older := []*debug.Module{{Path: pin.DriverModule, Version: "v1.58.0"}, {Path: pin.LibcModule, Version: pin.LibcVersion}}
+	var mismatch *DriverModuleMismatchError
+	if err := checkModuleVersions(older, pin); !errors.As(err, &mismatch) || mismatch.Got != "v1.58.0" {
+		t.Fatalf("older driver: %v", err)
+	}
+	replaced := []*debug.Module{{Path: pin.DriverModule, Version: pin.DriverVersion, Replace: &debug.Module{Path: "../fork"}}, {Path: pin.LibcModule, Version: pin.LibcVersion}}
+	if err := checkModuleVersions(replaced, pin); err == nil {
+		t.Fatal("locally replaced driver accepted")
+	}
+	if err := checkModuleVersions(good[:1], pin); err == nil {
+		t.Fatal("missing libc module accepted")
+	}
+}
+
+func TestBackupStopsOnCancelledContext(t *testing.T) {
+	db := openTest(t, DefaultOptions())
+	if _, err := db.Exec("CREATE TABLE t(x); INSERT INTO t VALUES(1)"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	cancel()
+	if _, err := Backup(ctx, conn, filepath.Join(t.TempDir(), "copy.db"), 1, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("backup with a cancelled context: %v", err)
 	}
 }

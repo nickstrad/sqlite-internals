@@ -2,9 +2,11 @@ package sqlitex
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 
 	"github.com/nickstrad/sqlite-internals/sqlite"
 )
@@ -36,7 +38,64 @@ func CheckPin(ctx context.Context, q Querier) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return id, CheckSourceID("the Go driver", id)
+	if err := CheckSourceID("the Go driver", id); err != nil {
+		return id, err
+	}
+	return id, CheckDriverModules()
+}
+
+type DriverModuleMismatchError struct {
+	Module string
+	Got    string
+	Want   string
+}
+
+func (e *DriverModuleMismatchError) Error() string {
+	return fmt.Sprintf("this binary links %s %s, the pin is %s", e.Module, e.Got, e.Want)
+}
+
+func CheckDriverModules() error {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return errors.New("cannot read this binary's build info to verify the pinned driver modules")
+	}
+	if len(info.Deps) == 0 {
+		return nil
+	}
+	return checkModuleVersions(info.Deps, sqlite.Current())
+}
+
+func checkModuleVersions(deps []*debug.Module, pin sqlite.Pin) error {
+	wanted := []struct{ module, version string }{
+		{pin.DriverModule, pin.DriverVersion},
+		{pin.LibcModule, pin.LibcVersion},
+	}
+	for _, want := range wanted {
+		if want.module == "" {
+			continue
+		}
+		got, found := moduleVersion(deps, want.module)
+		if !found {
+			return &DriverModuleMismatchError{Module: want.module, Got: "(not linked)", Want: want.version}
+		}
+		if got != want.version {
+			return &DriverModuleMismatchError{Module: want.module, Got: got, Want: want.version}
+		}
+	}
+	return nil
+}
+
+func moduleVersion(deps []*debug.Module, path string) (string, bool) {
+	for _, dep := range deps {
+		if dep.Path != path {
+			continue
+		}
+		if dep.Replace != nil {
+			return dep.Replace.Version, true
+		}
+		return dep.Version, true
+	}
+	return "", false
 }
 
 // CheckSourceID compares id against sqlite.Current().SourceID and returns a
@@ -68,7 +127,10 @@ func WritePinCheck(ctx context.Context, w io.Writer, q Querier) error {
 		return err
 	}
 	fmt.Fprintln(w, PinLine(id))
-	return CheckSourceID("the Go driver", id)
+	if err := CheckSourceID("the Go driver", id); err != nil {
+		return err
+	}
+	return CheckDriverModules()
 }
 
 // MustPinCheck writes the pin check line to stdout and exits 1 if q does not
