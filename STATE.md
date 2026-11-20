@@ -8,7 +8,7 @@ can be remade as needed; state capture and deterministic rebuild is the through-
 Plan: OUTLINE.md (revision 2). What changed from revision 1: OUTLINE-CHANGES.md.
 
 Status: **Phase 2 (build) IN PROGRESS** since 2026-11-20. Nick signed off OUTLINE.md revision 2
-with rulings (OUTLINE.md section 8). Chunk 0 (foundation) is building.
+with rulings (OUTLINE.md section 8). Chunk 0 landed; chapter 1 is in its Neon passes.
 
 Rulings applied (details: OUTLINE.md section 8):
 - Upstream github.com/nickstrad/sqlite-internals (public); every chunk lands on main and is pushed.
@@ -46,17 +46,21 @@ Chunk status (build → Neon prose → Neon review → repair → re-review → 
 
 | Chunk | State | Review | Adversarial | Landed |
 | --- | --- | --- | --- | --- |
-| 0 foundation | Opus build running | – | – | – |
-| 1, 2, 3, 4, 5, 7, 6, 8, 9, 10a, 10b, publishing | not started | | | |
+| 0 foundation | done | Neon FAIL → repair → PASS | 38 held / 0 broken | merged cf58cb8 |
+| 1 chapter 1 | built (563721c); Neon prose, review, adversarial running | review 1: FAIL | – | – |
+| 2, 3, 4, 5, 7, 6, 8, 9, 10a, 10b, publishing | not started | | | |
 
-In progress: chunk 0 Opus build, worktree `../sqlite-internals-work/ch00`, branch `chunk/ch00`.
+In progress: chapter 1, worktree `../sqlite-internals-work/ch01`, branch `chunk/ch01` (based on
+the pre-repair chunk 0 build; merge main into it before its repair round).
 
-Next steps: finish the chunk 0 chain and land it; then chunks in OUTLINE.md section 6 order.
+Next steps: finish and land chapter 1; then chapter 2; then 3, 4, 5, 7 in parallel; 6, 8; 9;
+10a; 10b; publishing.
 
 Open decisions / blockers:
 - Nick or Twin: the Claude sign-in on the build VM ends between 2026-11-25 and 2026-11-28.
-- Neon budget: OpenRouter key had $44.14 left at Phase 2 start (resets 2026-12-01); the direct
-  Gemini key is the fallback route.
+- Neon budget: the OpenRouter key (shared with other projects) had $44.14 at Phase 2 start and
+  $24 after chunk 0 (about $9 per chunk); when it runs out `agent_work/neon/neon-run.sh` falls
+  back to the direct Gemini key (smoke-tested 2026-11-20).
 
 Resume: read this file, OUTLINE.md (section 8 first), then `git log` and `git worktree list`.
 Each run is launched with `agent_work/orch/launch.sh <name> <worktree> <opus|neon> <brief>`;

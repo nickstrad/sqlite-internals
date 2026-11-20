@@ -65,3 +65,14 @@ has a row here. Nothing lives only in /tmp or a shell history.
 
 Per-chunk working scripts are indexed in `agent_work/chNN/INDEX.md`; adversarial scripts in
 `agent_work/chNN/adversarial/`.
+| `orch/mkbrief.sh` | Render a Neon brief (prose, review, re-review, adversarial, finalize) or an Opus repair brief from the templates | all | Fable orchestrator, 2026-11-20 | Used for every chunk's Neon and repair runs |
+| `orch/knowledge.sh` | Publish a landed chunk's findings to `docs/knowledge/` (in-repo kb index) and to the build machine's kb store | knowledge (ruling 6) | Fable orchestrator, 2026-11-20 | One entry per landed chunk in both stores |
+| `verify/crossbuild.sh` | linux build+vet+test, darwin/arm64 and darwin/amd64 build+vet, gofmt | all (ruling 4) | Opus builder chunk 0, 2026-11-20 | Run at every chunk acceptance |
+| `probes/vfs-viability/` | Is a custom VFS possible on modernc v1.60.1 without cgo? | 7 | Opus builder chunk 0, 2026-11-20 | Yes: writable forwarding VFS in pure Go; read-only `fs.FS` VFS; see RESULT.md |
+| `probes/seaweedfs-s3/` | SeaweedFS 4.48 S3 semantics (conditional put, listing, read-after-write) and Go client choice | 10 | Opus builder chunk 0, 2026-11-20 | See RESULT.md; aws-sdk-go-v2 chosen |
+
+## Per-chunk working files
+
+| Chunk | Index | Review | Adversarial |
+| --- | --- | --- | --- |
+| 0 foundation | [ch00/INDEX.md](ch00/INDEX.md) | [REVIEW-1](ch00/REVIEW-1.md) FAIL → [REVIEW-2](ch00/REVIEW-2.md) PASS | [RESULTS](ch00/adversarial/RESULTS.md): 38 held, 0 broken after repair |
