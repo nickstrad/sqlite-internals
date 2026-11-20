@@ -1,0 +1,27 @@
+FROM golang:1.26-bookworm
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends strace build-essential git \
+ && rm -rf /var/lib/apt/lists/* \
+ && git config --system safe.directory '*'
+
+ENV GOTOOLCHAIN=local \
+    GOFLAGS=-buildvcs=false
+
+WORKDIR /opt/course-bootstrap
+COPY go.mod go.sum ./
+RUN go mod download
+COPY sqlite ./sqlite
+COPY internal/sqlitex ./internal/sqlitex
+COPY internal/repocheck ./internal/repocheck
+COPY cmd/course ./cmd/course
+RUN go run ./cmd/course fetch-source -dest /opt/sqlite-src \
+ && COURSE_TOOLS_DIR=/opt/course-tools SQLITE_SRC=/opt/sqlite-src go run ./cmd/course build-tools \
+ && rm -rf /opt/course-tools/build /opt/sqlite-src/.git /opt/course-bootstrap
+
+ENV SQLITE_SRC=/opt/sqlite-src \
+    COURSE_TOOLS_DIR=/opt/course-tools \
+    COURSE_WORK_DIR=/work
+
+WORKDIR /src
+CMD ["bash"]

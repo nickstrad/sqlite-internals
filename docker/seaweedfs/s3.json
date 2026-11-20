@@ -1,0 +1,11 @@
+{
+  "identities": [
+    {
+      "name": "course",
+      "credentials": [
+        { "accessKey": "course", "secretKey": "course-secret" }
+      ],
+      "actions": ["Admin", "Read", "List", "Tagging", "Write"]
+    }
+  ]
+}
