@@ -35,6 +35,7 @@ const (
 	minPageSize        = 512
 	maxPageSize        = 65536
 	superJournalFooter = 16
+	maxSuperJournalLen = 512
 )
 
 // HeaderState classifies the 28-byte header at the start of a journal segment.
@@ -189,6 +190,12 @@ func Parse(data []byte) (*Journal, error) {
 		return j, nil
 	}
 	sector := int64(first.SectorSize)
+	if end < sector {
+		first.State = HeaderMissing
+		j.Segments = append(j.Segments, Segment{Header: first})
+		j.TrailingByte = end
+		return j, nil
+	}
 	pageSize := int64(first.PageSize)
 	recordSize := pageSize + RecordOverhead
 	offset := int64(0)
@@ -296,18 +303,21 @@ func superJournalName(data []byte) (string, int64, bool) {
 	length := int64(binary.BigEndian.Uint32(data[size-16 : size-12]))
 	stored := binary.BigEndian.Uint32(data[size-12 : size-8])
 	nameStart := size - superJournalFooter - length
-	if length <= 0 || nameStart < 4 {
+	if length <= 0 || length > maxSuperJournalLen || nameStart < 4 {
 		return "", 0, false
 	}
 	name := data[nameStart : size-superJournalFooter]
 	var sum uint32
 	for _, b := range name {
-		sum += uint32(b)
+		sum += uint32(int8(b))
 	}
-	if sum != stored {
+	if sum != stored || name[0] == 0 {
 		return "", 0, false
 	}
-	return string(bytes.TrimRight(name, "\x00")), nameStart - 4, true
+	if nul := bytes.IndexByte(name, 0); nul >= 0 {
+		name = name[:nul]
+	}
+	return string(name), nameStart - 4, true
 }
 
 func validGeometry(sector, pageSize uint32) bool {
@@ -368,6 +378,18 @@ func (j *Journal) ChecksumFailures() int {
 // SQLite will restore and what page count it will truncate the database to.
 func (j *Journal) Playback() PlaybackOutcome {
 	outcome := PlaybackOutcome{Hot: j.LooksHot()}
+	if outcome.Hot && j.SuperJournal != "" {
+		outcome.StopReason = fmt.Sprintf("names super-journal %q: nothing is played back unless that file exists (see PlaybackIfSuperJournalExists)", j.SuperJournal)
+		return outcome
+	}
+	return j.playback(outcome)
+}
+
+func (j *Journal) PlaybackIfSuperJournalExists() PlaybackOutcome {
+	return j.playback(PlaybackOutcome{Hot: j.LooksHot()})
+}
+
+func (j *Journal) playback(outcome PlaybackOutcome) PlaybackOutcome {
 	if !outcome.Hot {
 		outcome.StopReason = "not hot: empty file or first byte is zero"
 		return outcome

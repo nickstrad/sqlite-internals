@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
@@ -270,7 +271,6 @@ func liveJournal(t *testing.T, synchronous string) (*Journal, []byte, uint32) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
 	if _, err := db.ExecContext(ctx, "CREATE TABLE t(id INTEGER PRIMARY KEY, v BLOB); WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 40) INSERT INTO t SELECT i, zeroblob(900) FROM n"); err != nil {
 		t.Fatal(err)
 	}
@@ -278,10 +278,18 @@ func liveJournal(t *testing.T, synchronous string) (*Journal, []byte, uint32) {
 	if err := db.QueryRowContext(ctx, "PRAGMA page_count").Scan(&pages); err != nil {
 		t.Fatal(err)
 	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
 	before, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	db, err = sqlitex.Open(ctx, path, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -332,5 +340,155 @@ func TestLiveJournalOfAnOpenTransaction(t *testing.T) {
 				t.Fatal("an unsynced journal must not look hot")
 			}
 		})
+	}
+}
+
+func syncedHeaderOnly(size int, magic bool) []byte {
+	b := &builder{}
+	records := uint32(0)
+	if magic {
+		records = 1
+	}
+	b.header(0, magic, records, 0x12345678, 1)
+	return b.data[:size]
+}
+
+func TestJournalShorterThanItsFirstSector(t *testing.T) {
+	for _, tc := range []struct {
+		size  int
+		magic bool
+	}{{100, true}, {28, false}, {28, true}, {testSector - 1, true}} {
+		j, _ := Parse(syncedHeaderOnly(tc.size, tc.magic))
+		h := j.Segments[0].Header
+		if h.State != HeaderMissing || j.TrailingByte != int64(tc.size) || j.RecordsPresent() != 0 {
+			t.Fatalf("size %d: header %+v trailing %d", tc.size, h, j.TrailingByte)
+		}
+		if p := j.Playback(); p.TruncateTo != 0 || len(p.Pages) != 0 {
+			t.Fatalf("size %d: playback %+v", tc.size, p)
+		}
+	}
+	j, _ := Parse(syncedHeaderOnly(testSector, true))
+	if j.Segments[0].Header.State != HeaderSynced || j.TrailingByte != 0 || j.Playback().TruncateTo != 1 {
+		t.Fatalf("full sector: %+v trailing %d", j.Segments[0].Header, j.TrailingByte)
+	}
+}
+
+func TestTrailingByteNeverNegative(t *testing.T) {
+	b := &builder{}
+	b.header(0, true, 2, 9, 4)
+	b.record(2, 1, 9, false)
+	b.record(3, 2, 9, false)
+	b.header(roundUpInt(len(b.data), testSector), true, 1, 9, 4)
+	b.record(4, 3, 9, false)
+	for size := 0; size <= len(b.data); size++ {
+		j, _ := Parse(b.data[:size])
+		if j.TrailingByte < 0 || j.TrailingByte > int64(size) {
+			t.Fatalf("size %d: trailing %d", size, j.TrailingByte)
+		}
+	}
+}
+
+func roundUpInt(n, unit int) int {
+	return (n + unit - 1) / unit * unit
+}
+
+func superJournalFooterBytes(name []byte, sum uint32) []byte {
+	out := binary.BigEndian.AppendUint32(nil, SuperJournalPage(testPageSize))
+	out = append(out, name...)
+	out = binary.BigEndian.AppendUint32(out, uint32(len(name)))
+	out = binary.BigEndian.AppendUint32(out, sum)
+	return append(out, Magic[:]...)
+}
+
+func signedSum(name []byte) uint32 {
+	var sum uint32
+	for _, c := range name {
+		sum += uint32(int8(c))
+	}
+	return sum
+}
+
+func TestSuperJournalChecksumUsesSignedBytes(t *testing.T) {
+	name := []byte("/tmp/caf\xc3\xa9/a.db-mjF47C1696E")
+	b := &builder{}
+	b.header(0, true, 1, 3, 2)
+	b.record(1, 1, 3, false)
+	b.data = append(b.data, superJournalFooterBytes(name, signedSum(name))...)
+	j, _ := Parse(b.data)
+	if j.SuperJournal != string(name) || j.RecordsPresent() != 1 || j.TrailingByte != 0 {
+		t.Fatalf("super %q present %d trailing %d", j.SuperJournal, j.RecordsPresent(), j.TrailingByte)
+	}
+	var unsigned uint32
+	for _, c := range name {
+		unsigned += uint32(c)
+	}
+	b2 := &builder{}
+	b2.header(0, true, 1, 3, 2)
+	b2.record(1, 1, 3, false)
+	b2.data = append(b2.data, superJournalFooterBytes(name, unsigned)...)
+	if j, _ := Parse(b2.data); j.SuperJournal != "" {
+		t.Fatalf("an unsigned-byte checksum must not be accepted, got %q", j.SuperJournal)
+	}
+}
+
+func TestSqliteWrittenSuperJournalChecksum(t *testing.T) {
+	name := []byte("/tmp/opencode/caf\xc3\xa9-f_6pfgpk/a.db-mjF47C1696E")
+	if len(name) != 45 || signedSum(name) != 0x0d98 {
+		t.Fatalf("len %d sum %#x", len(name), signedSum(name))
+	}
+	b := &builder{}
+	b.header(0, true, 1, 3, 2)
+	b.record(1, 1, 3, false)
+	b.data = append(b.data, superJournalFooterBytes(name, 0x0d98)...)
+	if j, _ := Parse(b.data); j.SuperJournal != string(name) {
+		t.Fatalf("got %q", j.SuperJournal)
+	}
+}
+
+func TestSuperJournalNameStartingWithNulIsIgnored(t *testing.T) {
+	name := []byte{0, 0, 0, 0}
+	b := &builder{}
+	b.header(0, true, 1, 3, 2)
+	b.record(1, 1, 3, false)
+	recordsEnd := len(b.data)
+	b.data = append(b.data, superJournalFooterBytes(name, 0)...)
+	j, _ := Parse(b.data)
+	if j.SuperJournal != "" || j.TrailingByte != int64(len(b.data)-recordsEnd) {
+		t.Fatalf("super %q trailing %d", j.SuperJournal, j.TrailingByte)
+	}
+}
+
+func TestSuperJournalNameTooLongIsIgnored(t *testing.T) {
+	name := bytes.Repeat([]byte{'a'}, 513)
+	b := &builder{}
+	b.header(0, true, 1, 3, 2)
+	b.record(1, 1, 3, false)
+	b.data = append(b.data, superJournalFooterBytes(name, signedSum(name))...)
+	if j, _ := Parse(b.data); j.SuperJournal != "" {
+		t.Fatalf("got %q", j.SuperJournal)
+	}
+	name = name[:512]
+	b2 := &builder{}
+	b2.header(0, true, 1, 3, 2)
+	b2.record(1, 1, 3, false)
+	b2.data = append(b2.data, superJournalFooterBytes(name, signedSum(name))...)
+	if j, _ := Parse(b2.data); j.SuperJournal != string(name) {
+		t.Fatalf("512-byte name rejected")
+	}
+}
+
+func TestPlaybackWithSuperJournalIsConditional(t *testing.T) {
+	name := []byte("db-mj0123")
+	b := &builder{}
+	b.header(0, true, 1, 3, 2)
+	b.record(1, 1, 3, false)
+	b.data = append(b.data, superJournalFooterBytes(name, signedSum(name))...)
+	j, _ := Parse(b.data)
+	p := j.Playback()
+	if !p.Hot || len(p.Pages) != 0 || p.TruncateTo != 0 || !strings.Contains(p.StopReason, "db-mj0123") {
+		t.Fatalf("unconditional playback %+v", p)
+	}
+	if p := j.PlaybackIfSuperJournalExists(); !slices.Equal(p.Pages, []uint32{1}) || p.TruncateTo != 2 {
+		t.Fatalf("conditional playback %+v", p)
 	}
 }
