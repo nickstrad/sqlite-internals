@@ -97,6 +97,9 @@ func copyOne(from, to string) (int64, error) {
 // source file to its destination without opening those files in the parent
 // process that holds live SQLite connections.
 func CopyLiveFiles(ctx context.Context, pairs []CopyPair) ([]CopyResult, error) {
+	if len(pairs) == 0 {
+		return nil, nil
+	}
 	executable, err := os.Executable()
 	if err != nil {
 		return nil, err
@@ -177,6 +180,8 @@ func ReadLiveState(ctx context.Context, database, scratchDirectory string) (Live
 	if err != nil {
 		return LiveState{}, err
 	}
+	defer os.Remove(walCopy)
+	defer os.Remove(indexCopy)
 	var state LiveState
 	if results[0].Present {
 		state.WALPresent = true

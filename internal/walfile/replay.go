@@ -94,6 +94,9 @@ func basePageSize(base []byte) (int, error) {
 	if size == 1 {
 		size = 65536
 	}
+	if size < MinPageSize || size > MaxPageSize || size&(size-1) != 0 {
+		return 0, fmt.Errorf("%w: header page size field %d", ErrBaseNotDatabase, size)
+	}
 	return size, nil
 }
 
@@ -153,16 +156,16 @@ func Replay(base, wal []byte) ([]byte, ReplayReport, error) {
 	report.Transactions = len(file.Commits())
 	report.DatabasePages = file.DatabasePages()
 	report.Ignored = ignoredGroups(file)
+	walPageSize := file.PageSize()
+	if len(base) > 0 && walPageSize != 0 && pageSize != walPageSize {
+		return nil, report, fmt.Errorf("%w: base %d, WAL %d", ErrPageSizeMismatch, pageSize, walPageSize)
+	}
+	if sizeUnit := max(walPageSize, pageSize); sizeUnit != 0 && len(base)%sizeUnit != 0 {
+		return nil, report, fmt.Errorf("%w: %d bytes, page size %d", ErrBaseSize, len(base), sizeUnit)
+	}
 	if file.LastCommitFrame == 0 {
 		report.OutputBytes = int64(len(base))
 		return bytes.Clone(base), report, nil
-	}
-	walPageSize := file.PageSize()
-	if pageSize != 0 && pageSize != walPageSize {
-		return nil, report, fmt.Errorf("%w: base %d, WAL %d", ErrPageSizeMismatch, pageSize, walPageSize)
-	}
-	if len(base)%walPageSize != 0 {
-		return nil, report, fmt.Errorf("%w: %d bytes, page size %d", ErrBaseSize, len(base), walPageSize)
 	}
 	// Reject impossible commit sizes using walCheckpoint's exact bound
 	// (src/wal.c:2288-2293: base + 65536 for a possible pending-byte page +
@@ -219,7 +222,11 @@ func ReplayFiles(basePath, walPath, outPath string) (ReplayReport, error) {
 		return report, err
 	}
 	temp := outPath + ".replay-tmp"
-	if err := writeSynced(temp, out); err != nil {
+	f, err := os.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return report, err
+	}
+	if err := writeSynced(f, out); err != nil {
 		os.Remove(temp)
 		return report, err
 	}
@@ -230,11 +237,7 @@ func ReplayFiles(basePath, walPath, outPath string) (ReplayReport, error) {
 	return report, nil
 }
 
-func writeSynced(path string, data []byte) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-	if err != nil {
-		return err
-	}
+func writeSynced(f *os.File, data []byte) error {
 	if _, err := f.Write(data); err != nil {
 		f.Close()
 		return err

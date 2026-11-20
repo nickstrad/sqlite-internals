@@ -100,6 +100,9 @@ func (f *File) CompareWithShowwal(listing ShowwalListing) []string {
 		if i < f.ValidFrames && !s.ChecksumAgrees {
 			problems = append(problems, fmt.Sprintf("frame %d: walfile says valid, showwal computes checksum %s", w.Number, s.ExpectedChecksum))
 		}
+		if i == f.ValidFrames && w.Problem == FrameChecksumMismatch && s.ChecksumAgrees {
+			problems = append(problems, fmt.Sprintf("frame %d: walfile says checksum mismatch, showwal says the checksum agrees", w.Number))
+		}
 	}
 	return problems
 }

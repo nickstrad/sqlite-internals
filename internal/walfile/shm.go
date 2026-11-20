@@ -1,6 +1,7 @@
 package walfile
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"os"
@@ -136,7 +137,7 @@ func (x *Index) Header() IndexHeader { return x.Headers[0] }
 
 // HeadersAgree reports whether both WalIndexHdr copies in -shm are identical.
 func (x *Index) HeadersAgree() bool {
-	return x.Headers[0] == x.Headers[1]
+	return bytes.Equal(x.data[:IndexHeaderSize], x.data[IndexHeaderSize:IndexHeaderCopies*IndexHeaderSize])
 }
 
 // ByteOrderName returns "big-endian" or "little-endian" for the detected host
@@ -173,22 +174,40 @@ func ParseIndex(data []byte) (*Index, error) {
 		index.order = binary.BigEndian
 		index.BigEndian = true
 	case allZero(data[:IndexHeaderSize]):
-		index.order = binary.LittleEndian
+		second := data[IndexHeaderSize:]
+		switch {
+		case allZero(second[:IndexHeaderSize]):
+			index.order = binary.LittleEndian
+			return index, nil
+		case binary.LittleEndian.Uint32(second) == IndexFormatVersion:
+			index.order = binary.LittleEndian
+		case binary.BigEndian.Uint32(second) == IndexFormatVersion:
+			index.order = binary.BigEndian
+			index.BigEndian = true
+		default:
+			return nil, fmt.Errorf("%w: first header zero, second header word %08x", ErrIndexVersion, binary.BigEndian.Uint32(second))
+		}
+		index.decodeHeaderRegion()
 		return index, nil
 	default:
 		return nil, fmt.Errorf("%w: first word %08x", ErrIndexVersion, binary.BigEndian.Uint32(data))
 	}
 	index.Initialized = true
-	for i := range index.Headers {
-		index.Headers[i] = decodeIndexHeader(data[i*IndexHeaderSize:(i+1)*IndexHeaderSize], index.order, index.BigEndian)
+	index.decodeHeaderRegion()
+	return index, nil
+}
+
+func (x *Index) decodeHeaderRegion() {
+	data := x.data
+	for i := range x.Headers {
+		x.Headers[i] = decodeIndexHeader(data[i*IndexHeaderSize:(i+1)*IndexHeaderSize], x.order, x.BigEndian)
 	}
 	info := data[CheckpointInfoOffset:]
-	index.Checkpoint.Backfill = index.order.Uint32(info[0:])
-	for i := range index.Checkpoint.ReadMarks {
-		index.Checkpoint.ReadMarks[i] = index.order.Uint32(info[4+4*i:])
+	x.Checkpoint.Backfill = x.order.Uint32(info[0:])
+	for i := range x.Checkpoint.ReadMarks {
+		x.Checkpoint.ReadMarks[i] = x.order.Uint32(info[4+4*i:])
 	}
-	index.Checkpoint.BackfillAttempted = index.order.Uint32(info[32:])
-	return index, nil
+	x.Checkpoint.BackfillAttempted = x.order.Uint32(info[32:])
 }
 
 func decodeIndexHeader(raw []byte, order binary.ByteOrder, bigEndian bool) IndexHeader {
