@@ -702,3 +702,38 @@ func TestUnstampedEmptyDatabaseIsStampedButUsedOneIsNot(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDSNWithVFS(t *testing.T) {
+	o := DefaultOptions()
+	o.VFS = "unix-none"
+	dsn, err := DSN("/x/t.db", o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(dsn, "vfs=unix-none") || !strings.HasPrefix(dsn, "file:/x/t.db?") {
+		t.Fatal(dsn)
+	}
+	o.VFS = ""
+	dsn, err = DSN("/x/t.db", o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(dsn, "vfs=") {
+		t.Fatal(dsn)
+	}
+	dir := t.TempDir()
+	_, err = Open(context.Background(), filepath.Join(dir, "w.db"), Options{File: DefaultFileSettings(), Conn: DefaultConnSettings(), SingleConnection: true, VFS: "unix-dotfile"})
+	if err == nil || !strings.Contains(err.Error(), "SQLite reports delete") {
+		t.Fatalf("WAL through unix-dotfile: %v", err)
+	}
+	file := DefaultFileSettings()
+	file.JournalMode = JournalDelete
+	db, err := Open(context.Background(), filepath.Join(dir, "v.db"), Options{File: file, Conn: DefaultConnSettings(), SingleConnection: true, VFS: "unix-dotfile"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("CREATE TABLE t(x)"); err != nil {
+		t.Fatal(err)
+	}
+}

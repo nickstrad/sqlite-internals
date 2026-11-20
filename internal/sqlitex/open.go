@@ -75,6 +75,9 @@ func DSN(path string, options Options) (string, error) {
 	if options.ImmediateTx {
 		query.Set("_txlock", "immediate")
 	}
+	if options.VFS != "" {
+		query.Set("vfs", options.VFS)
+	}
 	if path == MemoryPath {
 		if options.ReadOnly {
 			return "", errors.New("an in-memory database cannot be opened read-only")
