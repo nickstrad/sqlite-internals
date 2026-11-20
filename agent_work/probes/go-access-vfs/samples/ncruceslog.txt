@@ -1,0 +1,117 @@
+SupportsSharedMemory: true SupportsFileLocking: true
+setup      xOpen("t.db", flags=0x146) -> err=<nil>
+setup      SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+setup      xRead(t.db, n=100, ofst=0) -> 0 EOF
+wal        xLock(t.db, 1) -> <nil>
+wal        xAccess("t.db-journal", 0) -> false <nil>
+wal        xAccess("t.db-wal", 0) -> false <nil>
+wal        xUnlock(t.db, 0) -> <nil>
+wal        xLock(t.db, 1) -> <nil>
+wal        xAccess("t.db-journal", 0) -> false <nil>
+wal        xRead(t.db, n=16, ofst=24) -> 0 EOF
+wal        xAccess("t.db-wal", 0) -> false <nil>
+wal        xLock(t.db, 2) -> <nil>
+wal        xLock(t.db, 4) -> <nil>
+wal        xOpen("t.db-journal", flags=0x806) -> err=<nil>
+wal        SharedMemory(t.db-journal) requested (xShmMap/xShmLock happen inside it, invisible here)
+wal        xWrite(t.db-journal, n=512, ofst=0) -> <nil>
+wal        xRead(t.db-journal, n=8, ofst=512) -> 0 EOF
+wal        xSync(t.db-journal, flags=0x2) -> <nil>
+wal        xWrite(t.db-journal, n=12, ofst=0) -> <nil>
+wal        xSync(t.db-journal, flags=0x2) -> <nil>
+wal        xWrite(t.db, n=4096, ofst=0) -> <nil>
+wal        xSync(t.db, flags=0x2) -> <nil>
+wal        xClose(t.db-journal) -> <nil>
+wal        xDelete("t.db-journal", syncDir=false) -> <nil>
+wal        xFileControl(t.db, COMMIT_PHASETWO)
+wal        xUnlock(t.db, 1) -> <nil>
+wal        xUnlock(t.db, 0) -> <nil>
+create     xLock(t.db, 1) -> <nil>
+create     xAccess("t.db-journal", 0) -> false <nil>
+create     xRead(t.db, n=16, ofst=24) -> 16 <nil>
+create     xAccess("t.db-wal", 0) -> false <nil>
+create     xOpen("t.db-wal", flags=0x80006) -> err=<nil>
+create     SharedMemory(t.db-wal) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     xRead(t.db, n=4096, ofst=0) -> 4096 <nil>
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     xWrite(t.db-wal, n=32, ofst=0) -> <nil>
+create     xSync(t.db-wal, flags=0x2) -> <nil>
+create     xWrite(t.db-wal, n=24, ofst=32) -> <nil>
+create     xWrite(t.db-wal, n=4096, ofst=56) -> <nil>
+create     xWrite(t.db-wal, n=24, ofst=4152) -> <nil>
+create     xWrite(t.db-wal, n=4096, ofst=4176) -> <nil>
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+create     xFileControl(t.db, COMMIT_PHASETWO)
+create     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+insert     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+insert     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+insert     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+insert     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+insert     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+insert     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+insert     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+insert     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+insert     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+insert     xWrite(t.db-wal, n=24, ofst=8272) -> <nil>
+insert     xWrite(t.db-wal, n=4096, ofst=8296) -> <nil>
+insert     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+insert     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+insert     xFileControl(t.db, COMMIT_PHASETWO)
+insert     SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+checkpoint SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+checkpoint SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+checkpoint SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+checkpoint SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+checkpoint SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+checkpoint SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+checkpoint xSync(t.db-wal, flags=0x2) -> <nil>
+checkpoint xFileControl(t.db, CKPT_START)
+checkpoint xRead(t.db-wal, n=4096, ofst=56) -> 4096 <nil>
+checkpoint xWrite(t.db, n=4096, ofst=0) -> <nil>
+checkpoint xRead(t.db-wal, n=4096, ofst=8296) -> 4096 <nil>
+checkpoint xWrite(t.db, n=4096, ofst=4096) -> <nil>
+checkpoint xFileControl(t.db, CKPT_DONE)
+checkpoint xTruncate(t.db, 8192) -> <nil>
+checkpoint xSync(t.db, flags=0x2) -> <nil>
+checkpoint SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+checkpoint SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+checkpoint SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+checkpoint nLog=3 nCkpt=3 err=<nil>
+close      xLock(t.db, 4) -> <nil>
+close      SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+close      SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+close      SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+close      SharedMemory(t.db) requested (xShmMap/xShmLock happen inside it, invisible here)
+close      xClose(t.db-wal) -> <nil>
+close      xDelete("t.db-wal", syncDir=false) -> <nil>
+close      xUnlock(t.db, 0) -> <nil>
+close      xClose(t.db) -> <nil>
+source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc

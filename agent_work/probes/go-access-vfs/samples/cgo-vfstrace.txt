@@ -1,0 +1,133 @@
+setup      trace.enabled_for("unix")
+setup      trace.xFullPathname("t.db") -> SQLITE_OK, out="t.db"
+setup      trace.xOpen(t.db,flags=0x106) -> SQLITE_OK, outFlags=0x106
+setup      trace.xDeviceCharacteristics(t.db) -> 0x00009000
+setup      trace.xDeviceCharacteristics(t.db) -> 0x00009000
+setup      trace.xFileControl(t.db,MMAP_SIZE,0) -> SQLITE_OK, 0
+setup      trace.xDeviceCharacteristics(t.db) -> 0x00009000
+setup      trace.xFileControl(t.db,MMAP_SIZE,0) -> SQLITE_OK, 0
+setup      trace.xRead(t.db,n=100,ofst=0) -> SQLITE_IOERR_SHORT_READ
+setup      trace.xFileControl(t.db,BUSYHANDLER) -> SQLITE_NOTFOUND
+setup      trace.xFileControl(t.db,MMAP_SIZE,0) -> SQLITE_OK, 0
+setup      trace.xFileControl(t.db,PDB) -> SQLITE_NOTFOUND
+wal        trace.xFileControl(t.db,PRAGMA,[journal_mode,wal]) -> SQLITE_NOTFOUND
+wal        trace.xLock(t.db,SHARED) -> SQLITE_OK
+wal        trace.xAccess("t.db-journal",0) -> SQLITE_OK, out=0
+wal        trace.xAccess("t.db-wal",0) -> SQLITE_OK, out=0
+wal        trace.xFileSize(t.db) -> SQLITE_OK, size=0
+wal        trace.xDeviceCharacteristics(t.db) -> 0x00009000
+wal        trace.xUnlock(t.db,NONE) -> SQLITE_OK
+wal        trace.xLock(t.db,SHARED) -> SQLITE_OK
+wal        trace.xAccess("t.db-journal",0) -> SQLITE_OK, out=0
+wal        trace.xRead(t.db,n=16,ofst=24) -> SQLITE_IOERR_SHORT_READ
+wal        trace.xAccess("t.db-wal",0) -> SQLITE_OK, out=0
+wal        trace.xFileSize(t.db) -> SQLITE_OK, size=0
+wal        trace.xLock(t.db,RESERVED) -> SQLITE_OK
+wal        trace.xLock(t.db,EXCLUSIVE) -> SQLITE_OK
+wal        trace.xOpen(t.db-journal,flags=0x806) -> SQLITE_OK
+wal        trace.xDeviceCharacteristics(t.db) -> 0x00009000
+wal        trace.xWrite(t.db-journal,n=512,ofst=0) -> SQLITE_OK
+wal        trace.xDeviceCharacteristics(t.db) -> 0x00009000
+wal        trace.xRead(t.db-journal,n=8,ofst=512) -> SQLITE_IOERR_SHORT_READ
+wal        trace.xSync(t.db-journal,FULL) -> 0
+wal        trace.xWrite(t.db-journal,n=12,ofst=0) -> SQLITE_OK
+wal        trace.xSync(t.db-journal,FULL) -> 0
+wal        trace.xFileControl(t.db,SIZE_HINT,4096) -> SQLITE_OK
+wal        trace.xWrite(t.db,n=4096,ofst=0) -> SQLITE_OK
+wal        trace.xFileControl(t.db,SYNC) -> SQLITE_NOTFOUND
+wal        trace.xSync(t.db,FULL) -> 0
+wal        trace.xClose(t.db-journal) -> SQLITE_OK
+wal        trace.xDelete("t.db-journal",0) -> SQLITE_OK
+wal        trace.xFileControl(t.db,COMMIT_PHASETWO) -> SQLITE_NOTFOUND
+wal        trace.xUnlock(t.db,SHARED) -> SQLITE_OK
+wal        trace.xDeviceCharacteristics(t.db) -> 0x00009000
+wal        trace.xUnlock(t.db,NONE) -> SQLITE_OK
+create     trace.xLock(t.db,SHARED) -> SQLITE_OK
+create     trace.xAccess("t.db-journal",0) -> SQLITE_OK, out=0
+create     trace.xRead(t.db,n=16,ofst=24) -> SQLITE_OK
+create     trace.xAccess("t.db-wal",0) -> SQLITE_OK, out=0
+create     trace.xFileSize(t.db) -> SQLITE_OK, size=4096
+create     trace.xOpen(t.db-wal,flags=0x80006) -> SQLITE_OK, outFlags=0x80006
+create     trace.xDeviceCharacteristics(t.db) -> 0x00009000
+create     trace.xFileControl(t.db,MMAP_SIZE,0) -> SQLITE_OK, 0
+create     trace.xShmMap(t.db,iRegion=0,szRegion=32768,isWrite=0,*) -> SQLITE_OK
+create     trace.xShmLock(t.db,ofst=0(WRITE),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+create     trace.xShmMap(t.db,iRegion=0,szRegion=32768,isWrite=2,*) -> SQLITE_OK
+create     trace.xShmBarrier(t.db)
+create     trace.xShmLock(t.db,ofst=1(CKPT),n=2,LOCK|EXCLUSIVE) -> SQLITE_OK
+create     trace.xFileSize(t.db-wal) -> SQLITE_OK, size=0
+create     trace.xShmBarrier(t.db)
+create     trace.xShmLock(t.db,ofst=4(READ1),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+create     trace.xShmLock(t.db,ofst=4(READ1),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+create     trace.xShmLock(t.db,ofst=5(READ2),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+create     trace.xShmLock(t.db,ofst=5(READ2),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+create     trace.xShmLock(t.db,ofst=6(READ3),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+create     trace.xShmLock(t.db,ofst=6(READ3),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+create     trace.xShmLock(t.db,ofst=7(READ4),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+create     trace.xShmLock(t.db,ofst=7(READ4),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+create     trace.xShmLock(t.db,ofst=1(CKPT),n=2,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+create     trace.xShmLock(t.db,ofst=0(WRITE),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+create     trace.xShmLock(t.db,ofst=3(READ0),n=1,LOCK|SHARED) -> SQLITE_OK
+create     trace.xShmBarrier(t.db)
+create     trace.xFileSize(t.db) -> SQLITE_OK, size=4096
+create     trace.xRead(t.db,n=4096,ofst=0) -> SQLITE_OK
+create     trace.xShmLock(t.db,ofst=0(WRITE),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+create     trace.xShmLock(t.db,ofst=3(READ0),n=1,UNLOCK|SHARED) -> SQLITE_OK
+create     trace.xShmLock(t.db,ofst=4(READ1),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+create     trace.xShmLock(t.db,ofst=4(READ1),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+create     trace.xShmLock(t.db,ofst=4(READ1),n=1,LOCK|SHARED) -> SQLITE_OK
+create     trace.xShmBarrier(t.db)
+create     trace.xWrite(t.db-wal,n=32,ofst=0) -> SQLITE_OK
+create     trace.xSync(t.db-wal,FULL) -> 0
+create     trace.xWrite(t.db-wal,n=24,ofst=32) -> SQLITE_OK
+create     trace.xWrite(t.db-wal,n=4096,ofst=56) -> SQLITE_OK
+create     trace.xWrite(t.db-wal,n=24,ofst=4152) -> SQLITE_OK
+create     trace.xWrite(t.db-wal,n=4096,ofst=4176) -> SQLITE_OK
+create     trace.xSync(t.db-wal,FULL) -> 0
+create     trace.xShmBarrier(t.db)
+create     trace.xShmLock(t.db,ofst=0(WRITE),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+create     trace.xFileControl(t.db,COMMIT_PHASETWO) -> SQLITE_NOTFOUND
+create     trace.xShmLock(t.db,ofst=4(READ1),n=1,UNLOCK|SHARED) -> SQLITE_OK
+insert     trace.xShmBarrier(t.db)
+insert     trace.xShmLock(t.db,ofst=4(READ1),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+insert     trace.xShmLock(t.db,ofst=4(READ1),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+insert     trace.xShmLock(t.db,ofst=4(READ1),n=1,LOCK|SHARED) -> SQLITE_OK
+insert     trace.xShmBarrier(t.db)
+insert     trace.xShmLock(t.db,ofst=0(WRITE),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+insert     trace.xWrite(t.db-wal,n=24,ofst=8272) -> SQLITE_OK
+insert     trace.xWrite(t.db-wal,n=4096,ofst=8296) -> SQLITE_OK
+insert     trace.xSync(t.db-wal,FULL) -> 0
+insert     trace.xShmBarrier(t.db)
+insert     trace.xShmLock(t.db,ofst=0(WRITE),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+insert     trace.xFileControl(t.db,COMMIT_PHASETWO) -> SQLITE_NOTFOUND
+insert     trace.xShmLock(t.db,ofst=4(READ1),n=1,UNLOCK|SHARED) -> SQLITE_OK
+checkpoint trace.xShmLock(t.db,ofst=1(CKPT),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+checkpoint trace.xShmBarrier(t.db)
+checkpoint trace.xShmLock(t.db,ofst=4(READ1),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+checkpoint trace.xShmLock(t.db,ofst=4(READ1),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+checkpoint trace.xShmLock(t.db,ofst=3(READ0),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+checkpoint trace.xSync(t.db-wal,FULL) -> 0
+checkpoint trace.xFileControl(t.db,CKPT_START) -> SQLITE_NOTFOUND
+checkpoint trace.xFileSize(t.db) -> SQLITE_OK, size=4096
+checkpoint trace.xFileControl(t.db,SIZE_HINT,8192) -> SQLITE_OK
+checkpoint trace.xRead(t.db-wal,n=4096,ofst=56) -> SQLITE_OK
+checkpoint trace.xWrite(t.db,n=4096,ofst=0) -> SQLITE_OK
+checkpoint trace.xRead(t.db-wal,n=4096,ofst=8296) -> SQLITE_OK
+checkpoint trace.xWrite(t.db,n=4096,ofst=4096) -> SQLITE_OK
+checkpoint trace.xFileControl(t.db,CKPT_DONE) -> SQLITE_NOTFOUND
+checkpoint trace.xTruncate(t.db,8192) -> 0
+checkpoint trace.xSync(t.db,FULL) -> 0
+checkpoint trace.xShmLock(t.db,ofst=3(READ0),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+checkpoint trace.xShmLock(t.db,ofst=1(CKPT),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+checkpoint nLog=3 nCkpt=3 err=<nil>
+close      trace.xFileControl(t.db,HAS_MOVED) -> SQLITE_OK, 0
+close      trace.xLock(t.db,EXCLUSIVE) -> SQLITE_OK
+close      trace.xShmBarrier(t.db)
+close      trace.xFileControl(t.db,PERSIST_WAL,-1) -> SQLITE_OK, 0
+close      trace.xShmUnmap(t.db,delFlag=1) -> SQLITE_OK
+close      trace.xClose(t.db-wal) -> SQLITE_OK
+close      trace.xDelete("t.db-wal",0) -> SQLITE_OK
+close      trace.xDeviceCharacteristics(t.db) -> 0x00009000
+close      trace.xUnlock(t.db,NONE) -> SQLITE_OK
+close      trace.xClose(t.db) -> SQLITE_OK
+source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc
