@@ -148,5 +148,14 @@ func (s S3Source) ReadRange(ctx context.Context, name string, offset int64, p []
 		return 0, err
 	}
 	defer out.Body.Close()
+	last := offset + int64(len(p)) - 1
+	wantPrefix := fmt.Sprintf("bytes %d-%d/", offset, last)
+	if out.ContentRange == nil || !strings.HasPrefix(*out.ContentRange, wantPrefix) {
+		got := "none"
+		if out.ContentRange != nil {
+			got = *out.ContentRange
+		}
+		return 0, fmt.Errorf("GetObject %s range %d+%d: Content-Range %q (want %q)", name, offset, len(p), got, wantPrefix+"*")
+	}
 	return io.ReadFull(out.Body, p)
 }

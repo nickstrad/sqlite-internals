@@ -159,6 +159,7 @@ func TestS3RoundTripLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer f.Close()
 	buf := make([]byte, 10)
 	if _, err := f.(io.ReaderAt).ReadAt(buf, 9990); err != nil || !bytes.Equal(buf, body[9990:]) {
 		t.Fatalf("%q %v", buf, err)

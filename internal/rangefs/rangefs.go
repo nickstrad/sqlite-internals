@@ -39,6 +39,7 @@ type Request struct {
 	Offset int64
 	Length int64
 	Found  bool
+	Failed bool
 }
 
 // String formats a Request as a single readable line for evidence output.
@@ -50,6 +51,9 @@ func (r Request) String() string {
 		}
 		return fmt.Sprintf("stat %s (absent)", r.Name)
 	case KindRange:
+		if r.Failed {
+			return fmt.Sprintf("range %s at %d failed (%d bytes received)", r.Name, r.Offset, r.Length)
+		}
 		return fmt.Sprintf("range %s bytes %d-%d (%d bytes)", r.Name, r.Offset, r.Offset+r.Length-1, r.Length)
 	}
 	return string(r.Kind)
@@ -101,6 +105,9 @@ type FS struct {
 
 // New returns an FS that performs all Source calls using ctx.
 func New(ctx context.Context, source Source) *FS {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return &FS{source: source, ctx: ctx}
 }
 
@@ -167,6 +174,9 @@ type file struct {
 }
 
 func (f *file) Stat() (fs.FileInfo, error) {
+	if f.closed {
+		return nil, fs.ErrClosed
+	}
 	return fileInfo{name: path.Base(f.name), size: f.size}, nil
 }
 
@@ -180,17 +190,22 @@ func (f *file) ReadAt(p []byte, offset int64) (int, error) {
 	if offset >= f.size {
 		return 0, io.EOF
 	}
+	if len(p) == 0 {
+		return 0, nil
+	}
 	// Clip the range at EOF so the store never receives an out-of-bounds
 	// Range header, then return io.EOF on a short read as io.ReaderAt requires.
 	want := min(int64(len(p)), f.size-offset)
 	n, err := f.fsys.source.ReadRange(f.fsys.ctx, f.name, offset, p[:want])
-	f.fsys.log(Request{Kind: KindRange, Name: f.name, Offset: offset, Length: want})
 	if err != nil {
+		f.fsys.log(Request{Kind: KindRange, Name: f.name, Offset: offset, Length: int64(n), Failed: true})
 		return n, err
 	}
 	if int64(n) != want {
+		f.fsys.log(Request{Kind: KindRange, Name: f.name, Offset: offset, Length: int64(n), Failed: true})
 		return n, fmt.Errorf("rangefs: %s: short range read %d of %d bytes at %d", f.name, n, want, offset)
 	}
+	f.fsys.log(Request{Kind: KindRange, Name: f.name, Offset: offset, Length: want})
 	if want < int64(len(p)) {
 		return n, io.EOF
 	}
@@ -210,6 +225,9 @@ func (f *file) Read(p []byte) (int, error) {
 }
 
 func (f *file) Seek(offset int64, whence int) (int64, error) {
+	if f.closed {
+		return f.offset, fs.ErrClosed
+	}
 	var next int64
 	switch whence {
 	case io.SeekStart:
