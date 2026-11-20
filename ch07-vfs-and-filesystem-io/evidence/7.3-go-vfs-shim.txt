@@ -16,7 +16,7 @@ measured: INSERT INTO t(id, v) VALUES(2, 'two')
     6 xLock t.db level=RESERVED -> 0
     7 xFileControl t.db op=HAS_MOVED -> 0
     8 xOpen t.db-journal kind=main-journal flags=0x806 -> 0
-    9 xDeviceCharacteristics t.db -> 36864
+    9 xDeviceCharacteristics t.db -> 0x9000
    10 xWrite t.db-journal n=512 ofst=0 -> 0
    11 xWrite t.db-journal n=4 ofst=512 -> 0
    12 xWrite t.db-journal n=4096 ofst=516 -> 0
@@ -25,7 +25,7 @@ measured: INSERT INTO t(id, v) VALUES(2, 'two')
    15 xWrite t.db-journal n=4 ofst=4616 -> 0
    16 xWrite t.db-journal n=4096 ofst=4620 -> 0
    17 xWrite t.db-journal n=4 ofst=8716 -> 0
-   18 xDeviceCharacteristics t.db -> 36864
+   18 xDeviceCharacteristics t.db -> 0x9000
    19 xRead t.db-journal n=8 ofst=9216 -> 522
    20 xWrite t.db-journal n=12 ofst=0 -> 0
    21 xSync t.db-journal flags=NORMAL -> 0   [vfstrace would print FULL]
@@ -37,7 +37,7 @@ measured: INSERT INTO t(id, v) VALUES(2, 'two')
    27 xDelete t.db-journal syncDir=0 -> 0
    28 xFileControl t.db op=COMMIT_PHASETWO -> 12
    29 xUnlock t.db level=SHARED -> 0
-   30 xDeviceCharacteristics t.db -> 36864
+   30 xDeviceCharacteristics t.db -> 0x9000
    31 xUnlock t.db level=NONE -> 0
   Go VFS counts:        xAccess=2 xClose=1 xDelete=1 xDeviceCharacteristics=3 xFileControl=3 xFileSize=1 xLock=3 xOpen=1 xRead=2 xSync=2 xUnlock=2 xWrite=10
   CLI -vfstrace counts: xAccess=2 xClose=1 xDelete=1 xDeviceCharacteristics=3 xFileControl=3 xFileSize=1 xLock=3 xOpen=1 xRead=2 xSync=2 xUnlock=2 xWrite=10
@@ -53,7 +53,7 @@ check ok: delete/NORMAL: the Go driver makes the same 31 VFS calls, in the same 
     6 xLock t.db level=RESERVED -> 0
     7 xFileControl t.db op=HAS_MOVED -> 0
     8 xOpen t.db-journal kind=main-journal flags=0x806 -> 0
-    9 xDeviceCharacteristics t.db -> 36864
+    9 xDeviceCharacteristics t.db -> 0x9000
    10 xWrite t.db-journal n=512 ofst=0 -> 0
    11 xWrite t.db-journal n=4 ofst=512 -> 0
    12 xWrite t.db-journal n=4096 ofst=516 -> 0
@@ -62,7 +62,7 @@ check ok: delete/NORMAL: the Go driver makes the same 31 VFS calls, in the same 
    15 xWrite t.db-journal n=4 ofst=4616 -> 0
    16 xWrite t.db-journal n=4096 ofst=4620 -> 0
    17 xWrite t.db-journal n=4 ofst=8716 -> 0
-   18 xDeviceCharacteristics t.db -> 36864
+   18 xDeviceCharacteristics t.db -> 0x9000
    19 xRead t.db-journal n=8 ofst=9216 -> 522
    20 xSync t.db-journal flags=NORMAL -> 0   [vfstrace would print FULL]
    21 xWrite t.db-journal n=12 ofst=0 -> 0
@@ -75,7 +75,7 @@ check ok: delete/NORMAL: the Go driver makes the same 31 VFS calls, in the same 
    28 xDelete t.db-journal syncDir=0 -> 0
    29 xFileControl t.db op=COMMIT_PHASETWO -> 12
    30 xUnlock t.db level=SHARED -> 0
-   31 xDeviceCharacteristics t.db -> 36864
+   31 xDeviceCharacteristics t.db -> 0x9000
    32 xUnlock t.db level=NONE -> 0
   Go VFS counts:        xAccess=2 xClose=1 xDelete=1 xDeviceCharacteristics=3 xFileControl=3 xFileSize=1 xLock=3 xOpen=1 xRead=2 xSync=3 xUnlock=2 xWrite=10
   CLI -vfstrace counts: xAccess=2 xClose=1 xDelete=1 xDeviceCharacteristics=3 xFileControl=3 xFileSize=1 xLock=3 xOpen=1 xRead=2 xSync=3 xUnlock=2 xWrite=10
@@ -83,15 +83,15 @@ check ok: delete/FULL: the Go driver makes the same 32 VFS calls, in the same or
   xSync flags SQLite passed: t.db-journal=0x2(NORMAL) t.db-journal=0x2(NORMAL) t.db=0x2(NORMAL)
 
 -- journal_mode=wal synchronous=NORMAL: 12 VFS calls through the Go VFS (file shown as t.db) --
-    1 xShmBarrier t.db -> 0
+    1 xShmBarrier t.db
     2 xShmLock t.db ofst=4 n=1 flags=LOCK|EXCLUSIVE -> 0
     3 xShmLock t.db ofst=4 n=1 flags=UNLOCK|EXCLUSIVE -> 0
     4 xShmLock t.db ofst=4 n=1 flags=LOCK|SHARED -> 0
-    5 xShmBarrier t.db -> 0
+    5 xShmBarrier t.db
     6 xShmLock t.db ofst=0 n=1 flags=LOCK|EXCLUSIVE -> 0
     7 xWrite t.db-wal n=24 ofst=20632 -> 0
     8 xWrite t.db-wal n=4096 ofst=20656 -> 0
-    9 xShmBarrier t.db -> 0
+    9 xShmBarrier t.db
    10 xShmLock t.db ofst=0 n=1 flags=UNLOCK|EXCLUSIVE -> 0
    11 xFileControl t.db op=COMMIT_PHASETWO -> 12
    12 xShmLock t.db ofst=4 n=1 flags=UNLOCK|SHARED -> 0
@@ -100,16 +100,16 @@ check ok: delete/FULL: the Go driver makes the same 32 VFS calls, in the same or
 check ok: wal/NORMAL: the Go driver makes the same 12 VFS calls, in the same order with the same files, offsets, lengths, lock levels and sync labels, as the C CLI
 
 -- journal_mode=wal synchronous=FULL: 13 VFS calls through the Go VFS (file shown as t.db) --
-    1 xShmBarrier t.db -> 0
+    1 xShmBarrier t.db
     2 xShmLock t.db ofst=4 n=1 flags=LOCK|EXCLUSIVE -> 0
     3 xShmLock t.db ofst=4 n=1 flags=UNLOCK|EXCLUSIVE -> 0
     4 xShmLock t.db ofst=4 n=1 flags=LOCK|SHARED -> 0
-    5 xShmBarrier t.db -> 0
+    5 xShmBarrier t.db
     6 xShmLock t.db ofst=0 n=1 flags=LOCK|EXCLUSIVE -> 0
     7 xWrite t.db-wal n=24 ofst=20632 -> 0
     8 xWrite t.db-wal n=4096 ofst=20656 -> 0
     9 xSync t.db-wal flags=NORMAL -> 0   [vfstrace would print FULL]
-   10 xShmBarrier t.db -> 0
+   10 xShmBarrier t.db
    11 xShmLock t.db ofst=0 n=1 flags=UNLOCK|EXCLUSIVE -> 0
    12 xFileControl t.db op=COMMIT_PHASETWO -> 12
    13 xShmLock t.db ofst=4 n=1 flags=UNLOCK|SHARED -> 0

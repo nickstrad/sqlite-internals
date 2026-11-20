@@ -125,7 +125,13 @@ func (c Call) String() string {
 	if args != "" {
 		b.WriteString(" " + args)
 	}
-	fmt.Fprintf(&b, " -> %d", c.Result)
+	switch c.Method {
+	case "xShmBarrier":
+	case "xDeviceCharacteristics":
+		fmt.Fprintf(&b, " -> 0x%x", c.Result)
+	default:
+		fmt.Fprintf(&b, " -> %d", c.Result)
+	}
 	switch c.Method {
 	case "xAccess", "xCheckReservedLock":
 		fmt.Fprintf(&b, " out=%d", c.Out)
