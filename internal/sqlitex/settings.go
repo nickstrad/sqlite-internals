@@ -213,11 +213,16 @@ func (c ConnSettings) pragmas() []string {
 	}
 }
 
-func (f FileSettings) creationPragmas() []string {
+func (f FileSettings) layoutPragmas() []string {
 	return []string{
 		fmt.Sprintf("PRAGMA page_size=%d", f.PageSize),
 		"PRAGMA auto_vacuum=" + strings.ToUpper(f.AutoVacuum),
 		"PRAGMA encoding='" + strings.ToUpper(f.Encoding) + "'",
+	}
+}
+
+func (f FileSettings) identityPragmas() []string {
+	return []string{
 		fmt.Sprintf("PRAGMA application_id=%d", f.ApplicationID),
 		fmt.Sprintf("PRAGMA user_version=%d", f.UserVersion),
 	}

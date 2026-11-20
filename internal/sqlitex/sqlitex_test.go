@@ -657,3 +657,38 @@ func TestBackupStopsOnCancelledContext(t *testing.T) {
 		t.Fatalf("backup with a cancelled context: %v", err)
 	}
 }
+
+func TestUnstampedEmptyDatabaseIsStampedButUsedOneIsNot(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	plain := func(path, statements string) {
+		t.Helper()
+		db, err := sql.Open("sqlite", "file:"+path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		if _, err := db.Exec(statements); err != nil {
+			t.Fatal(err)
+		}
+	}
+	empty := filepath.Join(dir, "empty.db")
+	plain(empty, "PRAGMA page_size=4096; PRAGMA journal_mode=wal")
+	db, err := OpenDefault(ctx, empty)
+	if err != nil {
+		t.Fatalf("unstamped empty WAL database: %v", err)
+	}
+	settings, err := ReadFileSettings(ctx, db)
+	db.Close()
+	if err != nil || settings.ApplicationID != CourseApplicationID {
+		t.Fatalf("settings %s %v", settings, err)
+	}
+	used := filepath.Join(dir, "used.db")
+	plain(used, "PRAGMA page_size=4096; PRAGMA journal_mode=wal; CREATE TABLE t(x)")
+	if db, err := OpenDefault(ctx, used); err == nil {
+		db.Close()
+		t.Fatal("database with a schema and application_id 0 was stamped")
+	} else if !strings.Contains(err.Error(), "application_id want") {
+		t.Fatal(err)
+	}
+}

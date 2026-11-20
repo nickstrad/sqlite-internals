@@ -186,35 +186,20 @@ func configureConnection(ctx context.Context, conn driver.Conn, options Options)
 		return err
 	}
 	if !options.ReadOnly {
-		pageCount, err := driverQueryInt(ctx, queryer, "PRAGMA page_count")
-		if err != nil {
-			return err
-		}
-		// page_size, auto_vacuum, and encoding only take effect on an empty file before page 1 is written.
-		if pageCount == 0 {
-			for _, statement := range options.File.creationPragmas() {
-				if err := run(statement); err != nil {
-					return err
-				}
+		deadline := time.Now().Add(options.Conn.BusyTimeout)
+		for {
+			err := applyFileSettings(ctx, run, queryer, options.File)
+			if err == nil {
+				break
 			}
-		} else {
-			current, err := driverQueryString(ctx, queryer, "PRAGMA journal_mode")
-			if err != nil {
+			if !IsBusy(err) || time.Now().After(deadline) {
 				return err
 			}
-			currentIsWAL := strings.EqualFold(current, JournalWAL)
-			wantWAL := strings.EqualFold(options.File.JournalMode, JournalWAL)
-			if currentIsWAL != wantWAL {
-				return fmt.Errorf("existing database does not match the requested file settings: journal_mode want %s got %s (Open does not convert an existing database into or out of WAL)",
-					strings.ToLower(options.File.JournalMode), strings.ToLower(current))
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(10 * time.Millisecond):
 			}
-		}
-		mode, err := driverQueryString(ctx, queryer, options.File.journalPragma())
-		if err != nil {
-			return err
-		}
-		if !strings.EqualFold(mode, options.File.JournalMode) {
-			return fmt.Errorf("journal_mode: asked for %s, SQLite reports %s", options.File.JournalMode, mode)
 		}
 	}
 	for _, statement := range pragmas[1:] {
@@ -229,6 +214,58 @@ func configureConnection(ctx context.Context, conn driver.Conn, options Options)
 		return err
 	}
 	return compareConnSettings(options.Conn, actual)
+}
+
+func applyFileSettings(ctx context.Context, run func(string) error, queryer driver.QueryerContext, file FileSettings) error {
+	pageCount, err := driverQueryInt(ctx, queryer, "PRAGMA page_count")
+	if err != nil {
+		return err
+	}
+	if pageCount == 0 {
+		for _, statement := range file.layoutPragmas() {
+			if err := run(statement); err != nil {
+				return err
+			}
+		}
+	} else {
+		current, err := driverQueryString(ctx, queryer, "PRAGMA journal_mode")
+		if err != nil {
+			return err
+		}
+		currentIsWAL := strings.EqualFold(current, JournalWAL)
+		wantWAL := strings.EqualFold(file.JournalMode, JournalWAL)
+		if currentIsWAL != wantWAL {
+			return fmt.Errorf("existing database does not match the requested file settings: journal_mode want %s got %s (Open does not convert an existing database into or out of WAL)",
+				strings.ToLower(file.JournalMode), strings.ToLower(current))
+		}
+	}
+	mode, err := driverQueryString(ctx, queryer, file.journalPragma())
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(mode, file.JournalMode) {
+		return fmt.Errorf("journal_mode: asked for %s, SQLite reports %s", file.JournalMode, mode)
+	}
+	unstamped := pageCount == 0
+	if !unstamped {
+		applicationID, err := driverQueryInt(ctx, queryer, "PRAGMA application_id")
+		if err != nil {
+			return err
+		}
+		schemaVersion, err := driverQueryInt(ctx, queryer, "PRAGMA schema_version")
+		if err != nil {
+			return err
+		}
+		unstamped = applicationID == 0 && schemaVersion == 0
+	}
+	if unstamped {
+		for _, statement := range file.identityPragmas() {
+			if err := run(statement); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func driverQueryValue(ctx context.Context, queryer driver.QueryerContext, query string) (driver.Value, error) {
