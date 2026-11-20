@@ -244,3 +244,48 @@ func TestWritevMergesLikeWrite(t *testing.T) {
 		t.Fatalf("got\n%s", strings.Join(lines, "\n"))
 	}
 }
+
+func TestParseStatAndAccessPaths(t *testing.T) {
+	text := `7 newfstatat(AT_FDCWD</w>, "/w/t.db-wal", 0x7ffd, 0) = -1 ENOENT (No such file or directory)
+7 newfstatat(AT_FDCWD</w>, "t.db", {st_mode=S_IFREG|0644, st_size=4096, ...}, 0) = 0
+7 newfstatat(3</w/t.db>, "", {st_mode=S_IFREG|0644, st_size=0, ...}, AT_EMPTY_PATH) = 0
+7 fstat(3</w/t.db>, {st_mode=S_IFREG|0644, st_size=0, ...}) = 0
+7 access("/w/t.db-journal", F_OK) = -1 ENOENT (No such file or directory)
+7 faccessat2(AT_FDCWD</w>, "t.db-wal", F_OK, 0) = 0
+7 statx(AT_FDCWD</w>, "/w/x", AT_STATX_SYNC_AS_STAT, STATX_ALL, 0x7ffd) = -1 ENOENT (No such file or directory)
+`
+	log, err := ParseStraceText(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"newfstatat /w/t.db-wal = -1 ENOENT",
+		"newfstatat /w/t.db = 0",
+		"newfstatat /w/t.db = 0",
+		"fstat /w/t.db = 0",
+		"access /w/t.db-journal = -1 ENOENT",
+		"faccessat2 /w/t.db-wal = 0",
+		"statx /w/x = -1 ENOENT",
+	}
+	if len(log.Calls) != len(want) {
+		t.Fatalf("got %d calls", len(log.Calls))
+	}
+	for i, call := range log.Calls {
+		if call.String() != want[i] {
+			t.Errorf("call %d: %q want %q", i, call.String(), want[i])
+		}
+	}
+}
+
+func TestCanonicalNames(t *testing.T) {
+	cases := map[string]string{"openat": "open", "unlinkat": "unlink", "fdatasync": "sync", "fsync": "sync", "newfstatat": "stat", "fstat": "stat", "faccessat2": "access", "pwrite": "pwrite64", "fcntl": "fcntl"}
+	for in, want := range cases {
+		if got := CanonicalName(in); got != want {
+			t.Errorf("%s: %s want %s", in, got, want)
+		}
+	}
+	s := Syscall{Name: "fdatasync", Path: "t.db", FD: 3}
+	if s.Canonical().String() != "sync t.db = 0" || !IsSync(s) || IsSync(Syscall{Name: "fcntl"}) {
+		t.Fatal(s.Canonical().String())
+	}
+}
