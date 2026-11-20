@@ -25,6 +25,7 @@ base: table t with 1 row, 2 pages, sha256 0aec0e95a3f65e0c
 pages changed by the INSERT (sha256 of each page through sqlite_dbpage, before -> after): [1 2]
   page 1: bb133eb73b58bce5 -> 0ba56047337c7717
   page 2: 5d68aacbd116afe8 -> b21207c95d70a25b
+check ok: the INSERT changes page 1 (the change counter in the header) and page 2 (table t's leaf): [1 2]
 Go driver (modernc), file syscalls of the INSERT (33):
   fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1 = 0
   fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510 = 0
@@ -79,7 +80,7 @@ C CLI, file syscalls of the same INSERT (31, open/openat shown as open, fsync/fd
   pwrite64 t.db-journal off=4616 len=4
   pwrite64 t.db-journal off=4620 len=4096
   pwrite64 t.db-journal off=8716 len=4
-  pread64 t.db-journal off=9216 len=8
+  pread64 t.db-journal off=9216 len=8 = 0
   sync t.db-journal
   open .
   sync .
@@ -143,7 +144,7 @@ phase COMMIT | opcode OP_AutoCommit (OP_Halt in an autocommit INSERT) | sqlite3V
       SYS pwrite64 t.db-journal off=8716 len=4
   VFS xDeviceCharacteristics(t.db) -> 0x00009000
   VFS xRead(t.db-journal,n=8,ofst=9216) -> SQLITE_IOERR_SHORT_READ
-      SYS pread64 t.db-journal off=9216 len=8
+      SYS pread64 t.db-journal off=9216 len=8 = 0
   VFS xSync(t.db-journal,FULL) -> 0
       SYS sync t.db-journal
       SYS open .
@@ -175,9 +176,10 @@ check ok: the three phases together make exactly the file syscalls of the autoco
 check ok: BEGIN IMMEDIATE; INSERT; COMMIT leaves the same file bytes as the autocommit INSERT
 
 == write-ahead log (journal_mode=wal, the platform default) ==
-base: table t with 1 row, 2 pages, sha256 d0cb3c980847e49e
+base: table t with 1 row, 2 pages, sha256 5de4f3aefd26bcea
 pages changed by the INSERT (sha256 of each page through sqlite_dbpage, before -> after): [2]
   page 2: 5d68aacbd116afe8 -> b21207c95d70a25b
+check ok: the INSERT changes only page 2 (table t's leaf); page 1 is not written, so its change counter stays: [2]
 Go driver (modernc), file syscalls of the INSERT (18):
   fcntl t.db-shm F_SETLK F_RDLCK start=123 len=1 = 0
   fcntl t.db-shm F_SETLK F_WRLCK start=120 len=1 = 0
@@ -199,7 +201,7 @@ Go driver (modernc), file syscalls of the INSERT (18):
   fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1 = 0
 check ok: WAL mode: the commit writes nothing to t.db itself (database-file pwrite64 calls during the INSERT: 0)
   WAL frame 1: page 2, commit size 2, header at offset 32, page image at offset 56
-check ok: WAL mode: the commit appends one frame per changed page [2] to t.db-wal (frame header 24 bytes, then the page at offset 32 + (frame-1)*4120 + 24), the last frame carries the commit size
+check ok: WAL mode: the commit writes the 32-byte WAL header at offset 0 of the new t.db-wal, then one frame per changed page [2] (frame header 24 bytes, then the page at offset 32 + (frame-1)*4120 + 24), and nothing else; the last frame carries the commit size
 C CLI, file syscalls of the same INSERT (17, open/openat shown as open, fsync/fdatasync as sync):
   fcntl t.db-shm F_SETLK F_RDLCK start=123 len=1
   fcntl t.db-shm F_SETLK F_WRLCK start=120 len=1
@@ -225,7 +227,7 @@ check ok: twin check: the Go driver and the C CLI make the same writes (file, of
 twin difference: fcntl F_SETFD calls, Go driver 1 [fcntl . F_SETFD], CLI 0 []
 twin every other file syscall (opens, reads, writes, syncs, locks, unlinks, closes): identical (17 calls)
 check ok: apart from fcntl F_SETFD, every file syscall of the INSERT is the same in both builds (open vs openat and fsync vs fdatasync are not distinguished)
-check ok: the database file after the INSERT is byte-identical from both builds (sha256 6b96a8a5533900b8)
+check ok: the database file after the INSERT is byte-identical from both builds (sha256 1afce8154bf3124c)
 call path, measured: the C CLI with -vfstrace under strace runs BEGIN IMMEDIATE; INSERT; COMMIT with a marker between statements.
 Each phase lists the VFS calls (VFS) and the syscalls each one made (SYS, indented under its VFS call).
 phase BEGIN IMMEDIATE | opcode OP_Transaction | sqlite3BtreeBeginTrans -> sqlite3PagerSharedLock, sqlite3PagerBegin
@@ -270,5 +272,13 @@ phase COMMIT | opcode OP_AutoCommit (OP_Halt in an autocommit INSERT) | sqlite3V
       SYS fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1
 check ok: the three phases together make exactly the file syscalls of the autocommit INSERT (so the per-opcode split above is the INSERT's own I/O)
 check ok: BEGIN IMMEDIATE; INSERT; COMMIT leaves the same file bytes as the autocommit INSERT
+
+== a limit of the twin check: compile options that change file contents ==
+base: table s with 100 rows and index s_by_k, built twice by the Go driver, sha256 cd808b1713871cd6 and cd808b1713871cd6
+ENABLE_STAT4 compiled in: Go driver 1, CLI 0
+after ANALYZE: Go driver file sha256 2f6ce76122bda45c, statistics tables [sqlite_stat1 sqlite_stat4]
+after ANALYZE: C CLI file sha256 490d8405dea7402c, statistics tables [sqlite_stat1]
+check ok: both copies start byte-identical
+check ok: twin check limit: the driver is compiled with ENABLE_STAT4 and this CLI is not, so the same ANALYZE writes a sqlite_stat4 table only in the driver and the two files differ
 
 ONE INSERT OK

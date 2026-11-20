@@ -124,6 +124,7 @@ func main() {
 	if err != nil {
 		fatal("open :memory:", err)
 	}
+	db.SetMaxOpenConns(1)
 	defer db.Close()
 	// Every course experiment prints sqlite_source_id() first and exits
 	// non-zero if the linked build does not match sqlite/PIN.

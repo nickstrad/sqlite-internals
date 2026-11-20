@@ -326,11 +326,27 @@ func syncName(name string) bool {
 // configure builds (open vs openat, unlink vs unlinkat, fsync vs fdatasync)
 // so the twin check compares the actual file operations.
 func normalized(call trace.Syscall) string {
+	text := normalizedOperation(call)
+	switch {
+	case call.Errno != "":
+		text += " = " + call.Errno
+	case transfersBytes(call) && call.Length >= 0 && call.Result != call.Length:
+		text += fmt.Sprintf(" = %d", call.Result)
+	}
+	return text
+}
+
+func transfersBytes(call trace.Syscall) bool {
+	switch call.Name {
+	case "pwrite64", "pread64", "write", "read":
+		return true
+	}
+	return false
+}
+
+func normalizedOperation(call trace.Syscall) string {
 	switch {
 	case call.Name == "open" || call.Name == "openat":
-		if call.Errno != "" {
-			return "open " + call.Path + " = " + call.Errno
-		}
 		return "open " + call.Path
 	case syncName(call.Name):
 		return "sync " + call.Path
@@ -338,6 +354,8 @@ func normalized(call trace.Syscall) string {
 		return "unlink " + call.Path
 	case call.Name == "pwrite64" || call.Name == "pread64":
 		return fmt.Sprintf("%s %s off=%d len=%d", call.Name, call.Path, call.Offset, call.Length)
+	case call.Name == "write" || call.Name == "read":
+		return fmt.Sprintf("%s %s len=%d", call.Name, call.Path, call.Length)
 	case call.Name == "ftruncate":
 		return fmt.Sprintf("ftruncate %s len=%d", call.Path, call.Length)
 	case call.Name == "mmap":
@@ -516,10 +534,16 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 		if _, err := db.ExecContext(ctx, insertSQL); err != nil {
 			fatal("insert", err)
 		}
-		db.Close()
+		if err := db.Close(); err != nil {
+			fatal("close", err)
+		}
+		if err := recipe.CheckAtRest(path); err != nil {
+			fatal("at rest", err)
+		}
 		after := pageHashes(ctx, path, mode)
 		changed := changedPages(before, after)
 		printChanged(before, after, changed)
+		checkChangedPages(mode, changed)
 		return
 	}
 
@@ -534,6 +558,9 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 	if goRun.ExitCode != 0 {
 		fatal("Go child", fmt.Errorf("exit %d: %s", goRun.ExitCode, goRun.Stderr))
 	}
+	if err := recipe.CheckAtRest(path); err != nil {
+		fatal("Go child at rest", err)
+	}
 	after := pageHashes(ctx, path, mode)
 	goFileHash, err := recipe.FileSHA256(path)
 	if err != nil {
@@ -541,6 +568,7 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 	}
 	changed := changedPages(before, after)
 	printChanged(before, after, changed)
+	checkChangedPages(mode, changed)
 
 	goCalls, err := segmentCalls(goRun.Log.Calls, dir, "1", "2")
 	if err != nil {
@@ -585,23 +613,15 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 			fmt.Printf("  WAL frame %d: page %d, commit size %d, header at offset %d, page image at offset %d\n", frame.Index, frame.Page, frame.CommitSize, walHeaderSize+(frame.Index-1)*(walFrameHeader+pageSize), walHeaderSize+(frame.Index-1)*(walFrameHeader+pageSize)+walFrameHeader)
 			framePages = append(framePages, int(frame.Page))
 		}
-		walWritesMatch := true
 		var walWrites []string
 		for _, call := range goCalls {
 			if call.Name == "pwrite64" && call.Path == dbName+"-wal" {
 				walWrites = append(walWrites, fmt.Sprintf("%d+%d", call.Offset, call.Length))
 			}
 		}
-		var wantWALWrites []string
-		for _, frame := range frames {
-			offset := walHeaderSize + (frame.Index-1)*(walFrameHeader+pageSize)
-			wantWALWrites = append(wantWALWrites, fmt.Sprintf("%d+%d", offset, walFrameHeader), fmt.Sprintf("%d+%d", offset+walFrameHeader, pageSize))
-		}
-		if len(walWrites) == 0 || !slices.Equal(walWrites[len(walWrites)-len(wantWALWrites):], wantWALWrites) {
-			walWritesMatch = false
-		}
+		walWritesMatch := slices.Equal(walWrites, expectedFreshWALWrites(frames))
 		lastCommit := len(frames) > 0 && frames[len(frames)-1].CommitSize > 0
-		check(slices.Equal(framePages, changed) && walWritesMatch && lastCommit, fmt.Sprintf("WAL mode: the commit appends one frame per changed page %v to %s-wal (frame header 24 bytes, then the page at offset 32 + (frame-1)*4120 + 24), the last frame carries the commit size", changed, dbName))
+		check(slices.Equal(framePages, changed) && walWritesMatch && lastCommit, fmt.Sprintf("WAL mode: the commit writes the 32-byte WAL header at offset 0 of the new %s-wal, then one frame per changed page %v (frame header 24 bytes, then the page at offset 32 + (frame-1)*4120 + 24), and nothing else; the last frame carries the commit size", dbName, changed))
 	}
 
 	if !haveCLI {
@@ -621,6 +641,9 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 	if cliRun.ExitCode != 0 {
 		fatal("CLI", fmt.Errorf("exit %d: %s", cliRun.ExitCode, cliRun.Stderr))
 	}
+	if err := recipe.CheckAtRest(path); err != nil {
+		fatal("CLI at rest", err)
+	}
 	cliFileHash, err := recipe.FileSHA256(path)
 	if err != nil {
 		fatal("hash", err)
@@ -636,14 +659,15 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 	fmt.Printf("INFO: sync syscall used: Go driver %s, CLI %s (%s)\n", syncCallNames(goCalls), syncCallNames(cliCalls), displayPath(cli.Path))
 	writesSame := compareLists("writes (file, offset, length, order)", normalizedAll(goCalls, isWrite), normalizedAll(cliCalls, isWrite))
 	syncsSame := compareLists("syncs (file, order)", normalizedAll(goCalls, isSync), normalizedAll(cliCalls, isSync))
-	check(writesSame && syncsSame, "twin check: the Go driver and the C CLI make the same writes (file, offset, length) and the same syncs, in the same order")
+	goSyncs := normalizedAll(goCalls, isSync)
+	check(writesSame && syncsSame && len(goSyncs) > 0, "twin check: the Go driver and the C CLI make the same writes (file, offset, length) and the same syncs, in the same order")
 	goCloexec := normalizedAll(goCalls, isCloexecFcntl)
 	cliCloexec := normalizedAll(cliCalls, isCloexecFcntl)
 	fmt.Printf("twin difference: fcntl F_SETFD calls, Go driver %d [%s], CLI %d [%s]\n", len(goCloexec), strings.Join(goCloexec, "; "), len(cliCloexec), strings.Join(cliCloexec, "; "))
 	notCloexec := func(call trace.Syscall) bool { return !isCloexecFcntl(call) }
 	allSame := compareLists("every other file syscall (opens, reads, writes, syncs, locks, unlinks, closes)", normalizedAll(goCalls, notCloexec), normalizedAll(cliCalls, notCloexec))
 	check(allSame, "apart from fcntl F_SETFD, every file syscall of the INSERT is the same in both builds (open vs openat and fsync vs fdatasync are not distinguished)")
-	check(goFileHash == cliFileHash, fmt.Sprintf("the database file after the INSERT is byte-identical from both builds (sha256 %s)", short(goFileHash)))
+	check(goFileHash == cliFileHash && goFileHash != baseHash, fmt.Sprintf("the database file after the INSERT is byte-identical from both builds (sha256 %s)", short(goFileHash)))
 
 	// Measured call path: split the INSERT into BEGIN IMMEDIATE, INSERT, and
 	// COMMIT under CLI -vfstrace + strace so each VFS call and syscall is
@@ -656,6 +680,9 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 	}
 	if splitRun.ExitCode != 0 {
 		fatal("CLI -vfstrace", fmt.Errorf("exit %d: %s", splitRun.ExitCode, splitRun.Stderr))
+	}
+	if err := recipe.CheckAtRest(path); err != nil {
+		fatal("CLI -vfstrace at rest", err)
 	}
 	splitFileHash, err := recipe.FileSHA256(path)
 	if err != nil {
@@ -700,6 +727,34 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 	check(splitFileHash == cliFileHash, "BEGIN IMMEDIATE; INSERT; COMMIT leaves the same file bytes as the autocommit INSERT")
 }
 
+func expectedChangedPages(mode string) []int {
+	if mode == sqlitex.JournalWAL {
+		return []int{2}
+	}
+	return []int{1, 2}
+}
+
+func checkChangedPages(mode string, changed []int) {
+	want := expectedChangedPages(mode)
+	reason := "page 1 (the change counter in the header) and page 2 (table t's leaf)"
+	if mode == sqlitex.JournalWAL {
+		reason = "only page 2 (table t's leaf); page 1 is not written, so its change counter stays"
+	}
+	check(slices.Equal(changed, want), fmt.Sprintf("the INSERT changes %s: %v", reason, want))
+}
+
+func expectedFreshWALWrites(frames []walFrame) []string {
+	if len(frames) == 0 {
+		return nil
+	}
+	want := []string{fmt.Sprintf("0+%d", walHeaderSize)}
+	for _, frame := range frames {
+		offset := walHeaderSize + (frame.Index-1)*(walFrameHeader+pageSize)
+		want = append(want, fmt.Sprintf("%d+%d", offset, walFrameHeader), fmt.Sprintf("%d+%d", offset+walFrameHeader, pageSize))
+	}
+	return want
+}
+
 func printChanged(before, after []string, changed []int) {
 	fmt.Printf("pages changed by the INSERT (sha256 of each page through sqlite_dbpage, before -> after): %v\n", changed)
 	for _, page := range changed {
@@ -727,13 +782,17 @@ func main() {
 		fatal("work dir", err)
 	}
 	fmt.Printf("INFO: work dir %s\n", displayPath(base))
-	cli, cliErr := sqlitex.LocateCLI(ctx)
-	haveCLI := cliErr == nil
-	if haveCLI {
-		fmt.Println(cli.PinLine())
-	} else {
-		fmt.Printf("sqlite3 CLI: unavailable: %v\n", cliErr)
-		failures = append(failures, "the pinned sqlite3 CLI is available")
+	var cli sqlitex.CLI
+	haveCLI := false
+	if trace.Supported {
+		located, cliErr := sqlitex.LocateCLI(ctx)
+		cli, haveCLI = located, cliErr == nil
+		if haveCLI {
+			fmt.Println(cli.PinLine())
+		} else {
+			fmt.Printf("sqlite3 CLI: unavailable: %v\n", cliErr)
+			failures = append(failures, "the pinned sqlite3 CLI is available")
+		}
 	}
 
 	explainPath := filepath.Join(base, "explain.db")
@@ -741,10 +800,13 @@ func main() {
 	printExplain(ctx, explainPath)
 
 	if !trace.Supported {
-		trace.PrintLinuxOnly("the strace of the Go driver and of the CLI, the twin check and the measured call path", packagePath)
+		trace.PrintLinuxOnly("the strace of the Go driver and of the CLI, the twin check, its ANALYZE limit and the measured call path", packagePath)
 	}
 	for _, mode := range []string{sqlitex.JournalDelete, sqlitex.JournalWAL} {
 		runMode(ctx, base, mode, cli, haveCLI)
+	}
+	if haveCLI {
+		twinLimitAnalyze(ctx, base, cli)
 	}
 
 	fmt.Println()
@@ -753,6 +815,119 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("ONE INSERT OK")
+}
+
+const (
+	analyzeSchemaSQL = "CREATE TABLE s(id INTEGER PRIMARY KEY, k INTEGER NOT NULL); CREATE INDEX s_by_k ON s(k); WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 100) INSERT INTO s(id, k) SELECT i, i % 7 FROM n"
+	stat4OptionSQL   = "SELECT sqlite_compileoption_used('ENABLE_STAT4')"
+)
+
+func statTables(ctx context.Context, path string) []string {
+	db, err := sqlitex.Open(ctx, path, options(sqlitex.JournalWAL))
+	if err != nil {
+		fatal("open for sqlite_schema", err)
+	}
+	defer db.Close()
+	rows, err := db.QueryContext(ctx, "SELECT name FROM sqlite_schema WHERE name LIKE 'sqlite_stat%' ORDER BY name")
+	if err != nil {
+		fatal("sqlite_schema", err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			fatal("sqlite_schema scan", err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		fatal("sqlite_schema", err)
+	}
+	return names
+}
+
+func twinLimitAnalyze(ctx context.Context, base string, cli sqlitex.CLI) {
+	fmt.Println("\n== a limit of the twin check: compile options that change file contents ==")
+	dir := filepath.Join(base, "analyze")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		fatal("mkdir", err)
+	}
+	goPath := filepath.Join(dir, "go.db")
+	cliPath := filepath.Join(dir, "cli.db")
+	o := options(sqlitex.JournalWAL)
+	for _, path := range []string{goPath, cliPath} {
+		if err := recipe.RemoveDatabase(path); err != nil {
+			fatal("remove", err)
+		}
+		db, err := sqlitex.Open(ctx, path, o)
+		if err != nil {
+			fatal("create analyze base", err)
+		}
+		if _, err := db.ExecContext(ctx, analyzeSchemaSQL); err != nil {
+			fatal("create analyze base", err)
+		}
+		if err := db.Close(); err != nil {
+			fatal("close analyze base", err)
+		}
+	}
+	baseGo, err := recipe.FileSHA256(goPath)
+	if err != nil {
+		fatal("hash", err)
+	}
+	baseCLI, err := recipe.FileSHA256(cliPath)
+	if err != nil {
+		fatal("hash", err)
+	}
+	fmt.Printf("base: table s with 100 rows and index s_by_k, built twice by the Go driver, sha256 %s and %s\n", short(baseGo), short(baseCLI))
+
+	db, err := sqlitex.Open(ctx, goPath, o)
+	if err != nil {
+		fatal("open", err)
+	}
+	var goStat4 int
+	if err := db.QueryRowContext(ctx, stat4OptionSQL).Scan(&goStat4); err != nil {
+		fatal("compile option", err)
+	}
+	if _, err := db.ExecContext(ctx, "ANALYZE"); err != nil {
+		fatal("ANALYZE", err)
+	}
+	if err := db.Close(); err != nil {
+		fatal("close", err)
+	}
+	out, err := cli.Exec(ctx, cliPath, cliPrelude(o)+stat4OptionSQL+";\nANALYZE;\n")
+	if err != nil {
+		fatal("CLI ANALYZE", err)
+	}
+	lines := strings.Fields(out)
+	cliStat4 := -1
+	if len(lines) > 0 {
+		fmt.Sscan(lines[len(lines)-1], &cliStat4)
+	}
+	for _, path := range []string{goPath, cliPath} {
+		if err := recipe.CheckAtRest(path); err != nil {
+			fatal("analyze at rest", err)
+		}
+	}
+	goHash, err := recipe.FileSHA256(goPath)
+	if err != nil {
+		fatal("hash", err)
+	}
+	cliHash, err := recipe.FileSHA256(cliPath)
+	if err != nil {
+		fatal("hash", err)
+	}
+	goTables, cliTables := statTables(ctx, goPath), statTables(ctx, cliPath)
+	fmt.Printf("ENABLE_STAT4 compiled in: Go driver %d, CLI %d\n", goStat4, cliStat4)
+	fmt.Printf("after ANALYZE: Go driver file sha256 %s, statistics tables %v\n", short(goHash), goTables)
+	fmt.Printf("after ANALYZE: C CLI file sha256 %s, statistics tables %v\n", short(cliHash), cliTables)
+	check(baseGo == baseCLI, "both copies start byte-identical")
+	if goStat4 == 1 && cliStat4 == 0 {
+		check(goHash != cliHash && slices.Contains(goTables, "sqlite_stat4") && !slices.Contains(cliTables, "sqlite_stat4"),
+			"twin check limit: the driver is compiled with ENABLE_STAT4 and this CLI is not, so the same ANALYZE writes a sqlite_stat4 table only in the driver and the two files differ")
+	} else {
+		check(goStat4 == cliStat4 && goHash == cliHash, "with the same ENABLE_STAT4 setting the same ANALYZE leaves byte-identical files")
+	}
 }
 
 func displayPath(path string) string {
