@@ -106,8 +106,10 @@ func RunCLIMerged(ctx context.Context, cli sqlitex.CLI, request CLITrace, option
 	if len(options.Syscalls) == 0 {
 		options.Syscalls = DefaultSyscalls
 	}
-	if !containsString(options.Syscalls, "write") {
-		options.Syscalls = append(append([]string(nil), options.Syscalls...), "write")
+	for _, needed := range []string{"write", "writev"} {
+		if !containsString(options.Syscalls, needed) {
+			options.Syscalls = append(append([]string(nil), options.Syscalls...), needed)
+		}
 	}
 	if options.StringLimit <= 0 {
 		options.StringLimit = 4096

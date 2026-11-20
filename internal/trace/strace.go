@@ -64,7 +64,7 @@ func (s Syscall) String() string {
 	switch s.Name {
 	case "pwrite64", "pread64", "pwrite", "pread":
 		fmt.Fprintf(&b, " off=%d len=%d", s.Offset, s.Length)
-	case "write", "read":
+	case "write", "read", "writev", "readv":
 		fmt.Fprintf(&b, " len=%d", s.Length)
 	case "ftruncate":
 		fmt.Fprintf(&b, " len=%d", s.Length)
@@ -103,6 +103,7 @@ var (
 	resultPart   = regexp.MustCompile(`^(.*)\)\s+=\s+(.*)$`)
 	fdWithPath   = regexp.MustCompile(`^(-?\d+|AT_FDCWD)(?:<(.*)>)?$`)
 	errnoResult  = regexp.MustCompile(`^-1 (E[A-Z0-9]+)`)
+	iovecBase    = regexp.MustCompile(`iov_base=("(?:[^"\\]|\\.)*")(\.\.\.)?`)
 	lockStruct   = regexp.MustCompile(`l_type=(\w+), l_whence=(\w+), l_start=(-?\d+), l_len=(-?\d+)`)
 )
 
@@ -357,6 +358,18 @@ func (p *straceParser) fillArgs(call *Syscall, argText string) {
 		p.parseFD(call, at(0))
 		call.Data, call.Truncated = Unquote(at(1))
 		call.Length = parseInt(at(2))
+	case "writev", "readv":
+		p.parseFD(call, at(0))
+		var data strings.Builder
+		for _, m := range iovecBase.FindAllStringSubmatch(at(1), -1) {
+			part, truncated := Unquote(m[1] + m[2])
+			data.WriteString(part)
+			call.Truncated = call.Truncated || truncated
+		}
+		if strings.HasSuffix(strings.TrimSpace(at(1)), "...]") {
+			call.Truncated = true
+		}
+		call.Data = data.String()
 	case "ftruncate":
 		p.parseFD(call, at(0))
 		call.Length = parseInt(at(1))

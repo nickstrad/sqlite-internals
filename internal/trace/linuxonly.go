@@ -47,7 +47,7 @@ type Result struct {
 }
 
 var DefaultSyscalls = []string{
-	"openat", "open", "close", "pwrite64", "write", "pread64", "read",
+	"openat", "open", "close", "pwrite64", "write", "writev", "pread64", "read",
 	"fsync", "fdatasync", "unlink", "unlinkat", "fcntl", "ftruncate", "mmap", "munmap",
 }
 

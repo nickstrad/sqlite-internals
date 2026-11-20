@@ -212,3 +212,27 @@ func TestLinuxOnlyMessage(t *testing.T) {
 		t.Fatalf("message %q", message)
 	}
 }
+
+func TestWritevMergesLikeWrite(t *testing.T) {
+	text := `7 writev(1<pipe:[9]>, [{iov_base="trace.xSync(t.db-wal,FULL)", iov_len=26}, {iov_base=NULL, iov_len=0}], 2) = 26
+7 fdatasync(4</w/t.db-wal>) = 0
+7 writev(1<pipe:[9]>, [{iov_base=" -> 0", iov_len=5}, {iov_base="\n", iov_len=1}], 2) = 6
+7 writev(1<pipe:[9]>, [{iov_base="", iov_len=0}, {iov_base="ok\n", iov_len=3}], 2) = 3
+`
+	log, err := ParseStraceText(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged, err := MergeStdoutVFS(log, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for _, event := range merged.Relative("/w").Events {
+		lines = append(lines, event.String())
+	}
+	want := "VFS xSync(t.db-wal,FULL) -> 0\n    SYS fdatasync t.db-wal = 0\nOUT ok"
+	if strings.Join(lines, "\n") != want {
+		t.Fatalf("got\n%s", strings.Join(lines, "\n"))
+	}
+}

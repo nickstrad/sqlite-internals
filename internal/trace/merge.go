@@ -60,7 +60,7 @@ func MergeStdoutVFS(log *StraceLog, stdoutFD int, includeSyscall func(Syscall) b
 	lineStartsVFS := false
 	for i := range log.Calls {
 		call := &log.Calls[i]
-		if call.Name == "write" && call.FD == stdoutFD {
+		if (call.Name == "write" || call.Name == "writev") && call.FD == stdoutFD {
 			if call.Truncated {
 				return nil, fmt.Errorf("strace truncated a write to fd %d; raise the string limit: %s", stdoutFD, call.Raw)
 			}
