@@ -14,6 +14,19 @@ import (
 
 const CLIEnv = "SQLITE3_BIN"
 
+const ToolsDirEnv = "COURSE_TOOLS_DIR"
+
+func ToolsDir() (string, error) {
+	if dir := os.Getenv(ToolsDirEnv); dir != "" {
+		return filepath.Abs(dir)
+	}
+	root, err := RepoRoot()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "_tools"), nil
+}
+
 type CLI struct {
 	Path     string
 	SourceID string
@@ -41,9 +54,9 @@ func toolCandidates(name, envVar string) ([]string, []string) {
 			origins = append(origins, "$"+envVar)
 		}
 	}
-	if root, err := RepoRoot(); err == nil {
-		paths = append(paths, filepath.Join(root, "_tools", "bin", name))
-		origins = append(origins, "_tools/bin")
+	if tools, err := ToolsDir(); err == nil {
+		paths = append(paths, filepath.Join(tools, "bin", name))
+		origins = append(origins, "tools dir")
 	}
 	if found, err := exec.LookPath(name); err == nil {
 		paths = append(paths, found)
@@ -59,7 +72,7 @@ func LocateTool(name string) (string, error) {
 			return path, nil
 		}
 	}
-	return "", fmt.Errorf("%s not found in _tools/bin or on PATH; run: go run ./cmd/course build-tools", name)
+	return "", fmt.Errorf("%s not found in $COURSE_TOOLS_DIR/bin, _tools/bin or on PATH; run: go run ./cmd/course build-tools", name)
 }
 
 func LocateCLI(ctx context.Context) (CLI, error) {
@@ -83,7 +96,7 @@ func LocateCLI(ctx context.Context) (CLI, error) {
 		}
 		return cli, nil
 	}
-	return CLI{}, errors.New("no sqlite3 CLI found ($SQLITE3_BIN, _tools/bin/sqlite3, PATH); run: go run ./cmd/course build-tools")
+	return CLI{}, errors.New("no sqlite3 CLI found ($SQLITE3_BIN, $COURSE_TOOLS_DIR/bin or _tools/bin, PATH); run: go run ./cmd/course build-tools")
 }
 
 func (c CLI) QuerySourceID(ctx context.Context) (string, error) {

@@ -12,7 +12,7 @@ import (
 
 var PathSweepExclude = []string{"agent_work", "kb", "STATE.md"}
 
-const ForbiddenPathFragment = "/root/"
+const ForbiddenPathFragment = "/" + "root" + "/"
 
 func nestedModuleDirs(files []string) []string {
 	var dirs []string

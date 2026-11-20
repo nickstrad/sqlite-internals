@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -48,17 +47,21 @@ func verifyGitCheckout(ctx context.Context, dir string) error {
 }
 
 func runFetchSource(ctx context.Context, root string, args []string) error {
+	pin := sqlite.Current()
 	flags := flag.NewFlagSet("fetch-source", flag.ContinueOnError)
+	destFlag := flags.String("dest", filepath.Join(root, "_src", pin.SourceDirName()), "directory to clone into")
 	if err := flags.Parse(args); err != nil {
 		return exitError{2}
 	}
-	pin := sqlite.Current()
-	dest := filepath.Join(root, "_src", pin.SourceDirName())
+	dest, err := filepath.Abs(*destFlag)
+	if err != nil {
+		return err
+	}
 	if _, err := os.Stat(dest); err == nil {
 		if err := verifyGitCheckout(ctx, dest); err != nil {
 			return fmt.Errorf("existing %s: %w (delete it and run fetch-source again)", dest, err)
 		}
-		fmt.Printf("OK _src/%s already present: tag %s, git %s, manifest.uuid %s\n", pin.SourceDirName(), pin.Tag, pin.GitCommit, pin.FossilID)
+		fmt.Printf("OK %s already present: tag %s, git %s, manifest.uuid %s\n", relative(root, dest), pin.Tag, pin.GitCommit, pin.FossilID)
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
@@ -80,7 +83,7 @@ func runFetchSource(ctx context.Context, root string, args []string) error {
 	if err := os.Rename(staging, dest); err != nil {
 		return err
 	}
-	fmt.Printf("OK _src/%s: tag %s, git %s, manifest.uuid %s\n", pin.SourceDirName(), pin.Tag, pin.GitCommit, pin.FossilID)
+	fmt.Printf("OK %s: tag %s, git %s, manifest.uuid %s\n", relative(root, dest), pin.Tag, pin.GitCommit, pin.FossilID)
 	return nil
 }
 
@@ -151,9 +154,13 @@ func runBuildTools(ctx context.Context, root string, args []string) error {
 		return err
 	}
 	pin := sqlite.Current()
-	buildRoot := filepath.Join(root, "_tools", "build")
+	tools, err := sqlitex.ToolsDir()
+	if err != nil {
+		return err
+	}
+	buildRoot := filepath.Join(tools, "build")
 	buildDir := filepath.Join(buildRoot, pin.SourceDirName())
-	binDir := filepath.Join(root, "_tools", "bin")
+	binDir := filepath.Join(tools, "bin")
 	if err := os.MkdirAll(buildRoot, 0o755); err != nil {
 		return err
 	}
@@ -165,7 +172,7 @@ func runBuildTools(ctx context.Context, root string, args []string) error {
 	defer log.Close()
 	_, makefileErr := os.Stat(filepath.Join(buildDir, "Makefile"))
 	if !*reuse || makefileErr != nil {
-		fmt.Printf("copying the pinned tree to _tools/build/%s\n", pin.SourceDirName())
+		fmt.Printf("copying the pinned tree %s to %s\n", tree, buildDir)
 		if err := os.RemoveAll(buildDir); err != nil {
 			return err
 		}
@@ -174,13 +181,13 @@ func runBuildTools(ctx context.Context, root string, args []string) error {
 		}
 		fmt.Println("running ./configure")
 		if err := runCommand(ctx, buildDir, log, "./configure"); err != nil {
-			return fmt.Errorf("%w (log: _tools/build/build.log)", err)
+			return fmt.Errorf("%w (log: %s)", err, logPath)
 		}
 	}
 	fmt.Printf("running make %s\n", joinArgs(builtTools))
 	makeArgs := append([]string{fmt.Sprintf("-j%d", max(*jobs, 1))}, builtTools...)
 	if err := runCommand(ctx, buildDir, log, "make", makeArgs...); err != nil {
-		return fmt.Errorf("%w (log: _tools/build/build.log)", err)
+		return fmt.Errorf("%w (log: %s)", err, logPath)
 	}
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return err
@@ -194,14 +201,14 @@ func runBuildTools(ctx context.Context, root string, args []string) error {
 			return err
 		}
 		info, _ := os.Stat(filepath.Join(binDir, tool))
-		fmt.Printf("OK _tools/bin/%s (%d bytes)\n", tool, info.Size())
+		fmt.Printf("OK %s (%d bytes)\n", filepath.Join(binDir, tool), info.Size())
 	}
 	cli := sqlitex.CLI{Path: filepath.Join(binDir, "sqlite3")}
 	id, err := cli.QuerySourceID(ctx)
 	if err != nil {
 		return err
 	}
-	if err := sqlitex.CheckSourceID("_tools/bin/sqlite3", id); err != nil {
+	if err := sqlitex.CheckSourceID(cli.Path, id); err != nil {
 		return err
 	}
 	probeDir, err := os.MkdirTemp("", "course-vfstrace-")
@@ -214,8 +221,8 @@ func runBuildTools(ctx context.Context, root string, args []string) error {
 		return err
 	}
 	if !strings.Contains(result.Stdout, "trace.x") {
-		return errors.New("_tools/bin/sqlite3 -vfstrace printed no VFS trace")
+		return fmt.Errorf("%s -vfstrace printed no VFS trace", cli.Path)
 	}
-	fmt.Printf("OK _tools/bin/sqlite3 reports the pinned source id %s and supports -vfstrace\n", id)
+	fmt.Printf("OK %s reports the pinned source id %s and supports -vfstrace\n", cli.Path, id)
 	return nil
 }

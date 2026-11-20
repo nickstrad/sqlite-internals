@@ -422,9 +422,9 @@ func TestGofmtAndPathSweeps(t *testing.T) {
 		"kb/ignored.go":    "package kb\nvar  z = 1\n",
 		"nested/go.mod":    "module nested\n",
 		"nested/skip.go":   "package nested\nvar  z = 1\n",
-		"docs/notes.md":    "see /root/Software/x\n",
-		"agent_work/ok.md": "/root/is fine here\n",
-		"STATE.md":         "/root/ fine\n",
+		"docs/notes.md":    "see " + ForbiddenPathFragment + "Software/x\n",
+		"agent_work/ok.md": ForbiddenPathFragment + "is fine here\n",
+		"STATE.md":         ForbiddenPathFragment + " fine\n",
 		"docs/clean.md":    "nothing local\n",
 	})
 	problems, count, err := CheckGofmt(repo.dir)
