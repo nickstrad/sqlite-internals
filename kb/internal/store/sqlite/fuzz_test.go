@@ -1,0 +1,162 @@
+package sqlite
+
+import (
+	"context"
+	"slices"
+	"strings"
+	"testing"
+	"unicode/utf8"
+
+	"github.com/nickstrad/kb/internal/store"
+)
+
+// FuzzSanitizeFTS checks the sanitiser's contract against a real FTS5 table built with the same
+// tokenizer as chunks_fts, using SQLite rather than Go to decide what a token is:
+//
+//  1. the AND and OR queries are both empty or both non-empty;
+//  2. SQLite splits every quoted phrase into at least one token, so no phrase is empty;
+//  3. both queries parse as FTS5 MATCH expressions;
+//  4. a document whose text is the raw query is found by the AND query. This is the check the
+//     hyphen bug failed: `draw-visual` was sanitised to a token the document did not contain.
+//
+// For rule 4 the document is the query with every '*' removed, matching the sanitiser's deliberate
+// `post*gres` → postgres rule. It is skipped for input that is not valid UTF-8, which Go and SQLite
+// decode differently, and for a document SQLite splits into no tokens, which no MATCH can find.
+//
+// Rule 2 is what found the Unicode skew behind ftsSkewNotToken (`ᳳ`, `ᦳ`): a word Go called a
+// letter became a phrase with no tokens, so the AND query for `quokka ᳳ` missed.
+//
+// Run: go test -tags fts5 ./internal/store/sqlite/ -run '^$' -fuzz FuzzSanitizeFTS -fuzztime 60s
+func FuzzSanitizeFTS(f *testing.F) {
+	for _, seed := range []string{
+		"daemon dies when I log out of ssh",
+		"set -e loop counter exits",
+		`grpcurl says "server does not support reflection"`,
+		"foo:bar (baz)",
+		"draw-visual go-build app-server-daemon",
+		"not-found NOT a AND b NEAR c",
+		`a"OR".`,
+		"quokka ... && — widget",
+		"quokka ᳳ ᦳ",
+		"post*gres **bold** *.go",
+		"^x {y} +z col:val a--b -foo-",
+		"café naïve 日本語 straße İstanbul",
+		`"" ** (( )) :: ^^ -- ++ {}`,
+		"a\x00b c",
+		"NOT a",
+		"widget^2",
+		"a AND b NEAR c",
+		"",
+	} {
+		f.Add(seed)
+	}
+
+	s := ftsFixture(f)
+	ctx := context.Background()
+	// Temp tables belong to one connection, and database/sql may hand out another from its pool,
+	// so all temp-table work goes through this one.
+	conn, err := s.DB().Conn(ctx)
+	if err != nil {
+		f.Fatalf("dedicated connection: %v", err)
+	}
+	f.Cleanup(func() { conn.Close() })
+	if _, err := conn.ExecContext(ctx,
+		`CREATE VIRTUAL TABLE temp.fuzz_doc USING fts5(x, tokenize='porter unicode61')`); err != nil {
+		f.Fatalf("create fuzz table: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx,
+		`CREATE VIRTUAL TABLE temp.fuzz_vocab USING fts5vocab(temp, fuzz_doc, instance)`); err != nil {
+		f.Fatalf("create fuzz vocab table: %v", err)
+	}
+	// tokens stores text as the only document in fuzz_doc and returns how many tokens SQLite
+	// split it into. The document stays in place for a following MATCH.
+	tokens := func(t *testing.T, text string) int {
+		t.Helper()
+		if _, err := conn.ExecContext(ctx, `DELETE FROM temp.fuzz_doc`); err != nil {
+			t.Fatalf("reset fuzz table: %v", err)
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT INTO temp.fuzz_doc(x) VALUES (?)`, text); err != nil {
+			t.Fatalf("insert %q: %v", text, err)
+		}
+		var n int
+		if err := conn.QueryRowContext(ctx, `SELECT count(*) FROM temp.fuzz_vocab`).Scan(&n); err != nil {
+			t.Fatalf("count tokens of %q: %v", text, err)
+		}
+		return n
+	}
+
+	f.Fuzz(func(t *testing.T, q string) {
+		andQuery, orQuery := SanitizeFTS(q)
+		if (andQuery == "") != (orQuery == "") {
+			t.Fatalf("SanitizeFTS(%q): and=%q or=%q, want both empty or both set", q, andQuery, orQuery)
+		}
+		if andQuery == "" {
+			return
+		}
+		// A phrase never contains '"', so the phrases are the odd pieces between quotes. Splitting
+		// on " OR " instead would cut a phrase such as "a OR ." in two.
+		pieces := strings.Split(orQuery, `"`)
+		for i := 1; i < len(pieces); i += 2 {
+			if tokens(t, pieces[i]) == 0 {
+				t.Fatalf("SanitizeFTS(%q): phrase %q has no tokens", q, pieces[i])
+			}
+		}
+		for _, mq := range []string{andQuery, orQuery} {
+			if _, err := runMatch(ctx, s, mq); err != nil {
+				t.Fatalf("SanitizeFTS(%q) = %s: does not parse: %v", q, mq, err)
+			}
+		}
+		// The phrase and NEAR forms (PLAN 4.6) parse too, whatever the fields, and are empty
+		// together (both need two surviving fields).
+		fields := strings.Fields(q)
+		phrase, near := MatchPhrase(fields), MatchNear(fields, store.NearDistance)
+		if (phrase == "") != (near == "") {
+			t.Fatalf("MatchPhrase(%q) = %q, MatchNear = %q: want both empty or both set", q, phrase, near)
+		}
+		for _, mq := range []string{phrase, near} {
+			if mq == "" {
+				continue
+			}
+			rows, err := runMatch(ctx, s, mq)
+			if err != nil {
+				t.Fatalf("tier expression %s for %q does not parse: %v", mq, q, err)
+			}
+			// Every phrase or NEAR match is an AND match (W13 pass): mainList skips the tiers when
+			// AND is empty and rescore takes every tier row's score from the AND query.
+			andRows, _ := runMatch(ctx, s, andQuery)
+			for _, r := range rows {
+				if !slices.ContainsFunc(andRows, func(a store.FTSRow) bool { return a.ChunkID == r.ChunkID }) {
+					t.Fatalf("%q: chunk %d matches tier %s but not AND %s", q, r.ChunkID, mq, andQuery)
+				}
+			}
+		}
+		// The same on a document made of the phrase's own words, which the phrase always finds.
+		if phrase != "" {
+			matches := func(mq string) int {
+				var n int
+				if err := conn.QueryRowContext(ctx, `SELECT count(*) FROM temp.fuzz_doc WHERE fuzz_doc MATCH ?`, mq).Scan(&n); err != nil {
+					t.Fatalf("match %s: %v", mq, err)
+				}
+				return n
+			}
+			if tokens(t, strings.Trim(phrase, `"`)) > 0 && matches(phrase) == 1 && matches(andQuery) != 1 {
+				t.Fatalf("%q: the document %s is found by its phrase but not by AND %s", q, phrase, andQuery)
+			}
+		}
+
+		if !utf8.ValidString(q) {
+			return
+		}
+		doc := strings.ReplaceAll(q, "*", "")
+		if tokens(t, doc) == 0 {
+			return
+		}
+		var n int
+		if err := conn.QueryRowContext(ctx, `SELECT count(*) FROM temp.fuzz_doc WHERE fuzz_doc MATCH ?`, andQuery).Scan(&n); err != nil {
+			t.Fatalf("match %s: %v", andQuery, err)
+		}
+		if n != 1 {
+			t.Fatalf("document %q is not found by its own sanitised query %s", doc, andQuery)
+		}
+	})
+}

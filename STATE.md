@@ -7,52 +7,54 @@ deterministically, well enough to build platforms holding thousands of SQLite fi
 can be remade as needed; state capture and deterministic rebuild is the through-line.
 Plan: OUTLINE.md (revision 2). What changed from revision 1: OUTLINE-CHANGES.md.
 
-Status: Phase 1b (outline revision) COMPLETE 2026-11-20. Waiting for Nick's sign-off on the
-revised OUTLINE.md.
-HARD GATE: no Phase 2 work (no builders, no chapter text, no experiment code) until Twin
-relays Nick's sign-off in a follow-up brief file.
+Status: **Phase 2 (build) IN PROGRESS** since 2026-11-20. Nick signed off OUTLINE.md revision 2
+with rulings (OUTLINE.md section 8). Chunk 0 (foundation) is building.
+
+Rulings applied (details: OUTLINE.md section 8):
+- Upstream github.com/nickstrad/sqlite-internals (public); every chunk lands on main and is pushed.
+- Docker for services; SeaweedFS is the capstone's S3 store. Shared `internal/` packages.
+- Cross-platform: must build and run on macOS; Linux-only tooling gated, `lab` Docker service
+  as the Mac route; darwin cross-build + vet verify every chunk.
+- No second SQLite version (future note: a version-upgrade experiment could be added later).
+- Knowledge in two stores kept in sync: vm-1 `kb`, and this repo (`docs/knowledge/` indexed by
+  the vendored `kb/`, location `.kb/`). `agent_work/kb-sync.sh`.
+- Go for all code and scripts; working scripts in `agent_work/` (Go or bash), indexed.
+- Driver modernc.org/sqlite v1.60.1, no cgo/C. Rollback experiment 4.1 at full depth.
+- WAL is the platform default; per-chapter evaluation recorded here: (none yet).
+- VFS viability verdict: PENDING (probe in chunk 0, `agent_work/probes/vfs-viability`).
+- Seats: Opus code; Neon all prose + code review + adversarial scripts; Fable orchestrates,
+  runs the adversarial tests, accepts. Astra not used.
+- Open questions 7, 12, 13: outline recommendations applied (real source copies checked against
+  the pin; five questions per chapter with answers in a separate file, no tutor packaging;
+  failure-cases sections link the adversarial scripts).
+- Addendum: final publishing chunk (GitHub Pages via Actions,
+  https://nickstrad.github.io/sqlite-internals/); self-contained rule (no build-machine
+  references in anything a reader sees; sweep before publishing lands).
 
 Done:
-- Spec saved to docs/course-source.md; repo created (local git, no remote) — 97f4a47.
-- SQLite pin fixed: tag `version-3.53.4` = git `b09c88c1…` = Fossil `bf7c7f30…` = the
-  installed sqlite3 CLI's source id. Pinned tree at /root/Software/sqlite-src/3.53.4
-  (re-create with agent_work/fetch-pinned-sqlite.sh) — f9ad78b.
-- Four Opus research reports merged into docs/knowledge/ with their probes under
-  agent_work/probes/ (indexed in agent_work/INDEX.md).
-- OUTLINE.md revision 1 (55 experiments, first-party cgo) — 7924ef7.
-- Phase 1b, under Nick's direction of 2026-11-20: OUTLINE.md revision 2 — 32 experiments on an
-  8-rung Rebuild Ladder; Go access through existing libraries only (modernc.org/sqlite
-  v1.60.1, the pinned CLI's -vfstrace, strace), no cgo and no C; power loss at understanding
-  level (one model in experiment 9.2); both reference books mined; Neon seat ruling recorded in
-  section 6; Phase 2 in 12 chunks. Two probes back the library decision:
-  agent_work/probes/outline-v2, written up in docs/knowledge/library-route-probes.md.
-  Commit SHA is in /root/runs/sqlite-outline-v2-done.txt.
+- Phase 1 and 1b: research reports, probes, OUTLINE.md revision 2 — a7bb640.
+- Phase 2 setup: kb vendored under `kb/` (upstream SHA in `agent_work/kb-vendor.sha`), in-repo
+  kb location `.kb/`, orchestration and Neon scripts (`agent_work/orch`, `agent_work/neon`),
+  rulings recorded in OUTLINE.md section 8.
 
-In progress: nothing. No agents are running.
+Chunk status (build → Neon prose → Neon review → repair → re-review → adversarial → accept → land):
 
-Next steps (only after sign-off):
-1. Apply any edits from Nick's ruling to OUTLINE.md.
-2. Check the Claude, Codex and Muse usage gauges and the OpenRouter budget for Neon, then
-   dispatch Chunk 0 (foundation) per OUTLINE.md section 6.
-3. Continue wave by wave; update this file at every step.
+| Chunk | State | Review | Adversarial | Landed |
+| --- | --- | --- | --- | --- |
+| 0 foundation | Opus build running | – | – | – |
+| 1, 2, 3, 4, 5, 7, 6, 8, 9, 10a, 10b, publishing | not started | | | |
+
+In progress: chunk 0 Opus build, worktree `../sqlite-internals-work/ch00`, branch `chunk/ch00`.
+
+Next steps: finish the chunk 0 chain and land it; then chunks in OUTLINE.md section 6 order.
 
 Open decisions / blockers:
-- Nick: sign-off on OUTLINE.md revision 2, and the open questions in its section 7 (also
-  listed at the end of OUTLINE-CHANGES.md): GitHub remote; source copies; shared packages;
-  capstone store; Linux only; second SQLite version; tutor packaging; where Astra's scripts
-  are shown; and four new ones — the driver (modernc recommended), rollback-journal depth,
-  no custom VFS, comments in Astra's scripts.
-- Nick or Twin: the Claude sign-in on this VM ends between 2026-11-25 and 2026-11-28
-  (warning printed by every headless run). Renew with `claude auth login` before Phase 2
-  runs past that date.
-- Usage gauges were not readable from the headless sessions; check in the TUI before the
-  first Phase 2 wave.
-- Neon runs on an OpenRouter key with a $50 monthly limit ($44.26 left on 2026-11-20, resets
-  2026-12-01); measure one prose pass in chunk 0 before dispatching wave 2.
+- Nick or Twin: the Claude sign-in on the build VM ends between 2026-11-25 and 2026-11-28.
+- Neon budget: OpenRouter key had $44.14 left at Phase 2 start (resets 2026-12-01); the direct
+  Gemini key is the fallback route.
 
-Resume: read this file, then OUTLINE.md, OUTLINE-CHANGES.md and
-/root/briefs/sqlite-neon-ruling.md; `git log` for what has landed. Progress logs:
-/root/runs/sqlite-orchestrator-progress.txt (Phase 1) and
-/root/runs/sqlite-revision-progress.txt (Phase 1b). Research briefs:
-/root/briefs/sqlite-research-*.md; their logs and exit files: /root/runs/sqlite-research-*.
-Reference books (read-only): /root/briefs/refdocs/. No worktrees or branches are open.
+Resume: read this file, OUTLINE.md (section 8 first), then `git log` and `git worktree list`.
+Each run is launched with `agent_work/orch/launch.sh <name> <worktree> <opus|neon> <brief>`;
+briefs are in /root/briefs/sqlite-p2/, logs and exit files are /root/runs/sqlite-p2-<name>.*
+(a run is alive if its .pid process exists and there is no .exit file; relaunch the same
+command if it died). Progress lines: /root/runs/sqlite-phase2-progress.txt.

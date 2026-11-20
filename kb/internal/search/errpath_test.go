@@ -1,0 +1,208 @@
+package search
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+
+	"github.com/nickstrad/kb/internal/embed/fake"
+	"github.com/nickstrad/kb/internal/errs"
+	"github.com/nickstrad/kb/internal/store"
+)
+
+// faultyRetriever wraps a real store and fails the named call (and counts FTS calls by op), so
+// the error paths and the AND→OR retry decision of Search are reachable without a broken database.
+type faultyRetriever struct {
+	store.Retriever
+	failOn  string // "HasVectors", "FTS", "FTS#2", "KNN", "ChunkMeta"
+	ftsOps  []store.FTSOp
+	exact   []bool         // FTSQuery.Exact of each FTS call
+	ftsRows []store.FTSRow // when non-nil, FTS returns these instead of asking the store
+	match   string
+}
+
+var errDriver = errs.New(errs.Internal, "sqlite.test", "driver failed")
+
+func (f *faultyRetriever) HasVectors(ctx context.Context) (bool, error) {
+	if f.failOn == "HasVectors" {
+		return false, errDriver
+	}
+	return f.Retriever.HasVectors(ctx)
+}
+
+func (f *faultyRetriever) FTS(ctx context.Context, q store.FTSQuery) (store.FTSResult, error) {
+	f.ftsOps = append(f.ftsOps, q.Op)
+	f.exact = append(f.exact, q.Exact)
+	if f.failOn == "FTS" || (f.failOn == "FTS#2" && len(f.ftsOps) == 2) {
+		return store.FTSResult{}, errDriver
+	}
+	if f.ftsRows != nil || f.match != "" {
+		return store.FTSResult{Rows: f.ftsRows, Match: f.match}, nil
+	}
+	return f.Retriever.FTS(ctx, q)
+}
+
+func (f *faultyRetriever) KNN(ctx context.Context, q store.KNNQuery) ([]store.VecRow, error) {
+	if f.failOn == "KNN" {
+		return nil, errDriver
+	}
+	return f.Retriever.KNN(ctx, q)
+}
+
+func (f *faultyRetriever) ChunkMeta(ctx context.Context, ids []int64) (map[int64]store.ChunkMeta, error) {
+	if f.failOn == "ChunkMeta" {
+		return nil, errDriver
+	}
+	return f.Retriever.ChunkMeta(ctx, ids)
+}
+
+func (f *faultyRetriever) Superseded(ctx context.Context, paths []string) (map[string]bool, error) {
+	if f.failOn == "Superseded" {
+		return nil, errDriver
+	}
+	return f.Retriever.Superseded(ctx, paths)
+}
+
+// TestSearchStoreErrors: a store failure at any stage aborts the search with the store's kind
+// kept (a driver failure stays Internal, so the CLI reports an incident, never a usage error).
+func TestSearchStoreErrors(t *testing.T) {
+	for _, tc := range []struct {
+		failOn, query, mode string
+	}{
+		{"HasVectors", "quokka", ModeHybrid},
+		{"KNN", "quokka", ModeHybrid},
+		{"FTS", "quokka", ModeFTS},
+		{"FTS#2", "quokka fluffernutter", ModeFTS}, // the OR retry
+		{"FTS#2", "quokka_widget", ModeFTS},        // the exact list (the main AND matched)
+		{"ChunkMeta", "quokka", ModeFTS},
+		{"Superseded", "quokka", ModeFTS},
+	} {
+		t.Run(tc.failOn+" "+tc.query, func(t *testing.T) {
+			s, _ := testSearcher(t)
+			s.Store = &faultyRetriever{Retriever: s.Store, failOn: tc.failOn}
+			out, err := s.Search(context.Background(), Request{Query: tc.query, Mode: tc.mode, K: 8})
+			if err == nil || out != nil {
+				t.Fatalf("Search = (%v, %v), want the store error", out, err)
+			}
+			if !errors.Is(err, errDriver) || errs.KindOf(err) != errs.Internal {
+				t.Errorf("err = %v (kind %v), want errDriver kept as Internal", err, errs.KindOf(err))
+			}
+		})
+	}
+}
+
+// TestFTSListRetryDecision: lexicalList (both lists) retries with OR only when the AND query ran (Match != ""),
+// found nothing, and had more than one term, and reports the retry exactly then.
+func TestFTSListRetryDecision(t *testing.T) {
+	one := []store.FTSRow{{ChunkID: 1}}
+	for _, tc := range []struct {
+		name  string
+		terms []string
+		rows  []store.FTSRow
+		match string
+		want  []store.FTSOp
+	}{
+		{"AND empty, two terms: retry with OR", []string{"a", "b"}, []store.FTSRow{}, "m", []store.FTSOp{store.OpAnd, store.OpOr}}, // the only retried row
+		{"AND empty, one term: no retry", []string{"a"}, []store.FTSRow{}, "m", []store.FTSOp{store.OpAnd}},
+		{"nothing ran (all terms sanitised away): no retry", []string{"a", "b"}, []store.FTSRow{}, "", []store.FTSOp{store.OpAnd}},
+		{"AND matched: no retry", []string{"a", "b"}, one, "m", []store.FTSOp{store.OpAnd}},
+	} {
+		for _, exact := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s exact=%v", tc.name, exact), func(t *testing.T) {
+				f := &faultyRetriever{ftsRows: tc.rows, match: tc.match}
+				s := &Searcher{Store: f}
+				_, retried, err := s.lexicalList(context.Background(), tc.terms, nil, "", DefaultParams(), exact)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for i, e := range f.exact {
+					if e != exact {
+						t.Fatalf("FTS call %d has Exact=%v, want %v", i, e, exact)
+					}
+				}
+				if want := len(tc.want) == 2; retried != want {
+					t.Fatalf("retried = %v, want %v", retried, want)
+				}
+				if len(f.ftsOps) != len(tc.want) {
+					t.Fatalf("FTS ops = %v, want %v", f.ftsOps, tc.want)
+				}
+				for i := range tc.want {
+					if f.ftsOps[i] != tc.want[i] {
+						t.Fatalf("FTS ops = %v, want %v", f.ftsOps, tc.want)
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestFusedBeforeTotalOrder pins each level of Fuse's total order directly. Through Fuse the
+// vec-rank and chunk-id levels are unreachable (ranks within a list are unique, so equal scores
+// with equal fts ranks need equal vec ranks), but the assertion in Fuse relies on the full order.
+func TestFusedBeforeTotalOrder(t *testing.T) {
+	r := func(n int) *int { return &n }
+	for _, tc := range []struct {
+		name string
+		a, b Candidate
+	}{
+		{"higher score first", Candidate{ChunkID: 9, RRFScore: 0.2}, Candidate{ChunkID: 1, RRFScore: 0.1, FTSRank: r(1)}},
+		{"tie: better fts rank first", Candidate{ChunkID: 9, RRFScore: 0.1, FTSRank: r(1)}, Candidate{ChunkID: 1, RRFScore: 0.1, FTSRank: r(2)}},
+		{"tie: an fts rank beats none", Candidate{ChunkID: 9, RRFScore: 0.1, FTSRank: r(5)}, Candidate{ChunkID: 1, RRFScore: 0.1, VecRank: r(1)}},
+		{"tie on fts: better vec rank first", Candidate{ChunkID: 9, RRFScore: 0.1, VecRank: r(1)}, Candidate{ChunkID: 1, RRFScore: 0.1, VecRank: r(2)}},
+		{"tie on fts and vec: better exact rank first", Candidate{ChunkID: 9, RRFScore: 0.1, VecRank: r(1), ExactRank: r(1)}, Candidate{ChunkID: 1, RRFScore: 0.1, VecRank: r(1), ExactRank: r(2)}},
+		{"tie on fts and vec: an exact rank beats none", Candidate{ChunkID: 9, RRFScore: 0.1, ExactRank: r(7)}, Candidate{ChunkID: 1, RRFScore: 0.1}},
+		{"tie on every rank: lower chunk id first", Candidate{ChunkID: 1, RRFScore: 0.1, VecRank: r(1), ExactRank: r(1)}, Candidate{ChunkID: 2, RRFScore: 0.1, VecRank: r(1), ExactRank: r(1)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !fusedBefore(tc.a, tc.b) {
+				t.Errorf("fusedBefore(a, b) = false, want true")
+			}
+			if fusedBefore(tc.b, tc.a) {
+				t.Errorf("fusedBefore(b, a) = true, want false")
+			}
+		})
+	}
+	same := Candidate{ChunkID: 3, RRFScore: 0.1, FTSRank: r(1)}
+	if fusedBefore(same, same) {
+		t.Error("fusedBefore(x, x) = true, want false (strict order)")
+	}
+}
+
+// shapedEmbedder returns a fixed result, so embedQuery's shape guard can be reached.
+type shapedEmbedder struct {
+	*fake.Embedder
+	vecs [][]float32
+}
+
+func (e shapedEmbedder) Embed(context.Context, []string) ([][]float32, error) { return e.vecs, nil }
+
+// TestEmbedQueryShapeGuard: an embedder that answers with anything but exactly one non-empty
+// vector is a bug (Internal), never a silent empty vector search; one 1-dim vector is accepted.
+func TestEmbedQueryShapeGuard(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		vecs [][]float32
+		ok   bool
+	}{
+		{"zero vectors", nil, false},
+		{"two vectors", [][]float32{{1}, {1}}, false},
+		{"one empty vector", [][]float32{{}}, false},
+		{"one 1-dim vector", [][]float32{{1}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Searcher{Embedder: shapedEmbedder{fake.New("fake-embed", 768), tc.vecs}}
+			v, _, err := s.embedQuery(context.Background(), "q")
+			if tc.ok {
+				if err != nil || len(v) != 1 {
+					t.Fatalf("embedQuery = (%v, %v), want the one vector", v, err)
+				}
+				return
+			}
+			if errs.KindOf(err) != errs.Internal || !strings.Contains(err.Error(), "embedder returned") {
+				t.Fatalf("err = %v (kind %v), want Internal \"embedder returned\"", err, errs.KindOf(err))
+			}
+		})
+	}
+}

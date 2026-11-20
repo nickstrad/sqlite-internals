@@ -52,3 +52,16 @@ has a row here. Nothing lives only in /tmp or a shell history.
 | `outline-span-check.sh` | Spot-check 72 function spans and 20 file paths cited in OUTLINE.md against the pinned tree | outline (all chapters) | Fable orchestrator, 2026-11-20 | Every checked symbol is at the cited start line (unixLock's span starts at its doc comment, function at 1866) and every cited file exists at 3.53.4 |
 | `probes/outline-v2/victim/main.go` (`api` mode) | Exercise an unmodified `modernc.org/sqlite v1.60.1` for what the revised outline needs: pin, sqlite_dbpage, dbstat, checkpoint counts, db_status, serialize, file-control, stepped backup, busy result code | all (driver choice, outline revision 2) | Fable orchestrator, 2026-11-20 | Every one works with no cgo and no custom code; report in docs/knowledge/library-route-probes.md |
 | `probes/outline-v2/crash-at-fsync.sh` + `victim/main.go` (`write` mode) | Kill a Go WAL writer on entry to its K-th fsync with `strace --inject`, 5 runs per K, and reopen | 4, 9, 10 (crash points without a C shim) | Fable orchestrator, 2026-11-20 | Outcomes identical on 5 of 5 runs at every K; the interrupted commit survives (rows = acks + 1); WAL `NORMAL` issues no sync per commit; the victim must pin its goroutine to one OS thread |
+
+## Phase 2 orchestration and shared tooling
+
+| Script | Purpose | Chapter | Maker | What it proved / does |
+| --- | --- | --- | --- | --- |
+| `orch/launch.sh` | Launch one headless agent run (Opus via `claude -p`, Neon via OpenCode) detached in a worktree, with log, pid and exit files | all Phase 2 chunks | Fable orchestrator, 2026-11-20 | Every Phase 2 build, prose, review and adversarial run goes through it |
+| `orch/wait.sh` | Block until named runs have exit files (or ~9.5 min) and print their status | all | Fable orchestrator, 2026-11-20 | Conductor wait loop; reports a dead run that left no exit file |
+| `neon/neon-run.sh` | Run Gemini 4 Neon as an agent with a brief file: OpenRouter route first, direct Gemini API as fallback | all (prose, review, adversarial) | Fable orchestrator, 2026-11-20 | Smoke call answered through OpenRouter in 8 s on 2026-11-20 |
+| `neon/budget.sh` | Print the remaining OpenRouter budget on the Neon key | all | Fable orchestrator, 2026-11-20 | $44.14 remaining at Phase 2 start |
+| `kb-sync.sh` | Re-vendor the kb tool into `kb/`, rebuild the in-repo knowledge index over `docs/knowledge/`, show sync status | knowledge (ruling 6) | Fable orchestrator, 2026-11-20 | Vendored kb at the SHA in `kb-vendor.sha`; in-repo index answers searches |
+
+Per-chunk working scripts are indexed in `agent_work/chNN/INDEX.md`; adversarial scripts in
+`agent_work/chNN/adversarial/`.

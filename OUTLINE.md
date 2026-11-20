@@ -1,7 +1,9 @@
 # OUTLINE — SQLite Internals, experiment-driven build
 
-Status: **revision 2 (Phase 1b), awaiting Nick's sign-off.** Nothing in Phase 2 starts before
-that. What changed from revision 1 (commit 7924ef7), and why, is in
+Status: **revision 2, signed off by Nick on 2026-11-20 and in build (Phase 2).** Nick's sign-off
+came with rulings that amend this outline; they are listed in
+[section 8](#8-phase-2-rulings-nick-2026-11-20) and **win wherever the text above them
+disagrees**. What changed from revision 1 (commit 7924ef7), and why, is in
 [OUTLINE-CHANGES.md](OUTLINE-CHANGES.md).
 
 **North Star (Nick, 2026-11-20).** The course explains how to understand SQLite's architecture
@@ -1128,3 +1130,30 @@ checked before each wave.
 Someone needs to run `claude auth login` (or `claude setup-token`) on this VM before then.
 Usage gauges could not be read from a headless session in Phase 1; they need a look in the TUI
 before the first Phase 2 wave.
+
+---
+
+## 8. Phase 2 rulings (Nick, 2026-11-20)
+
+These govern the build. Where an earlier section says otherwise, this section wins.
+
+| # | Ruling | Effect on the outline |
+| --- | --- | --- |
+| 1 | The repo has an upstream, `github.com/nickstrad/sqlite-internals` (public). Each chunk merges to `main` and is pushed once its review and tests pass. | Open question 1 closed. |
+| 2 | Services run in Docker. The capstone's object store is **SeaweedFS** (S3-compatible) from `compose.yaml`. | Replaces the "local directory standing in for object storage" in chapter 10 and open question 9. Fault injection moves into a Go wrapper around the S3 client; the store itself is real. |
+| 3 | Shared packages across chapters. | Open question 8 closed as recommended. |
+| 4 | Cross-platform: the platform targets Linux, the repo must also build and run on macOS. Linux-only tooling (strace, `/proc`) is build-tag gated and labelled, with the `lab` Docker service as the way to run it from a Mac. Every chunk is verified with a darwin cross-build and vet. | Replaces open question 10 ("Linux only"). |
+| 5 | No second SQLite version. | Open question 11 dropped; the "newest driver release" adversarial case in 1.3 is dropped with it. |
+| 6 | Knowledge is kept in two places and kept in sync: the `kb` knowledge store on the build machine, and this repo (`docs/knowledge/`, with the `kb` tool vendored whole under `kb/`). | Adds a knowledge step to every chunk landing. |
+| 7 | Code and scripts are Go. Working scripts (probes, one-off checks) live in `agent_work/` with the index current, in Go or bash. | `sqlite/build-tools.sh` and the repo check scripts of section 6 become the Go tool `cmd/course`. |
+| 8 | Driver: `modernc.org/sqlite`. No cgo, no custom C. | Open question 14 closed as recommended. |
+| 9 | Rollback-journal material stays deep enough to be understood: experiment 4.1 runs at full depth. | Open question 15: no Go journal replayer, but 4.1 is not a sketch. |
+| 10 | Working assumption: platform databases run in WAL mode unless that does not make sense. Each chapter evaluates this and records any exception. | The recipe and every "platform database" default to WAL; chapter 4 is the rollback-mode chapter by subject. |
+| 11 | If a custom VFS is viable on this stack, chapter 7 gets a real VFS treatment with experiments, sized by the minimal-knowledge rule. Viability is decided by a probe before the chapter 7 chunk; the verdict is recorded in STATE.md. | May replace section 4.3's "no chapter builds a VFS" and open question 16. |
+| 12 | Seats: **Gemini 4 Neon** writes all prose (chapter text and Go comments), reviews Opus's code, and designs and writes the adversarial scripts and tests. **Astra is not used.** Opus writes the code. Fable orchestrates, runs the adversarial tests, and does final acceptance. | Every "Astra will try" line in section 5 is Neon's starting list. The chunk table's Astra column is a Neon run. Per chunk: Opus build → Neon prose → Neon code review → one Opus repair round if needed → Neon re-review → Neon adversarial scripts, run by Fable → acceptance → merge and push. |
+| 13 | Open questions 7, 12 and 13 take the outline's own recommendations: real source copies checked against the pin; five knowledge-check questions per chapter with answers in a separate file (no tutor packaging in Phase 2); each chapter's failure-cases section names the adversarial scripts that attacked it and what they found, with links. | Closed. |
+| A, B | The repo is public and has GitHub Pages. A final publishing chunk, after chapter 10, adds an Actions workflow that renders the chapters into a navigable site at `https://nickstrad.github.io/sqlite-internals/`. | New last chunk. |
+| C | The book and all reader-facing docs stand alone in this repo: links resolve inside the repo or its Pages site, and nothing a reader sees refers to the build machine. | The pinned source tree is found through `$SQLITE_SRC` or `_src/`, fetched by `go run ./cmd/course fetch-source`. A sweep of the tree runs before the publishing chunk lands. |
+
+Chunk list as built: 0 (foundation and infrastructure), 1, 2, then 3, 4, 5, 7, then 6, 8, then
+9, 10a, 10b, then publishing.
