@@ -1,3 +1,13 @@
+// Experiment 4.2 measures SQLite's page-cache memory budget and process RSS
+// across five scenarios in WAL mode: one connection scanning twice at two
+// cache_size settings (Part A), N open connections to N files (Part B), N open
+// connections to one file (Part C), N files visited through a K-connection LRU
+// pool (Part D), and memory-mapped reads via PRAGMA mmap_size (Part E).
+//
+// Run from the repo root (portable; the anonymous vs file-backed RSS split in
+// Part E uses /proc/self/status on Linux):
+//
+//	go run ./ch04-pager-and-page-cache/experiments/4.2-cache-budget
 package main
 
 import (
@@ -60,6 +70,11 @@ type checkpoint struct {
 
 var perPage = 1
 
+// cachedPages derives the cached page count from SQLITE_DBSTATUS_CACHE_USED
+// (sqlite3PagerMemUsed, src/pager.c:6881-6887). Subtracting the single
+// page-sized buffer and dividing by perPage discards the Pager struct's
+// path-length-dependent allocation (as long as it stays below perPage), making
+// page counts identical across host and container paths.
 func cachedPages(cacheUsed int) int {
 	return max(0, (cacheUsed-pageSize)/perPage)
 }
@@ -118,6 +133,8 @@ func options(cacheSize int) sqlitex.Options {
 	return o
 }
 
+// budgetBytes converts PRAGMA cache_size to bytes matching numberOfCachePages
+// (src/pcache.c:277-292): negative values are KiB, positive values are pages.
 func budgetBytes(cacheSize int) int {
 	if cacheSize < 0 {
 		return -1024 * cacheSize
@@ -129,6 +146,9 @@ func fileName(dir string, i int) string {
 	return filepath.Join(dir, fmt.Sprintf("f-%03d.db", i))
 }
 
+// buildSource creates one deterministic WAL-mode database with rows of 3500
+// PRNG bytes each so every row fills a single 4096-byte leaf page, giving a
+// predictable multi-megabyte table that exceeds the default -2000 KiB cache.
 func buildSource(ctx context.Context, path string, rows int) {
 	if err := recipe.RemoveDatabase(path); err != nil {
 		fatal("remove", err)
@@ -209,6 +229,8 @@ func (h handle) stat(ctx context.Context) connStat {
 	return connStat{CacheUsed: read(sqlitex.DBStatusCacheUsed), Hits: read(sqlitex.DBStatusCacheHit), Misses: read(sqlitex.DBStatusCacheMiss), Spills: read(sqlitex.DBStatusCacheSpill)}
 }
 
+// measure forces a Go GC and returns unused Go spans to the OS before sampling
+// process memory so RSS deltas reflect SQLite's page cache and file mappings.
 func measure(label string, open, visited int, stats []connStat) {
 	runtime.GC()
 	debug.FreeOSMemory()
@@ -340,6 +362,8 @@ func childMain(args []string) {
 	}
 }
 
+// runChild executes one measurement scenario in a fresh child process so every
+// scenario starts from a clean RSS baseline and a fresh pcache1 PGroup.
 func runChild(args ...string) []checkpoint {
 	exe, err := os.Executable()
 	if err != nil {
@@ -467,6 +491,11 @@ func main() {
 	fmt.Printf("driver compiled with ENABLE_MEMORY_MANAGEMENT: %d (1 = every connection's page cache is one process-wide LRU group, pcache1.c:718-719)\n", compileMM)
 
 	fmt.Printf("\n== A. one connection, the same scan twice ==\n")
+	// Measure exact bytes per cached page from sqlite3PagerMemUsed
+	// (src/pager.c:6881-6887) by comparing two full caches 100 pages apart.
+	// pcache1FetchStage2 recycles at nPage+1 >= nMax (src/pcache1.c:902), so
+	// cache_size=100 holds 99 pages and cache_size=200 holds 199 pages; their
+	// difference is still exactly 100 pages and cancels the fixed Pager overhead.
 	small := runChild("scans", work, "100")[0].Conns[0].CacheUsed
 	large := runChild("scans", work, "200")[0].Conns[0].CacheUsed
 	if (large-small)%100 != 0 {
@@ -502,6 +531,11 @@ func main() {
 	fmt.Printf("  at %s: connection 1 cached pages=%d hit=%d miss=%d; connection %d cached pages=%d hit=%d miss=%d\n", last.Label, cachedPages(last.Conns[0].CacheUsed), last.Conns[0].Hits, last.Conns[0].Misses, len(last.Conns), cachedPages(last.Conns[len(last.Conns)-1].CacheUsed), last.Conns[len(last.Conns)-1].Hits, last.Conns[len(last.Conns)-1].Misses)
 	lo, hi := last.pagesMinMax()
 	check(sumsMatch(files, full), fmt.Sprintf("the cached pages of all open connections add up to exactly (open connections) x %d, the pages one connection holds when it fills its budget", full))
+	// With ENABLE_MEMORY_MANAGEMENT, pcache1Init sets separateCache=0
+	// (src/pcache1.c:718-719), putting every open connection in one process-wide
+	// PGroup LRU. Active scanners recycle idle connections' pages
+	// (pcache1FetchStage2, src/pcache1.c:899-912) while the group total equals
+	// open * perConnBudget (pcache1Cachesize, src/pcache1.c:814-832).
 	if compileMM == 1 {
 		check(hi > full && lo < full/10, fmt.Sprintf("in this driver build cache_size is not a per-connection cap: the connection that scanned last holds %d pages (its own budget is %d) while the idle connections were left with %d", hi, full, lo))
 	} else {
@@ -532,6 +566,11 @@ func main() {
 	check(atN-atK <= atK/4, fmt.Sprintf("with the pool, process memory stays flat after %d connections: growth from %s to %s is at most a quarter of the growth up to %s", k, kLabel, nLabel, kLabel))
 	check(float64(atN) <= float64(rssN)*float64(k)/float64(n)*1.5, fmt.Sprintf("the pooled run ends with about %d/%d of the unbounded run's memory growth (at most 1.5 x that fraction)", k, n))
 
+	// PRAGMA mmap_size activates getPageMMap (pagerFixMaplimit,
+	// src/pager.c:3579-3590; getPageMMap, src/pager.c:5687-5752), which serves
+	// pages directly from the kernel's mapped file cache via sqlite3OsFetch and
+	// pagerAcquireMapPage outside pcache1, so CACHE_USED stays near zero while
+	// RssFile grows by the file size.
 	fmt.Printf("\n== E. mmap ==\n")
 	mmapSize := 2 * info.Size()
 	fmt.Printf("connection 1: no mmap, scans f-000; connection 2: PRAGMA mmap_size=%d (twice the file), scans f-001\n", mmapSize)

@@ -11,6 +11,9 @@ import (
 
 const memorySource = "/proc/self/status"
 
+// readProcessMemory parses /proc/self/status on Linux to report total resident
+// memory (VmRSS) together with its anonymous, file-backed, and shared-memory
+// breakdown so Part E can verify that mmap shifts pages from RssAnon to RssFile.
 func readProcessMemory() (processMemory, error) {
 	f, err := os.Open("/proc/self/status")
 	if err != nil {

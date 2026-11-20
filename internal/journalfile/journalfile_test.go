@@ -50,6 +50,7 @@ func (b *builder) grow(n int) {
 	}
 }
 
+// TestChecksumSamplesEvery200thByteFromTheEnd verifies Checksum matches pager_cksum (src/pager.c:2251-2259) and skips byte 0.
 func TestChecksumSamplesEvery200thByteFromTheEnd(t *testing.T) {
 	image := make([]byte, 4096)
 	for i := range image {
@@ -72,6 +73,7 @@ func TestChecksumSamplesEvery200thByteFromTheEnd(t *testing.T) {
 	}
 }
 
+// TestSyncedJournal verifies parsing and playback prediction for a synced hot journal with an explicit record count.
 func TestSyncedJournal(t *testing.T) {
 	b := &builder{}
 	b.header(0, true, 2, 1234, 5)
@@ -100,6 +102,7 @@ func TestSyncedJournal(t *testing.T) {
 	}
 }
 
+// TestNotYetSyncedJournalIsNotHot verifies a pre-sync header with zeroed magic and count is parsed as cold.
 func TestNotYetSyncedJournalIsNotHot(t *testing.T) {
 	b := &builder{}
 	b.header(0, false, 0, 99, 4)
@@ -114,6 +117,7 @@ func TestNotYetSyncedJournalIsNotHot(t *testing.T) {
 	}
 }
 
+// TestSyncedHeaderCountingZeroRecordsRestoresNothing verifies a synced header with RecordCount 0 ignores trailing records.
 func TestSyncedHeaderCountingZeroRecordsRestoresNothing(t *testing.T) {
 	b := &builder{}
 	b.header(0, true, 0, 5, 4)
@@ -124,6 +128,7 @@ func TestSyncedHeaderCountingZeroRecordsRestoresNothing(t *testing.T) {
 	}
 }
 
+// TestNoSyncJournalCountsRecordsFromSize verifies a NoSyncRecordCount header reads all complete records and records trailing bytes.
 func TestNoSyncJournalCountsRecordsFromSize(t *testing.T) {
 	b := &builder{}
 	b.header(0, true, NoSyncRecordCount, 8, 3)
@@ -140,6 +145,7 @@ func TestNoSyncJournalCountsRecordsFromSize(t *testing.T) {
 	}
 }
 
+// TestPlaybackSkipsPagesBeyondInitialSizeAndStopsAtBadChecksum verifies playback skips out-of-range pages and halts at the first bad checksum.
 func TestPlaybackSkipsPagesBeyondInitialSizeAndStopsAtBadChecksum(t *testing.T) {
 	b := &builder{}
 	b.header(0, true, NoSyncRecordCount, 1, 2)
@@ -157,6 +163,7 @@ func TestPlaybackSkipsPagesBeyondInitialSizeAndStopsAtBadChecksum(t *testing.T) 
 	}
 }
 
+// TestShortJournalCountingMoreRecordsThanPresent verifies playback restores complete records and reports a short journal.
 func TestShortJournalCountingMoreRecordsThanPresent(t *testing.T) {
 	b := &builder{}
 	b.header(0, true, 3, 1, 4)
@@ -169,6 +176,7 @@ func TestShortJournalCountingMoreRecordsThanPresent(t *testing.T) {
 	}
 }
 
+// TestMultipleSegments verifies parsing and playback across two sector-aligned segments with distinct nonces.
 func TestMultipleSegments(t *testing.T) {
 	b := &builder{}
 	b.header(0, true, 1, 7, 6)
@@ -186,6 +194,7 @@ func TestMultipleSegments(t *testing.T) {
 	}
 }
 
+// TestZeroedAndEmptyAndTinyJournals verifies handling of zeroed (PERSIST), empty, and shorter-than-header journals.
 func TestZeroedAndEmptyAndTinyJournals(t *testing.T) {
 	j, _ := Parse(make([]byte, 4096))
 	if j.LooksHot() || j.Segments[0].Header.State != HeaderZeroed {
@@ -204,6 +213,7 @@ func TestZeroedAndEmptyAndTinyJournals(t *testing.T) {
 	}
 }
 
+// TestInvalidGeometry verifies Parse marks a header with a non-power-of-two page size as HeaderInvalid.
 func TestInvalidGeometry(t *testing.T) {
 	b := &builder{}
 	b.header(0, true, 1, 1, 1)
@@ -214,6 +224,7 @@ func TestInvalidGeometry(t *testing.T) {
 	}
 }
 
+// TestSuperJournalName verifies extraction of a multi-database super-journal trailer and PAGER_SJ_PGNO calculation.
 func TestSuperJournalName(t *testing.T) {
 	b := &builder{}
 	b.header(0, true, 1, 3, 2)
@@ -237,6 +248,7 @@ func TestSuperJournalName(t *testing.T) {
 	}
 }
 
+// TestStateNames verifies HeaderState.String returns the expected labels for known and unknown values.
 func TestStateNames(t *testing.T) {
 	for state, want := range map[HeaderState]string{HeaderSynced: "synced", HeaderNoSync: "no-sync", HeaderNotYetSynced: "not-yet-synced", HeaderZeroed: "zeroed", HeaderInvalid: "invalid", HeaderMissing: "missing", HeaderState(42): "HeaderState(42)"} {
 		if state.String() != want {
@@ -278,6 +290,8 @@ func liveJournal(t *testing.T, synchronous string) (*Journal, []byte, uint32) {
 	if _, err := tx.ExecContext(ctx, "UPDATE t SET v = randomblob(900) WHERE id % 3 = 0; INSERT INTO t VALUES(1000, zeroblob(3000))"); err != nil {
 		t.Fatal(err)
 	}
+	// Reading the -journal file while the SQLite connection is open is safe on
+	// POSIX because SQLite places advisory locks only on the main database file.
 	j, err := ReadFile(path + "-journal")
 	if err != nil {
 		t.Fatal(err)
@@ -285,6 +299,7 @@ func liveJournal(t *testing.T, synchronous string) (*Journal, []byte, uint32) {
 	return j, before, pages
 }
 
+// TestLiveJournalOfAnOpenTransaction verifies Parse and Playback against a real SQLite rollback journal at FULL and OFF.
 func TestLiveJournalOfAnOpenTransaction(t *testing.T) {
 	for _, synchronous := range []string{sqlitex.SyncFull, sqlitex.SyncOff} {
 		t.Run(synchronous, func(t *testing.T) {

@@ -1,3 +1,14 @@
+// Experiment 4.1 traces a multi-page rollback-journal commit through the
+// kernel, decodes the live journal with internal/journalfile, kills the writer
+// on entry to every write, sync, and unlink across synchronous=FULL/NORMAL/OFF,
+// cross-checks the syscall stream against the pinned C CLI, demonstrates what
+// happens when a hot journal is lost, and locates the exact commit point in
+// DELETE, TRUNCATE, and PERSIST modes.
+//
+// Run from the repo root (Linux for strace parts; macOS runs parts A–C and an
+// in-process fallback, or use docker compose run --rm lab):
+//
+//	go run ./ch04-pager-and-page-cache/experiments/4.1-atomic-commit-and-hot-journal
 package main
 
 import (
@@ -42,6 +53,8 @@ var (
 	workers   = flag.Int("workers", 4, "kill runs executed in parallel")
 )
 
+// init pins the main goroutine to one OS thread so strace's per-thread syscall
+// counter observes the child writer's SQLite syscalls in a deterministic order.
 func init() {
 	runtime.LockOSThread()
 }
@@ -71,6 +84,8 @@ func stepOptions(journalMode, synchronous string) sqlitex.Options {
 	return options
 }
 
+// touch opens and reads an empty marker file so strace records an unambiguous
+// open/openat boundary around the traced transaction without touching SQLite.
 func touch(dir, name string) {
 	if _, err := os.ReadFile(filepath.Join(dir, name)); err != nil {
 		fatal("marker", err)
@@ -161,6 +176,10 @@ func newStates(ctx context.Context, dir string, r recipe.Recipe, k int, hashes [
 		fatal("read post", err)
 	}
 	s.prePages, s.postPages = len(s.pre)/pageSize, len(s.post)/pageSize
+	// Collect pre-step freelist leaves: when the B-tree reuses a freelist page,
+	// it fetches with PAGER_GET_NOCONTENT (src/btree.c:6740), which marks the
+	// page in pInJournal without writing a journal record (src/pager.c:5645-5656).
+	// A hot-journal rollback therefore cannot restore those unused bytes.
 	file, err := dbfile.FromBytes(s.pre)
 	if err != nil {
 		fatal("parse pre", err)
@@ -173,6 +192,8 @@ func newStates(ctx context.Context, dir string, r recipe.Recipe, k int, hashes [
 		s.preFreeLeaves = append(s.preFreeLeaves, uint32(leaf))
 	}
 	slices.Sort(s.preFreeLeaves)
+	// Canonical hashes (VACUUM INTO) provide rung R2 logical-to-byte equality
+	// when a rolled-back file differs only inside reused freelist leaves.
 	s.preCanon = canonicalHashOfFile(ctx, s.prePath)
 	s.postCanon = canonicalHashOfFile(ctx, postPath)
 	return s
@@ -229,6 +250,9 @@ func (s *states) outcomeOf(path, canon string) outcome {
 	default:
 		o.pages = differingPages(image, s.pre)
 		o.kind = outcomeThird
+		// A rolled-back database whose file size and VACUUM INTO canonical hash
+		// equal pre-step, and whose only differing pages are pre-step freelist
+		// leaves, is logically identical to pre-step (PAGER_GET_NOCONTENT effect).
 		if len(image) == len(s.pre) && o.canonPre && subset(o.pages, s.preFreeLeaves) {
 			o.kind = outcomePreFreelist
 		}
@@ -375,6 +399,12 @@ func describe(call trace.Syscall) string {
 	return call.Name + " " + call.Path
 }
 
+// classify maps each traced syscall in the commit window to its pager role:
+// 512-byte header write (writeJournalHdr, src/pager.c:1449-1571), 12-byte
+// magic+count update (syncJournal, src/pager.c:4377-4410), 28-byte header zero
+// (zeroJournalHdr, src/pager.c:1399-1432), record writes, db page writes,
+// syncs (including the directory sync on a newly created journal), and journal
+// finalization.
 func classify(call trace.Syscall) string {
 	journal := dbName + "-journal"
 	switch {
@@ -412,6 +442,9 @@ type window struct {
 	targets []op
 }
 
+// extractWindow isolates the writer thread's syscalls between marker-begin and
+// marker-end while counting each syscall name's 1-based ordinal from process
+// start, which strace's inject=...:when=ordinal flag requires.
 func extractWindow(log *trace.StraceLog, dir string) (window, error) {
 	w := window{tid: -1}
 	beginPath := filepath.Join(dir, markerBegin)
@@ -499,6 +532,12 @@ func countKind(ops []op, kind string) int {
 	return n
 }
 
+// expectedSequence builds the canonical commit syscall sequence for a given
+// journal mode and synchronous level: FULL syncs the journal before and after
+// writing magic+count (syncJournal, src/pager.c:4401-4420), NORMAL writes
+// magic+count before its single journal sync, and OFF emits no syncs; TRUNCATE
+// and PERSIST add a final journal sync at FULL (pager_end_transaction,
+// src/pager.c:2086-2106).
 func expectedSequence(journalMode, synchronous string, records, dbPages int) string {
 	r := fmt.Sprintf("journal-record x%d", records)
 	d := fmt.Sprintf("db-page x%d", dbPages)
@@ -627,11 +666,18 @@ func killRun(ctx context.Context, dir string, s *states, journalMode, synchronou
 	return run
 }
 
+// runKill runs one child process killed by SIGKILL on entry to target, inspects
+// the resulting database and -journal files in plain Go before SQLite sees
+// them, then reopens with sqlitex.Open to trigger sqlite3PagerSharedLock ->
+// hasHotJournal -> pager_playback (src/pager.c:5300-5405) and classifies the
+// recovered database.
 func runKill(ctx context.Context, dir string, s *states, journalMode, synchronous string, target op) killResult {
 	result := killResult{target: target}
 	start := time.Now()
 	run := killRun(ctx, dir, s, journalMode, synchronous, target)
 	result.duration = time.Since(start)
+	// Confirm strace intercepted the exact intended syscall on entry before the
+	// kernel executed it (marked Unfinished and terminated by SIGKILL).
 	for _, call := range run.Log.Calls {
 		if call.Unfinished && call.Name == target.call.Name && trace.UnderDir(dir)(call) {
 			result.landed = describe(trace.RelativeTo(dir, []trace.Syscall{call})[0])
@@ -788,6 +834,9 @@ func cliScript(dir, synchronous string, step recipe.Step) string {
 	return b.String()
 }
 
+// twinCheck replays the same recipe step as literal SQL through the pinned C
+// sqlite3 CLI under strace and checks that its writes, syncs, and unlinks match
+// the translated Go driver in file, offset, length, and order.
 func twinCheck(ctx context.Context, cli sqlitex.CLI, dir string, s *states, synchronous string, goWindow window) {
 	prepareDir(dir, s.prePath)
 	command := cli.Command(ctx, sqlitex.CLIRun{}).Args
@@ -958,6 +1007,11 @@ func runLevel(ctx context.Context, base string, s *states, synchronous string, c
 	return levelResult{level: synchronous, results: results}
 }
 
+// covered verifies that whenever a pre-commit crash leaves modified bytes in
+// the database file, the journal is hot and accounts for every changed page:
+// appended pages (> prePages) are removed by truncation (src/pager.c:2952),
+// existing modified pages are listed in Playback().Pages, and reused freelist
+// leaves were fetched with PAGER_GET_NOCONTENT (src/pager.c:5645-5656).
 func covered(r killResult, s *states) bool {
 	changed := differingPages(r.dbBeforeImage, s.pre)
 	if len(changed) == 0 {
@@ -1037,6 +1091,10 @@ func segmentsByMarkers(log *trace.StraceLog, dir, prefix string, count int) [][]
 	return segments
 }
 
+// partA shows where a WAL-default platform still meets rollback mode: new
+// databases default to journal_mode=delete (header bytes 18-19 = 1,1), and
+// switching a new file to WAL—including inside sqlitex.Open—writes page 1
+// through a rollback -journal before WAL mode takes effect.
 func partA(ctx context.Context, base string) {
 	fmt.Printf("\n== A. where a WAL-default platform meets rollback mode ==\n")
 	dir := filepath.Join(base, "a")
@@ -1197,6 +1255,9 @@ func childCreate(role, path string) {
 	}
 }
 
+// partC inspects the rollback journal of an open, uncommitted transaction at
+// synchronous=FULL using internal/journalfile. Reading -journal while the
+// connection is open is safe because SQLite locks only the main database file.
 func partC(ctx context.Context, base string, s *states) {
 	fmt.Printf("\n== C. the journal of an open transaction, read before COMMIT ==\n")
 	dir := filepath.Join(base, "c")
@@ -1308,6 +1369,10 @@ func recreateKilled(ctx context.Context, dir string, s *states, target op) {
 	}
 }
 
+// partE demonstrates three failure cases of losing a hot journal: deleting it
+// mid-write, copying the database file alone versus together with -journal, and
+// deleting it after all database writes completed (silently committing a
+// transaction whose COMMIT never returned).
 func partE(ctx context.Context, base string, s *states, fullTargets []op) {
 	fmt.Printf("\n== E. failure cases: losing the hot journal (step %d, synchronous=FULL) ==\n", s.step)
 	fmt.Printf("contents: pre-step %s; post-step %s\n", countsOf(ctx, s.prePath), countsOf(ctx, filepath.Join(filepath.Dir(s.prePath), "post.db")))
@@ -1373,6 +1438,10 @@ func partE(ctx context.Context, base string, s *states, fullTargets []op) {
 	check(lateOutcome.kind == outcomePost, "deleting the journal after the last database write turns a commit that never returned into a committed one (post-step)")
 }
 
+// partF locates the exact commit-point syscall for DELETE (unlink), TRUNCATE
+// (ftruncate to 0), and PERSIST (28-byte header zero write) by killing on entry
+// to that syscall and on the syscall immediately after it
+// (pager_end_transaction, src/pager.c:2086-2122).
 func partF(ctx context.Context, base string, s *states) {
 	fmt.Printf("\n== F. the commit point in DELETE, TRUNCATE and PERSIST journal modes (step %d, synchronous=FULL) ==\n", s.step)
 	type row struct{ mode, point, at, after, left string }

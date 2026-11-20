@@ -1,3 +1,9 @@
+// Package journalfile implements a read-only inspector for SQLite rollback
+// journal (-journal) files, using plain Go with no SQLite dependency.
+//
+// It decodes journal headers, page records, checksums, and super-journal
+// trailers, and predicts which pages SQLite would restore during hot-journal
+// playback. It never writes to a database or replays a journal itself.
 package journalfile
 
 import (
@@ -7,11 +13,21 @@ import (
 	"os"
 )
 
+// Magic is the 8-byte signature that identifies a live rollback journal header
+// (aJournalMagic in src/pager.c:757).
 var Magic = [8]byte{0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7}
 
+// Journal format sizes and bounds matching src/pager.c:1449-1693.
 const (
-	HeaderFieldsSize   = 28
-	NoSyncRecordCount  = 0xffffffff
+	// HeaderFieldsSize is the byte length of the six big-endian fields at the
+	// start of a journal header (8-byte magic + five 4-byte integers).
+	HeaderFieldsSize = 28
+	// NoSyncRecordCount (0xffffffff) in a header's record-count field tells
+	// SQLite to infer the record count from the file size (src/pager.c:1499).
+	NoSyncRecordCount = 0xffffffff
+	// RecordOverhead is the 8 bytes wrapping each journaled page image:
+	// 4-byte page number before the image and 4-byte checksum after it
+	// (pagerAddPageToRollbackJournal, src/pager.c:6062-6067).
 	RecordOverhead     = 8
 	pendingByte        = 0x40000000
 	minSectorSize      = 32
@@ -21,17 +37,33 @@ const (
 	superJournalFooter = 16
 )
 
+// HeaderState classifies the 28-byte header at the start of a journal segment.
 type HeaderState int
 
+// Rollback journal header states recognized by parseHeader.
 const (
+	// HeaderSynced indicates a header carrying Magic and an explicit record
+	// count, written by syncJournal (src/pager.c:4377-4410).
 	HeaderSynced HeaderState = iota
+	// HeaderNoSync indicates a header carrying Magic and NoSyncRecordCount,
+	// written directly by writeJournalHdr when synchronous=OFF,
+	// journal_mode=MEMORY, or SAFE_APPEND is active (src/pager.c:1495-1499).
 	HeaderNoSync
+	// HeaderNotYetSynced indicates a header whose first 12 bytes (magic and
+	// record count) are still zero while the remaining fields are populated,
+	// written by writeJournalHdr before syncJournal runs (src/pager.c:1500-1502).
 	HeaderNotYetSynced
+	// HeaderZeroed indicates all 28 header bytes are zero, as left after commit
+	// in PERSIST mode by zeroJournalHdr (src/pager.c:1399-1432).
 	HeaderZeroed
+	// HeaderInvalid indicates bytes that are neither valid magic, nor zeroed,
+	// nor a valid sector/page-size geometry (readJournalHdr, src/pager.c:1650-1672).
 	HeaderInvalid
+	// HeaderMissing indicates fewer than HeaderFieldsSize bytes were present.
 	HeaderMissing
 )
 
+// String returns a short human-readable name for the header state.
 func (s HeaderState) String() string {
 	switch s {
 	case HeaderSynced:
@@ -50,6 +82,8 @@ func (s HeaderState) String() string {
 	return fmt.Sprintf("HeaderState(%d)", int(s))
 }
 
+// Header holds the decoded fields of one sector-aligned rollback journal header
+// (writeJournalHdr and readJournalHdr, src/pager.c:1449-1693).
 type Header struct {
 	Offset       int64
 	State        HeaderState
@@ -61,10 +95,15 @@ type Header struct {
 	PageSize     uint32
 }
 
+// CountsRecords reports whether the header carries a valid magic and an
+// explicit record count rather than the NoSyncRecordCount sentinel.
 func (h Header) CountsRecords() bool {
 	return h.MagicOK && h.RecordCount != NoSyncRecordCount
 }
 
+// Record holds one journaled page record: the 4-byte page number, the original
+// page image, the stored 4-byte checksum, and the checksum recomputed from the
+// segment's nonce and page bytes (src/pager.c:6037-6085).
 type Record struct {
 	Offset           int64
 	Page             uint32
@@ -73,15 +112,21 @@ type Record struct {
 	Image            []byte
 }
 
+// ChecksumOK reports whether the record's stored checksum matches the checksum
+// computed by Checksum.
 func (r Record) ChecksumOK() bool {
 	return r.StoredChecksum == r.ComputedChecksum
 }
 
+// Segment pairs one journal header with the complete page records that follow
+// it. A transaction that spills dirty pages mid-transaction writes multiple
+// segments, each starting on a sector boundary (syncJournal, src/pager.c:4423-4427).
 type Segment struct {
 	Header  Header
 	Records []Record
 }
 
+// Journal is the decoded structure of a rollback journal file.
 type Journal struct {
 	Size         int64
 	FirstByte    byte
@@ -90,6 +135,8 @@ type Journal struct {
 	TrailingByte int64
 }
 
+// PlaybackOutcome predicts what SQLite's pager_playback (src/pager.c:2864-3052)
+// will do if it reopens the database beside this journal.
 type PlaybackOutcome struct {
 	Hot          bool
 	TruncateTo   uint32
@@ -98,6 +145,7 @@ type PlaybackOutcome struct {
 	StopReason   string
 }
 
+// ReadFile reads path from disk and parses it as a rollback journal.
 func ReadFile(path string) (*Journal, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -106,12 +154,16 @@ func ReadFile(path string) (*Journal, error) {
 	return Parse(data)
 }
 
+// Parse decodes raw rollback-journal bytes into segments, records, and any
+// trailing super-journal name without modifying the input slice.
 func Parse(data []byte) (*Journal, error) {
 	j := &Journal{Size: int64(len(data))}
 	if len(data) > 0 {
 		j.FirstByte = data[0]
 	}
 	end := int64(len(data))
+	// Check for a multi-database super-journal footer at EOF first so its bytes
+	// are excluded from record parsing (pager_playback, src/pager.c:2891).
 	if name, start, ok := superJournalName(data); ok {
 		j.SuperJournal = name
 		end = start
@@ -128,6 +180,9 @@ func Parse(data []byte) (*Journal, error) {
 		j.Segments = append(j.Segments, Segment{Header: first})
 		return j, nil
 	}
+	// Geometry (sector size and page size) comes only from the first header;
+	// SQLite stops playback if either is out of range or not a power of two
+	// (readJournalHdr, src/pager.c:1650-1672).
 	if !validGeometry(first.SectorSize, first.PageSize) {
 		first.State = HeaderInvalid
 		j.Segments = append(j.Segments, Segment{Header: first})
@@ -140,6 +195,8 @@ func Parse(data []byte) (*Journal, error) {
 	header := first
 	for {
 		segment := Segment{Header: header}
+		// Records begin one sector after the header (writeJournalHdr pads the
+		// header out to a full sector, src/pager.c:1563-1568).
 		position := offset + sector
 		limit := int64(-1)
 		if header.CountsRecords() {
@@ -154,6 +211,8 @@ func Parse(data []byte) (*Journal, error) {
 			j.TrailingByte = end - position
 			break
 		}
+		// A subsequent segment header starts on the next sector boundary
+		// (journalHdrOffset, src/pager.c:1366-1376).
 		next := roundUp(position, sector)
 		if next+sector > end {
 			j.TrailingByte = end - position
@@ -206,6 +265,9 @@ func parseRecord(data []byte, offset, pageSize int64, nonce uint32) Record {
 	}
 }
 
+// Checksum computes SQLite's rollback-journal page checksum: starting from
+// nonce, it adds every 200th byte stepping down from len(image)-200 while the
+// index is strictly positive (pager_cksum, src/pager.c:2251-2259).
 func Checksum(nonce uint32, image []byte) uint32 {
 	sum := nonce
 	for i := len(image) - 200; i > 0; i -= 200 {
@@ -214,6 +276,9 @@ func Checksum(nonce uint32, image []byte) uint32 {
 	return sum
 }
 
+// SuperJournalPage returns the reserved page number (PAGER_SJ_PGNO) that marks
+// the start of a super-journal name record in the journal (the lock-byte page
+// at byte offset 0x40000000, which can never be a real database page).
 func SuperJournalPage(pageSize uint32) uint32 {
 	if pageSize == 0 {
 		return 0
@@ -221,6 +286,8 @@ func SuperJournalPage(pageSize uint32) uint32 {
 	return pendingByte/pageSize + 1
 }
 
+// superJournalName detects the optional multi-database super-journal footer
+// written by writeSuperJournal: [4-byte PAGER_SJ_PGNO][name][4-byte len][4-byte sum][8-byte Magic].
 func superJournalName(data []byte) (string, int64, bool) {
 	size := int64(len(data))
 	if size < superJournalFooter+4 || !bytes.Equal(data[size-8:], Magic[:]) {
@@ -265,10 +332,15 @@ func allZero(b []byte) bool {
 	return true
 }
 
+// LooksHot reports the byte-level half of hasHotJournal (src/pager.c:5244-5251):
+// a journal is hot only if it is non-empty and its first byte is non-zero.
+// The lock and database-size checks in hasHotJournal depend on external state.
 func (j *Journal) LooksHot() bool {
 	return j.Size > 0 && j.FirstByte != 0
 }
 
+// RecordsPresent returns the total count of complete page records across all
+// parsed segments.
 func (j *Journal) RecordsPresent() int {
 	n := 0
 	for _, s := range j.Segments {
@@ -277,6 +349,8 @@ func (j *Journal) RecordsPresent() int {
 	return n
 }
 
+// ChecksumFailures returns the number of complete records whose stored checksum
+// disagrees with Checksum.
 func (j *Journal) ChecksumFailures() int {
 	n := 0
 	for _, s := range j.Segments {
@@ -289,6 +363,9 @@ func (j *Journal) ChecksumFailures() int {
 	return n
 }
 
+// Playback simulates the read loop of pager_playback (src/pager.c:2864-3052)
+// and pager_playback_one_page (src/pager.c:2298-2500) to predict which pages
+// SQLite will restore and what page count it will truncate the database to.
 func (j *Journal) Playback() PlaybackOutcome {
 	outcome := PlaybackOutcome{Hot: j.LooksHot()}
 	if !outcome.Hot {
@@ -300,10 +377,13 @@ func (j *Journal) Playback() PlaybackOutcome {
 		return outcome
 	}
 	first := j.Segments[0].Header
+	// readJournalHdr returns SQLITE_DONE when the magic bytes do not match.
 	if first.State != HeaderSynced && first.State != HeaderNoSync {
 		outcome.StopReason = "first header is " + first.State.String()
 		return outcome
 	}
+	// pager_playback truncates the database to the first header's dbOrigSize
+	// before restoring pages (src/pager.c:2952).
 	outcome.TruncateTo = first.InitialPages
 	superPage := SuperJournalPage(first.PageSize)
 	for _, segment := range j.Segments {
@@ -337,6 +417,9 @@ func (j *Journal) Playback() PlaybackOutcome {
 	return outcome
 }
 
+// take applies pager_playback_one_page's per-record checks in SQLite's order
+// (src/pager.c:2298-2500): page 0 or superPage stops playback, pages beyond
+// initialPages are skipped, and a bad checksum stops playback.
 func (o *PlaybackOutcome) take(r Record, initialPages, superPage uint32) string {
 	if r.Page == 0 || r.Page == superPage {
 		return fmt.Sprintf("record at offset %d has page number %d", r.Offset, r.Page)
