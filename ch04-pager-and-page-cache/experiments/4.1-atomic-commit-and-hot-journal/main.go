@@ -522,6 +522,24 @@ func collapse(ops []op) string {
 	return strings.Join(parts, ", ")
 }
 
+func recordTriplesWellFormed(ops []op) bool {
+	var lengths []int64
+	for _, o := range ops {
+		if o.kind == "journal-record" {
+			lengths = append(lengths, int64(o.call.Length))
+		}
+	}
+	if len(lengths)%3 != 0 {
+		return false
+	}
+	for i := 0; i < len(lengths); i += 3 {
+		if lengths[i] != 4 || lengths[i+1] != pageSize || lengths[i+2] != 4 {
+			return false
+		}
+	}
+	return true
+}
+
 func countKind(ops []op, kind string) int {
 	n := 0
 	for _, o := range ops {
@@ -676,14 +694,7 @@ func runKill(ctx context.Context, dir string, s *states, journalMode, synchronou
 	start := time.Now()
 	run := killRun(ctx, dir, s, journalMode, synchronous, target)
 	result.duration = time.Since(start)
-	// Confirm strace intercepted the exact intended syscall on entry before the
-	// kernel executed it (marked Unfinished and terminated by SIGKILL).
-	for _, call := range run.Log.Calls {
-		if call.Unfinished && call.Name == target.call.Name && trace.UnderDir(dir)(call) {
-			result.landed = describe(trace.RelativeTo(dir, []trace.Syscall{call})[0])
-		}
-	}
-	result.landedOK = run.Killed == "SIGKILL" && result.landed == target.text
+	result.landed, result.landedOK = landedOn(run, dir, target)
 	path := filepath.Join(dir, dbName)
 	image, err := os.ReadFile(path)
 	if err != nil {
@@ -920,7 +931,7 @@ func checkBaseline(w window, image []byte, s *states, journalMode, synchronous s
 		wantSyncs := map[string]int{sqlitex.SyncFull: 4, sqlitex.SyncNormal: 3, sqlitex.SyncOff: 0}[synchronous]
 		check(len(syncs) == wantSyncs, fmt.Sprintf("%s: %d syncs per commit (journal, directory and database syncs counted)", label, wantSyncs))
 	}
-	check(records%3 == 0 && records > 0, label+": each journal record is three pwrite64 calls: page number (4 bytes), original page image (4096), checksum (4)")
+	check(records > 0 && recordTriplesWellFormed(w.ops), label+": each journal record is three pwrite64 calls: page number (4 bytes), original page image (4096), checksum (4)")
 	check(bytes.Equal(image, s.post), label+": the traced commit leaves exactly the post-step bytes")
 }
 
@@ -1190,7 +1201,10 @@ func partA(ctx context.Context, base string) {
 		}
 	}
 	usesJournal := func(ops []string) bool {
-		return len(ops) >= 2 && strings.HasPrefix(ops[0], "open ") && strings.HasPrefix(ops[len(ops)-1], "unlink ")
+		hasPrefix := func(prefix string) bool {
+			return slices.ContainsFunc(ops, func(o string) bool { return strings.HasPrefix(o, prefix) })
+		}
+		return len(ops) >= 2 && strings.HasPrefix(ops[0], "open ") && strings.HasPrefix(ops[len(ops)-1], "unlink ") && hasPrefix("pwrite64 ") && hasPrefix("sync ")
 	}
 	check(usesJournal(journalBySegment["plain"][0]), "a file created with driver defaults commits its first transaction through a -journal (opened, written, synced, unlinked)")
 	check(usesJournal(journalBySegment["switch"][0]) && walBySegment["switch"][0] == 0, "the switch to WAL is itself a rollback-mode commit: it writes page 1 through a -journal")
@@ -1278,7 +1292,7 @@ func partC(ctx context.Context, base string, s *states) {
 		fatal("journal", errors.New("no -journal during the transaction"))
 	}
 	fmt.Printf("every statement of step %d executed, COMMIT not yet issued: %s\n", s.step, journalSummary(j, present))
-	allOriginal := true
+	allOriginal := j.RecordsPresent() > 0
 	for _, segment := range j.Segments {
 		for _, r := range segment.Records {
 			same := bytes.Equal(pageAt(s.pre, int(r.Page-1)*pageSize), r.Image)
@@ -1364,9 +1378,30 @@ func countsOf(ctx context.Context, path string) string {
 
 func recreateKilled(ctx context.Context, dir string, s *states, target op) {
 	run := killRun(ctx, dir, s, sqlitex.JournalDelete, sqlitex.SyncFull, target)
-	if run.Killed != "SIGKILL" {
-		fatal("kill", fmt.Errorf("child was not killed: exit %d", run.ExitCode))
+	if landed, ok := landedOn(run, dir, target); !ok {
+		fatal("kill", fmt.Errorf("child was not killed on %q (ordinal %d): killed=%q exit %d landed %q", target.text, target.ordinal, run.Killed, run.ExitCode, landed))
 	}
+}
+
+func landedOn(run *trace.Result, dir string, target op) (string, bool) {
+	landed, onTarget := "", false
+	ordinals := map[int]int{}
+	for _, call := range run.Log.Calls {
+		if call.Name != target.call.Name {
+			continue
+		}
+		ordinals[call.PID]++
+		if !call.Unfinished || !trace.UnderDir(dir)(call) {
+			continue
+		}
+		text := describe(trace.RelativeTo(dir, []trace.Syscall{call})[0])
+		if text == target.text && ordinals[call.PID] == target.ordinal {
+			landed, onTarget = text, true
+		} else if !onTarget {
+			landed = text
+		}
+	}
+	return landed, run.Killed == "SIGKILL" && onTarget
 }
 
 // partE demonstrates three failure cases of losing a hot journal: deleting it
@@ -1514,7 +1549,8 @@ func describeStates(s *states) {
 	fmt.Println(s.stepStatements.Summary())
 	fmt.Printf("pre-step state (after step %d): %d pages, sha256 %s, freelist leaves %s\n", s.preStep, s.prePages, s.hashes[s.preStep].Exact[:16], pageList(s.preFreeLeaves))
 	fmt.Printf("post-step state (after step %d): %d pages, sha256 %s\n", s.step, s.postPages, s.hashes[s.step].Exact[:16])
-	check(s.matchFile(s.prePath).Step == s.preStep && s.matchFile(filepath.Join(filepath.Dir(s.prePath), "post.db")).Step == s.step, fmt.Sprintf("the pre-step and post-step files equal the recipe's hashes for steps %d and %d", s.preStep, s.step))
+	preMatch, postMatch := s.matchFile(s.prePath), s.matchFile(filepath.Join(filepath.Dir(s.prePath), "post.db"))
+	check(preMatch.Step == s.preStep && preMatch.Exact && postMatch.Step == s.step && postMatch.Exact, fmt.Sprintf("the pre-step and post-step files equal the recipe's hashes for steps %d and %d", s.preStep, s.step))
 }
 
 func main() {

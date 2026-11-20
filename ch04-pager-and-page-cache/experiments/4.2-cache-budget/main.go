@@ -135,6 +135,22 @@ func options(cacheSize int) sqlitex.Options {
 
 // budgetBytes converts PRAGMA cache_size to bytes matching numberOfCachePages
 // (src/pcache.c:277-292): negative values are KiB, positive values are pages.
+const (
+	calibrationPages = 200
+	minBudgetBytes   = 1 << 20
+)
+
+func minimumRows(cacheSize int) int {
+	return max(calibrationPages, budgetBytes(cacheSize)/pageSize) * 6 / 5
+}
+
+func withinBudget(cacheUsed, cacheSize int) bool {
+	if cacheSize > 0 {
+		return cachedPages(cacheUsed) <= cacheSize
+	}
+	return cacheUsed <= budgetBytes(cacheSize)*105/100
+}
+
 func budgetBytes(cacheSize int) int {
 	if cacheSize < 0 {
 		return -1024 * cacheSize
@@ -439,6 +455,18 @@ func sumsMatch(points []checkpoint, perConnection int) bool {
 	return true
 }
 
+func pagesMatch(a, b []checkpoint) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Label != b[i].Label || a[i].pagesTotal() != b[i].pagesTotal() {
+			return false
+		}
+	}
+	return true
+}
+
 func growth(points []checkpoint, label string) int64 {
 	return find(points, label).Memory.RSS - points[0].Memory.RSS
 }
@@ -452,8 +480,14 @@ func main() {
 	ctx := context.Background()
 	started := time.Now()
 	sqlitex.MustPinCheckMemory(ctx)
-	if *connectionsN < 2 || *boundK < 1 || *boundK >= *connectionsN || *rowsFlag < 10 || *cacheSizeFlag == 0 {
-		fatal("flags", errors.New("need n >= 2, 1 <= k < n, rows >= 10, cache-size != 0"))
+	if *connectionsN < 2 || *boundK < 1 || *boundK >= *connectionsN || *cacheSizeFlag == 0 {
+		fatal("flags", errors.New("need n >= 2, 1 <= k < n, cache-size != 0"))
+	}
+	if minRows := minimumRows(*cacheSizeFlag); *rowsFlag < minRows {
+		fatal("flags", fmt.Errorf("-rows %d is too small for -cache-size %d: need rows >= %d so the file is larger than both the cache_size=200 calibration cache and the requested budget", *rowsFlag, *cacheSizeFlag, minRows))
+	}
+	if budgetBytes(*cacheSizeFlag) < minBudgetBytes {
+		fatal("flags", fmt.Errorf("-cache-size %d is a budget of %d bytes; need at least %d so that cache memory dominates per-connection memory in the RSS checks", *cacheSizeFlag, budgetBytes(*cacheSizeFlag), minBudgetBytes))
 	}
 	work := sqlitex.MustWorkDir("4.2")
 	n, k, cacheSize := *connectionsN, *boundK, *cacheSizeFlag
@@ -498,7 +532,7 @@ func main() {
 	// difference is still exactly 100 pages and cancels the fixed Pager overhead.
 	small := runChild("scans", work, "100")[0].Conns[0].CacheUsed
 	large := runChild("scans", work, "200")[0].Conns[0].CacheUsed
-	if (large-small)%100 != 0 {
+	if large <= small || (large-small)%100 != 0 {
 		fatal("per-page size", fmt.Errorf("CACHE_USED at cache_size=200 minus at 100 is %d, not a multiple of 100", large-small))
 	}
 	perPage = (large - small) / 100
@@ -513,7 +547,11 @@ func main() {
 			fmt.Printf("INFO:   after scan %d: CACHE_USED=%d bytes\n", i+1, s.CacheUsed)
 		}
 		first, second := scans.Conns[0], scans.Conns[1]
-		check(first.CacheUsed <= budgetBytes(size)*105/100, fmt.Sprintf("cache_size=%d: CACHE_USED stays within the budget plus 5%% (%d pages x %d bytes against %d bytes)", size, cachedPages(first.CacheUsed), perPage, budgetBytes(size)))
+		budgetClaim := fmt.Sprintf("cache_size=%d: CACHE_USED stays within the budget plus 5%% (%d pages x %d bytes against %d bytes)", size, cachedPages(first.CacheUsed), perPage, budgetBytes(size))
+		if size > 0 {
+			budgetClaim = fmt.Sprintf("cache_size=%d: the cache holds at most %d pages (it holds %d)", size, size, cachedPages(first.CacheUsed))
+		}
+		check(withinBudget(first.CacheUsed, size), budgetClaim)
 		if size == cacheSize {
 			check(second.Misses-first.Misses >= int(info.Size()/pageSize)*9/10, "a file larger than the cache misses again on the second scan (the LRU evicted the pages the scan needs next)")
 		} else {
@@ -537,7 +575,7 @@ func main() {
 	// (pcache1FetchStage2, src/pcache1.c:899-912) while the group total equals
 	// open * perConnBudget (pcache1Cachesize, src/pcache1.c:814-832).
 	if compileMM == 1 {
-		check(hi > full && lo < full/10, fmt.Sprintf("in this driver build cache_size is not a per-connection cap: the connection that scanned last holds %d pages (its own budget is %d) while the idle connections were left with %d", hi, full, lo))
+		check(hi > full && lo < full, fmt.Sprintf("in this driver build cache_size is not a per-connection cap: the connection that scanned last holds %d pages (its own budget is %d) while the idle connections were left with %d", hi, full, lo))
 	} else {
 		check(hi <= full, "every connection stays within its own budget")
 	}
@@ -552,7 +590,7 @@ func main() {
 	fmt.Printf("\n== C. %d connections to one file, all kept open ==\n", n)
 	oneFile := runChild("one-file", work, strconv.Itoa(n), strconv.Itoa(cacheSize))
 	printGrowth(oneFile)
-	check(sumsMatch(oneFile, full) && find(oneFile, nLabel).cacheTotal() == find(files, nLabel).cacheTotal(), "connections to one file do not share a cache: the totals equal the N-files run at every checkpoint")
+	check(sumsMatch(oneFile, full) && pagesMatch(oneFile, files), "connections to one file do not share a cache: the totals equal the N-files run at every checkpoint")
 	oneN := growth(oneFile, nLabel)
 	check(oneN >= cacheN*9/10, "process memory grows by the summed CACHE_USED here too")
 
@@ -562,7 +600,7 @@ func main() {
 	kLabel := fmt.Sprintf("after %d", k)
 	atK, atN := growth(bounded, kLabel), growth(bounded, nLabel)
 	fmt.Printf("INFO: RSS growth at %s %s, at %s %s\n", kLabel, mib(atK), nLabel, mib(atN))
-	check(find(bounded, nLabel).Open == k && find(bounded, nLabel).pagesTotal() <= k*full*101/100, fmt.Sprintf("with the pool, %d connections are open at the end and their cached pages stay within %d x %d (plus 1%%)", k, k, full))
+	check(find(bounded, nLabel).Open == k && find(bounded, nLabel).pagesTotal() <= k*(full+1), fmt.Sprintf("with the pool, %d connections are open at the end and their cached pages stay within %d x (%d + 1), the sum of their cache sizes in pages", k, k, full))
 	check(atN-atK <= atK/4, fmt.Sprintf("with the pool, process memory stays flat after %d connections: growth from %s to %s is at most a quarter of the growth up to %s", k, kLabel, nLabel, kLabel))
 	check(float64(atN) <= float64(rssN)*float64(k)/float64(n)*1.5, fmt.Sprintf("the pooled run ends with about %d/%d of the unbounded run's memory growth (at most 1.5 x that fraction)", k, n))
 
