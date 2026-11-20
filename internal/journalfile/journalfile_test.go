@@ -401,38 +401,40 @@ func superJournalFooterBytes(name []byte, sum uint32) []byte {
 }
 
 func signedSum(name []byte) uint32 {
-	var sum uint32
-	for _, c := range name {
-		sum += uint32(int8(c))
-	}
-	return sum
+	return superJournalChecksum(name, true)
 }
 
-func TestSuperJournalChecksumUsesSignedBytes(t *testing.T) {
+func platformSum(name []byte) uint32 {
+	return superJournalChecksum(name, cCharIsSigned)
+}
+
+func TestSuperJournalChecksumFollowsCCharSignedness(t *testing.T) {
 	name := []byte("/tmp/caf\xc3\xa9/a.db-mjF47C1696E")
 	b := &builder{}
 	b.header(0, true, 1, 3, 2)
 	b.record(1, 1, 3, false)
-	b.data = append(b.data, superJournalFooterBytes(name, signedSum(name))...)
+	b.data = append(b.data, superJournalFooterBytes(name, platformSum(name))...)
 	j, _ := Parse(b.data)
 	if j.SuperJournal != string(name) || j.RecordsPresent() != 1 || j.TrailingByte != 0 {
 		t.Fatalf("super %q present %d trailing %d", j.SuperJournal, j.RecordsPresent(), j.TrailingByte)
 	}
-	var unsigned uint32
-	for _, c := range name {
-		unsigned += uint32(c)
-	}
 	b2 := &builder{}
 	b2.header(0, true, 1, 3, 2)
 	b2.record(1, 1, 3, false)
-	b2.data = append(b2.data, superJournalFooterBytes(name, unsigned)...)
+	b2.data = append(b2.data, superJournalFooterBytes(name, superJournalChecksum(name, !cCharIsSigned))...)
 	if j, _ := Parse(b2.data); j.SuperJournal != "" {
-		t.Fatalf("an unsigned-byte checksum must not be accepted, got %q", j.SuperJournal)
+		t.Fatalf("a checksum of the other char signedness must not be accepted, got %q", j.SuperJournal)
+	}
+	if superJournalChecksum(name, true) != superJournalChecksum(name, false)-2*256 {
+		t.Fatalf("signed %#x unsigned %#x", superJournalChecksum(name, true), superJournalChecksum(name, false))
 	}
 }
 
 func TestSqliteWrittenSuperJournalChecksum(t *testing.T) {
 	name := []byte("/tmp/opencode/caf\xc3\xa9-f_6pfgpk/a.db-mjF47C1696E")
+	if !cCharIsSigned {
+		t.Skip("the captured footer was written where C char is signed")
+	}
 	if len(name) != 45 || signedSum(name) != 0x0d98 {
 		t.Fatalf("len %d sum %#x", len(name), signedSum(name))
 	}
@@ -463,7 +465,7 @@ func TestSuperJournalNameTooLongIsIgnored(t *testing.T) {
 	b := &builder{}
 	b.header(0, true, 1, 3, 2)
 	b.record(1, 1, 3, false)
-	b.data = append(b.data, superJournalFooterBytes(name, signedSum(name))...)
+	b.data = append(b.data, superJournalFooterBytes(name, platformSum(name))...)
 	if j, _ := Parse(b.data); j.SuperJournal != "" {
 		t.Fatalf("got %q", j.SuperJournal)
 	}
@@ -471,7 +473,7 @@ func TestSuperJournalNameTooLongIsIgnored(t *testing.T) {
 	b2 := &builder{}
 	b2.header(0, true, 1, 3, 2)
 	b2.record(1, 1, 3, false)
-	b2.data = append(b2.data, superJournalFooterBytes(name, signedSum(name))...)
+	b2.data = append(b2.data, superJournalFooterBytes(name, platformSum(name))...)
 	if j, _ := Parse(b2.data); j.SuperJournal != string(name) {
 		t.Fatalf("512-byte name rejected")
 	}
@@ -482,7 +484,7 @@ func TestPlaybackWithSuperJournalIsConditional(t *testing.T) {
 	b := &builder{}
 	b.header(0, true, 1, 3, 2)
 	b.record(1, 1, 3, false)
-	b.data = append(b.data, superJournalFooterBytes(name, signedSum(name))...)
+	b.data = append(b.data, superJournalFooterBytes(name, platformSum(name))...)
 	j, _ := Parse(b.data)
 	p := j.Playback()
 	if !p.Hot || len(p.Pages) != 0 || p.TruncateTo != 0 || !strings.Contains(p.StopReason, "db-mj0123") {
@@ -490,5 +492,24 @@ func TestPlaybackWithSuperJournalIsConditional(t *testing.T) {
 	}
 	if p := j.PlaybackIfSuperJournalExists(); !slices.Equal(p.Pages, []uint32{1}) || p.TruncateTo != 2 {
 		t.Fatalf("conditional playback %+v", p)
+	}
+}
+
+func TestSuperJournalChecksumWhereCCharIsUnsigned(t *testing.T) {
+	saved := cCharIsSigned
+	t.Cleanup(func() { cCharIsSigned = saved })
+	name := []byte("/tmp/opencode/caf\xc3\xa9-f_6pfgpk/a.db-mjF47C1696E")
+	for _, signed := range []bool{true, false} {
+		cCharIsSigned = signed
+		b := &builder{}
+		b.header(0, true, 1, 3, 2)
+		b.record(1, 1, 3, false)
+		b.data = append(b.data, superJournalFooterBytes(name, superJournalChecksum(name, signed))...)
+		if j, _ := Parse(b.data); j.SuperJournal != string(name) {
+			t.Fatalf("signed=%v: got %q", signed, j.SuperJournal)
+		}
+	}
+	if superJournalChecksum(name, false) != 0x0f98 {
+		t.Fatalf("unsigned sum %#x", superJournalChecksum(name, false))
 	}
 }

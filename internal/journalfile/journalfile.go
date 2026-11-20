@@ -11,6 +11,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"runtime"
+	"slices"
 )
 
 // Magic is the 8-byte signature that identifies a live rollback journal header
@@ -306,17 +308,27 @@ func superJournalName(data []byte) (string, int64, bool) {
 		return "", 0, false
 	}
 	name := data[nameStart : size-superJournalFooter]
-	var sum uint32
-	for _, b := range name {
-		sum += uint32(int8(b))
-	}
-	if sum != stored || name[0] == 0 {
+	if superJournalChecksum(name, cCharIsSigned) != stored || name[0] == 0 {
 		return "", 0, false
 	}
 	if nul := bytes.IndexByte(name, 0); nul >= 0 {
 		name = name[:nul]
 	}
 	return string(name), nameStart - 4, true
+}
+
+var cCharIsSigned = !(runtime.GOOS == "linux" && slices.Contains([]string{"arm", "arm64", "ppc64", "ppc64le", "riscv64", "s390x"}, runtime.GOARCH))
+
+func superJournalChecksum(name []byte, signedChars bool) uint32 {
+	var sum uint32
+	for _, b := range name {
+		if signedChars {
+			sum += uint32(int8(b))
+		} else {
+			sum += uint32(b)
+		}
+	}
+	return sum
 }
 
 func validGeometry(sector, pageSize uint32) bool {

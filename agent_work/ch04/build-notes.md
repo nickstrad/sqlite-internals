@@ -199,7 +199,7 @@ Run: `go run ./ch04-pager-and-page-cache/experiments/4.1-atomic-commit-and-hot-j
 (309 strace'd child runs, 4 in parallel). Evidence: `evidence/4.1-atomic-commit-and-hot-journal.txt`
 (1,337 lines), exit 0, last line `ATOMIC COMMIT OK`. EXACT; identical on two consecutive runs and in
 the container. `INFO:` lines: work dir, sync syscall names, per-kill journal nonce (random per
-run: `sqlite3_randomness`, pager.c:1523) and run time, runtime.
+run: `sqlite3_randomness`, pager.c:1508) and run time, runtime.
 
 ### How it works
 
@@ -710,3 +710,125 @@ and step 1 (no freelist in its pre-step file). Indexed in `agent_work/ch04/INDEX
 - The CLI (separate page caches) was not measured in 4.2; correction 5's statement about C builds
   without `ENABLE_MEMORY_MANAGEMENT` is from the source.
 - 1,000 connections (outline's adversarial item) not run here: about 4 GB RSS with this driver.
+
+## Repair round 1 (Opus) — new facts and corrections
+
+Inputs: REVIEW-1.md (Neon) and adversarial run 1 (`adversarial/results-run1.txt`). Full table in
+`REPAIR-REPORT.md`. What changed in code and what is newly known:
+
+### `internal/journalfile` behaviour changes
+- **A journal shorter than its first sector is "missing", not synced.** `readJournalHdr`
+  returns SQLITE_DONE when `journalOff + sectorSize > fileSize` (pager.c:1607-1610), before it
+  reads the magic, so SQLite neither truncates nor restores anything. `Parse` now sets the first
+  header's `State = HeaderMissing` (decoded fields are kept) and `TrailingByte = end` whenever the
+  file (minus any super-journal footer) is shorter than the header's own `SectorSize`.
+  `HeaderMissing` therefore now means "fewer than 28 bytes, or fewer than one sector".
+  `TrailingByte` can no longer be negative (before: -412 for a 100-byte journal; the 5000-input
+  fuzz attack JRN-05b found 221 negative cases, now 0). Note: SQLite's size test uses the
+  *reader's* sector size, which on unix is 512 because of POWERSAFE_OVERWRITE
+  (`setSectorSize`, pager.c:2791-2805) — the same value SQLite writes into journals here, so
+  testing the header's own sector size gives the same answer for real journals.
+- **Super-journal footer parsing now matches `readSuperJournal` (pager.c:1303-1349):**
+  the checksum sums the name bytes as C `char`s (`cksum -= zOut[u]` with `char *zOut`), so its
+  value depends on the platform's char signedness. `char` is signed on linux/amd64 and on
+  darwin (amd64 and arm64), unsigned on linux/arm64 (the Docker lab on an Apple-silicon Mac),
+  linux/arm, ppc64(le), riscv64 and s390x. Neon's strace on linux/amd64 showed SQLite writing
+  0x0d98 for a 45-byte name containing `é` where the unsigned sum is 0x0f98. `journalfile` now
+  picks the signedness from GOOS/GOARCH (`cCharIsSigned`; previously it always summed unsigned,
+  which rejected real footers with non-ASCII names on amd64/darwin). The unsigned branch is unit
+  tested by flipping the variable; it was not run on a real linux/arm64 machine (no emulator
+  here). A name whose first byte is NUL is
+  ignored; a name of 513+ bytes is ignored (`len >= nSuper`, nSuper = 1 + mxPathname = 513 on
+  unix, `MAX_PATHNAME 512` os_unix.c:180); the name ends at its first NUL (C string).
+- **`Playback()` no longer predicts an unconditional rollback when a super-journal is named.**
+  `pager_playback` skips playback entirely if the named super-journal does not exist on disk
+  (pager.c:2891-2897); a pure byte parser cannot know that. `Playback()` now returns `Hot: true`,
+  no pages, `TruncateTo: 0` and a `StopReason` naming the super-journal. New method
+  `PlaybackIfSuperJournalExists()` gives the prediction for the case where the file exists
+  (the old behaviour). Attack JRN-02b confirmed SQLite rolled nothing back when the file was
+  absent.
+
+### Experiment 4.1 check changes (output text unchanged; evidence unchanged)
+- "each journal record is three pwrite64 calls…" now verifies every triple's lengths are
+  (4, 4096, 4), not only that the count is a multiple of 3.
+- The part A `usesJournal` check now also requires at least one `pwrite64` and one `sync` on the
+  `-journal` (the claim says "opened, written, synced, unlinked").
+- Part C's "every journal record holds the page's original image" now fails on an empty journal.
+- `describeStates` requires exact SHA-256 matches (not the change-counter-masked fallback).
+- A kill now counts as "landed" only if the unfinished syscall has the target's text AND the
+  same per-thread ordinal as the planned `when=` value (strace's injection counter is per
+  thread). `recreateKilled` (part E) now applies the same test instead of only "child died of
+  SIGKILL".
+- Surprise found while doing this: in the parsed strace log of a killed child, the killed
+  `pwrite64` sometimes appears as *unfinished on two threads* with identical arguments (once on
+  the writer thread with the right ordinal, once on another thread with ordinal 1). The old check
+  happened to pass because it took the last match by text only. Not investigated further
+  (likely how `internal/trace` reassembles strace's `<unfinished …>` lines at SIGKILL time).
+
+### Experiment 4.2 changes (one evidence line changed)
+- New flag validation: `-rows` must be at least `1.2 × max(200, budget pages)` (default
+  `-cache-size -2000` → 600 rows; default 1000 passes) so the file is larger than the
+  `cache_size=200` calibration cache and the requested budget; `-cache-size` must be a budget of
+  at least 1 MiB, because with tiny caches per-connection fixed memory and allocator noise swamp
+  the RSS-based checks (attack CAC-01c with `-cache-size -50` = 11 pages). `-rows 50` used to
+  panic with integer divide by zero; now the run stops with a `FATAL flags:` line. The
+  calibration also fails cleanly if `CACHE_USED(200) <= CACHE_USED(100)`.
+- Positive `-cache-size` (pages): the budget check is now "the cache holds at most N pages (it
+  holds N−1)". The old byte test compared `pages × 4352` with `N × 4096` and failed for every
+  positive size (attack CAC-01b, `-cache-size 500`): SQLite's positive cache_size counts pages,
+  not bytes, while the negative (KiB) form divides by `pageSize + szExtra` and so already includes
+  the per-page header.
+- Part B's "not a per-connection cap" check is now `hi > full && lo < full` (was `lo < full/10`,
+  which only held for large N; with N=4, 600-row files the idle connection kept 184 of 499 pages).
+- Part C compares the cached-page totals of the one-file and N-files runs at every checkpoint
+  (was raw bytes at the last checkpoint only; raw bytes depend on path length, correction 7).
+- Part D's pool bound is now `K × (full + 1)` pages, the sum of the open connections' `nMax`
+  (= the group's `nMaxPage`), replacing "K × full plus 1%". Evidence line now:
+  `check ok: with the pool, 8 connections are open at the end and their cached pages stay within
+  8 x (482 + 1), the sum of their cache sizes in pages`. Measured: 3863 ≤ 3864 at the default
+  flags (Neon's review explained the +7: closing an evicted connection leaves `7 × 483`).
+- Verified passing with: defaults; `-n 4 -k 2 -rows 600 -cache-size 500`;
+  `-n 16 -k 8 -rows 400 -cache-size -1024`; `-n 16 -k 8 -rows 1000 -cache-size 300`; `-n 8 -k 2`.
+  Runtime at defaults about 3 s.
+
+### Claims that need qualifying (from attacks; the experiments' own scope is unchanged)
+- **Correction 3 holds only while the transaction fits in the cache.** When a transaction
+  dirties more pages than `cache_size`, `pagerStress` spills: it calls `syncJournal` (writing the
+  magic and count, so the journal's first byte becomes 0xd9) and writes dirty pages to the
+  database file *before COMMIT*. Attack JRN-04 (55-page UPDATE, cache_size=10, FULL, killed before
+  COMMIT): 48 spills, journal hot, 8 segments (7 synced with 7 records each + 1 not-yet-synced),
+  database file modified before COMMIT. SQLite still recovers exact pre-transaction bytes
+  (JRN-05a, RCM-03b). So "the journal before COMMIT is not hot and the database is untouched"
+  must say "for a transaction that fits in the page cache".
+- **The 4 / 3 / 0 syncs per commit are for a transaction that fits in the cache.** Attack
+  RCM-03a (25-row UPDATE, cache_size=6): FULL made 20 syncs and NORMAL 11, with journal records
+  and database page writes interleaved (each spill syncs the journal, then writes pages, then
+  starts a new journal segment on the next sector boundary). Ordering is still "journal synced
+  before the pages it protects are written".
+- **A shrinking commit truncates the database file AFTER the commit point, not in Phase One.**
+  `sqlite3PagerCommitPhaseOne` only *extends* an undersized file (pager.c:6704-6715,
+  `dbSize > dbFileSize`); the truncation of a file that shrank is in `pager_end_transaction`
+  after the journal is finalized (pager.c:2155-2164, `bCommit && dbFileSize > dbSize`, under the
+  EXCLUSIVE lock). Attack RCM-06 (auto_vacuum=FULL DELETE, 155648 → 53248 bytes): the trace shows
+  `unlink t.db-journal` (index 101) then `ftruncate t.db` (102); a kill on the ftruncate leaves a
+  committed (post-step logical content) database whose file is still 155648 bytes — trailing
+  pages beyond the header's page count. Logically post-step, not byte-exact. Build-notes'
+  "extends or truncates the file" for CommitPhaseOne was wrong; "never a third state" still holds
+  logically.
+- **Correction 8 (a cache of N pages holds N−1) is for N ≥ 10.** Attack CAC-01a on a 1004-page
+  WAL file: at rest after a scan, cache_size 0 → 0 pages, 1 → 1, 2 → 2, 10 → 9, -1 → 0, -10 → 2;
+  mid-scan the cache held 4 pages for every N ≤ 2 (pages pinned by the open cursor cannot be
+  recycled, so a tiny cache exceeds N while a statement runs). Huge cache_size (±1000000)
+  allocates lazily: 1004 pages after the scan. Mechanism for N ≤ 2 at rest not traced.
+- **`PRAGMA shrink_memory` on any one connection empties every connection's cache in this
+  driver build.** `pcache1Shrink` sets the *group's* `nMaxPage` to 0 and calls
+  `pcache1EnforceMaxPage`, which evicts from the group's LRU (pcache1.c:839-851, 621-632); with
+  ENABLE_MEMORY_MANAGEMENT the group is process-wide. Attack CAC-02a: shrink_memory on an idle
+  connection holding 0 pages took the 16-connection total from 7712 pages to 0 and RSS growth
+  from 65.8 to 14.2 MiB. Pinned and dirty pages survive (CAC-02b). Same unified-PGroup root cause
+  as correction 5.
+- **mmap only bypasses the cache for pages that are not in the WAL.** `getPageMMap` falls back to
+  `getPageNormal` when `sqlite3WalFindFrame` finds a frame for the page (pager.c:5719-5726).
+  Attack CAC-04: with every leaf page in an uncheckpointed `-wal`, a mapped scan cached 501 pages
+  (unmapped 502); after a checkpoint 2; with mmap_size covering half the file 253. 4.2 part E's
+  files are checkpointed (closed cleanly), so its claim holds for its setup.
