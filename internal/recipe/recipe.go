@@ -28,7 +28,7 @@ const (
 
 // FormatVersion versions the on-disk step-hash cache. Bump it whenever the
 // generated SQL, parameters, or SQLite options change.
-const FormatVersion = 1
+const FormatVersion = 2
 
 // Recipe identifies a deterministic workload by PRNG seed, step count, and
 // journal mode ("wal" or "delete").
@@ -209,6 +209,9 @@ func (r Recipe) Plan() ([]Step, error) {
 // Step generates and returns step k alone by walking the live-id state from
 // step 0 through step k.
 func (r Recipe) Step(k int) (Step, error) {
+	if err := r.Validate(); err != nil {
+		return Step{}, err
+	}
 	if k < 0 || k > r.Steps {
 		return Step{}, fmt.Errorf("recipe: step %d out of range 0..%d", k, r.Steps)
 	}

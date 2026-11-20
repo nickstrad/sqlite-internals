@@ -2,9 +2,11 @@ package recipe
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -133,7 +135,7 @@ func (r Recipe) StepHashes(ctx context.Context) ([]FileHashes, error) {
 	if err != nil {
 		return nil, err
 	}
-	if cached, err := readHashCache(cachePath); err == nil && len(cached) > r.Steps {
+	if cached, err := r.readVerifiedCache(ctx, cachePath); err == nil && len(cached) > r.Steps {
 		return cached[:r.Steps+1], nil
 	}
 	dir := filepath.Dir(cachePath)
@@ -149,7 +151,7 @@ func (r Recipe) StepHashes(ctx context.Context) ([]FileHashes, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := writeHashCache(cachePath, hashes); err != nil {
+	if err := r.writeHashCache(cachePath, hashes); err != nil {
 		return nil, err
 	}
 	return hashes, nil
@@ -222,7 +224,33 @@ func (r Recipe) MatchStep(ctx context.Context, path string) (Match, error) {
 	if err != nil {
 		return Match{Step: -1}, err
 	}
-	return MatchHashes(hashes, h), nil
+	match := MatchHashes(hashes, h)
+	if match.Found() && !match.Exact {
+		agree, err := fileCountersAgree(path)
+		if err != nil {
+			return Match{Step: -1}, err
+		}
+		if !agree {
+			return Match{Step: -1}, nil
+		}
+	}
+	return match, nil
+}
+
+func fileCountersAgree(path string) (bool, error) {
+	image, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	return ChangeCountersAgree(image), nil
+}
+
+func ChangeCountersAgree(image []byte) bool {
+	first, second := ChangeCounterRanges[0], ChangeCounterRanges[1]
+	if len(image) < second[1] {
+		return false
+	}
+	return bytes.Equal(image[first[0]:first[1]], image[second[0]:second[1]])
 }
 
 func isSHA256Hex(text string) bool {
@@ -230,39 +258,120 @@ func isSHA256Hex(text string) bool {
 	return err == nil && len(text) == sha256.Size*2
 }
 
-func readHashCache(path string) ([]FileHashes, error) {
+const cacheChecksumPrefix = "checksum "
+
+func readHashCache(path string) ([]FileHashes, string, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer file.Close()
 	var hashes []FileHashes
+	var body strings.Builder
+	checksum := ""
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
+		line := scanner.Text()
+		if checksum != "" {
+			return nil, "", fmt.Errorf("recipe cache %s: line %q after the checksum", path, line)
+		}
+		if rest, ok := strings.CutPrefix(line, cacheChecksumPrefix); ok {
+			if !isSHA256Hex(rest) {
+				return nil, "", fmt.Errorf("recipe cache %s: bad checksum line %q", path, line)
+			}
+			checksum = rest
+			continue
+		}
+		fields := strings.Fields(line)
 		if len(fields) != 3 {
-			return nil, fmt.Errorf("recipe cache %s: malformed line %q", path, scanner.Text())
+			return nil, "", fmt.Errorf("recipe cache %s: malformed line %q", path, line)
 		}
 		k, err := strconv.Atoi(fields[0])
 		if err != nil || k != len(hashes) {
-			return nil, fmt.Errorf("recipe cache %s: line %q out of order", path, scanner.Text())
+			return nil, "", fmt.Errorf("recipe cache %s: line %q out of order", path, line)
 		}
 		if !isSHA256Hex(fields[1]) || !isSHA256Hex(fields[2]) {
-			return nil, fmt.Errorf("recipe cache %s: bad hash on line %q", path, scanner.Text())
+			return nil, "", fmt.Errorf("recipe cache %s: bad hash on line %q", path, line)
 		}
 		hashes = append(hashes, FileHashes{Exact: fields[1], Masked: fields[2]})
+		body.WriteString(line)
+		body.WriteString("\n")
 	}
 	if err := scanner.Err(); err != nil {
+		return nil, "", err
+	}
+	if checksum == "" {
+		return nil, "", fmt.Errorf("recipe cache %s: no checksum line", path)
+	}
+	return hashes, checksum, nil
+}
+
+func (r Recipe) cacheChecksum(hashes []FileHashes) (string, error) {
+	if len(hashes) == 0 {
+		return "", errors.New("recipe cache: no hashes")
+	}
+	plan, err := r.WithSteps(len(hashes) - 1).Plan()
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.New()
+	fmt.Fprintf(sum, "%s\n%s\n%s\n", r.cacheKey(), r.SQLiteOptions().File, r.SQLiteOptions().Conn)
+	for _, s := range plan {
+		for _, statement := range s.Statements {
+			fmt.Fprintf(sum, "%d %q %#v\n", s.Number, statement.SQL, statement.Args)
+		}
+	}
+	for k, h := range hashes {
+		fmt.Fprintf(sum, "%d %s %s\n", k, h.Exact, h.Masked)
+	}
+	return hex.EncodeToString(sum.Sum(nil)), nil
+}
+
+func (r Recipe) readVerifiedCache(ctx context.Context, path string) ([]FileHashes, error) {
+	hashes, checksum, err := readHashCache(path)
+	if err != nil {
 		return nil, err
+	}
+	want, err := r.cacheChecksum(hashes)
+	if err != nil {
+		return nil, err
+	}
+	if checksum != want {
+		return nil, fmt.Errorf("recipe cache %s: checksum mismatch", path)
+	}
+	fresh, err := r.freshStepZeroHash(ctx, filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+	if fresh != hashes[0] {
+		return nil, fmt.Errorf("recipe cache %s: step 0 rebuilds to %s, the cache says %s", path, fresh.Exact, hashes[0].Exact)
 	}
 	return hashes, nil
 }
 
-func writeHashCache(path string, hashes []FileHashes) error {
+func (r Recipe) freshStepZeroHash(ctx context.Context, dir string) (FileHashes, error) {
+	buildDir, err := os.MkdirTemp(dir, "verify-")
+	if err != nil {
+		return FileHashes{}, err
+	}
+	defer os.RemoveAll(buildDir)
+	path := filepath.Join(buildDir, "step-0.db")
+	if err := r.Build(ctx, path, 0); err != nil {
+		return FileHashes{}, err
+	}
+	return HashFile(path)
+}
+
+func (r Recipe) writeHashCache(path string, hashes []FileHashes) error {
+	checksum, err := r.cacheChecksum(hashes)
+	if err != nil {
+		return err
+	}
 	var b strings.Builder
 	for k, h := range hashes {
 		fmt.Fprintf(&b, "%d %s %s\n", k, h.Exact, h.Masked)
 	}
+	b.WriteString(cacheChecksumPrefix + checksum + "\n")
 	// Write to a sibling temp file and rename so concurrent readers never see
 	// a partially written cache file.
 	temp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-")
@@ -278,5 +387,9 @@ func writeHashCache(path string, hashes []FileHashes) error {
 		os.Remove(temp.Name())
 		return err
 	}
-	return os.Rename(temp.Name(), path)
+	if err := os.Rename(temp.Name(), path); err != nil {
+		os.Remove(temp.Name())
+		return err
+	}
+	return nil
 }

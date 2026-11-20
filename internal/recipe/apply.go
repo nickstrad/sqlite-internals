@@ -133,6 +133,9 @@ func (r Recipe) Build(ctx context.Context, path string, upTo int) error {
 // separate sessions, and calls afterStep(k) after each step's file is closed
 // and at rest.
 func (r Recipe) BuildEach(ctx context.Context, path string, upTo int, afterStep func(k int) error) error {
+	if err := r.Validate(); err != nil {
+		return err
+	}
 	if upTo < 0 || upTo > r.Steps {
 		return fmt.Errorf("recipe: build up to step %d out of range 0..%d", upTo, r.Steps)
 	}

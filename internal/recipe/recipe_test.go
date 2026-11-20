@@ -79,8 +79,14 @@ func TestStepDoesNotDependOnStepCount(t *testing.T) {
 
 // TestSeedsDiffer checks that different seeds change workload steps while keeping schema step 0 identical.
 func TestSeedsDiffer(t *testing.T) {
-	a, _ := Recipe{Seed: 1, Steps: 2, JournalMode: sqlitex.JournalWAL}.Plan()
-	b, _ := Recipe{Seed: 2, Steps: 2, JournalMode: sqlitex.JournalWAL}.Plan()
+	a, err := Recipe{Seed: 1, Steps: 2, JournalMode: sqlitex.JournalWAL}.Plan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := Recipe{Seed: 2, Steps: 2, JournalMode: sqlitex.JournalWAL}.Plan()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if reflect.DeepEqual(a[1], b[1]) {
 		t.Fatal("seeds 1 and 2 gave the same step 1")
 	}
@@ -262,8 +268,14 @@ func TestLongLivedConnectionDiffersOnlyInChangeCounterUnderWAL(t *testing.T) {
 		if err := db.Close(); err != nil {
 			t.Fatal(err)
 		}
-		a, _ := HashFile(canonical)
-		b, _ := HashFile(longLived)
+		a, err := HashFile(canonical)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := HashFile(longLived)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if a.Masked != b.Masked {
 			t.Fatalf("%s: long-lived build differs beyond the change counter", mode)
 		}
@@ -291,7 +303,7 @@ func TestMatchStepAndCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cached, err := readHashCache(cachePath)
+	cached, _, err := readHashCache(cachePath)
 	if err != nil || !reflect.DeepEqual(cached, hashes) {
 		t.Fatalf("cache round trip: %v", err)
 	}
@@ -318,6 +330,7 @@ func TestMatchStepAndCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	image[27]++
+	image[95]++
 	if err := os.WriteFile(path, image, 0o644); err != nil {
 		t.Fatal(err)
 	}
