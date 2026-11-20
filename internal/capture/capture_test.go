@@ -166,6 +166,10 @@ func TestRefusesDatabaseNotAtRest(t *testing.T) {
 	}
 }
 
+// TestRebuildRefusesACaptureTheCensusContradicts verifies Rebuild rejects
+// captures that pass hash checks alone but fail the post-rebuild census:
+// coordinated truncation of the last page, unknown or wrong page roles, and a
+// zero-page manifest.
 func TestRebuildRefusesACaptureTheCensusContradicts(t *testing.T) {
 	dir := t.TempDir()
 	path := buildRecipe(t, dir, 4)
@@ -221,6 +225,9 @@ func TestRebuildRefusesACaptureTheCensusContradicts(t *testing.T) {
 	}
 }
 
+// TestFailedCaptureLeavesNoCapture verifies that when a writer modifies the
+// database mid-capture, Pages removes any prior capture and temp files so the
+// target directory ends empty and Rebuild refuses it.
 func TestFailedCaptureLeavesNoCapture(t *testing.T) {
 	dir := t.TempDir()
 	path := buildRecipe(t, dir, 3)

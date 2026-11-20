@@ -17,7 +17,7 @@
 >   ```text
 >   go run ./cmd/course fetch-source
 >   ```
-> - **Build the pinned C tools** (`sqlite3`, `showwal`, `dbhash`) into `_tools/bin/` for Experiment 2.1's `.dbinfo` cross-check column (without a pinned CLI, Experiment 2.1 still runs, prints `NO-CLI:`, and fills the `.dbinfo` column with `?`):
+> - **Build the pinned C tools** (`sqlite3`, `showwal`, `dbhash`) into `_tools/bin/` for Experiment 2.1's `.dbinfo` cross-check column (if no `sqlite3` CLI is installed anywhere, Experiment 2.1 still runs, prints `NO-CLI:`, and fills the `.dbinfo` column with `?`; if `$SQLITE3_BIN` names a missing path or any found CLI reports a different `sqlite_source_id()`, Experiment 2.1 fails with exit status 1):
 >   ```text
 >   go run ./cmd/course build-tools
 >   ```
@@ -180,7 +180,7 @@ Four functions in `src/pager.c` (in the pinned tree) govern header bytes 24–27
 - **`pager_write_changecounter`** — [`src/pager.c:3130-3143`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3130-L3143). Writes `pPager->dbFileVers + 1` into bytes 24–27 and bytes 92–95, and writes `SQLITE_VERSION_NUMBER` (`3053004`) into bytes 96–99. It does not increment bytes 24–27 in place; it computes `dbFileVers + 1` from the cached copy last read from page 1.
 - **`readDbPage`** — [`src/pager.c:3067-3120`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3067-L3120). Reads a page from the WAL if present (otherwise from the database file). Whenever the page read is page 1, it copies bytes 24–39 into `pPager->dbFileVers` (lines 3093–3110).
 - **`pager_incr_changecounter`** — [`src/pager.c:6363-6437`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L6363-L6437). The rollback-mode commit path: once per write transaction, it makes page 1 writable and calls `pager_write_changecounter` (line 6409), ensuring rollback mode increments bytes 24–27 and 92–95 on every commit and writes page 1 to the database file.
-- **`pagerWalFrames`** — [`src/pager.c:3225-3282`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3225-L3282). The WAL-mode commit path: calls `pager_write_changecounter` only when the first page in the transaction's sorted dirty-page list is page 1 (line 3264). If a WAL commit does not modify page 1, `pager_write_changecounter` never runs; if a single WAL connection commits repeatedly while modifying page 1, `dbFileVers` is never refreshed from disk between commits, so every commit writes the exact same `dbFileVers + 1`.
+- **`pagerWalFrames`** — [`src/pager.c:3225-3282`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3225-L3282). The WAL-mode commit path: calls `pager_write_changecounter` only when the first page in the transaction's sorted dirty-page list is page 1 (line 3264). If a WAL commit does not modify page 1, `pager_write_changecounter` never runs; if a single WAL connection commits repeatedly while modifying page 1 and page 1 stays in that connection's page cache, `dbFileVers` is not refreshed between commits, so every commit writes the exact same `dbFileVers + 1`. Whenever page 1 is evicted and re-read through `readDbPage`—either by a new connection or by `PRAGMA shrink_memory` on the same connection—`dbFileVers` refreshes and the next page-1 commit advances the counter.
 
 ### Version notes
 
@@ -195,7 +195,7 @@ Behavior differences across SQLite releases relevant to the database file format
 
 ### Experiment 2.1 — Header and what a commit changes (`2.1-header-and-what-a-commit-changes`)
 
-- **Claim:** All 23 fields of the 100-byte database header can be decoded in plain Go without SQLite and match SQLite's `PRAGMA` queries and the pinned CLI's `.dbinfo`. In rollback mode, every committed write transaction advances header bytes 24–27 and 92–95 by exactly 1 in the database file. In WAL mode, a commit does not change the database file until checkpoint; commits that do not dirty page 1 change no header byte anywhere; and commits that dirty page 1 on one connection write `base + 1` on the first commit and hold that same counter on subsequent commits, advancing once per new connection that writes page 1. The in-header page count (bytes 28–31) is trusted only when non-zero and bytes 24–27 agree with bytes 92–95; page size 65,536 is stored as `00 01` (`1`) in bytes 16–17.
+- **Claim:** All 23 fields of the 100-byte database header can be decoded in plain Go without SQLite and match SQLite's `PRAGMA` queries and the pinned CLI's `.dbinfo` on every field that has an oracle (18 of 19 rows with the CLI; `version-valid-for` has neither oracle, and on negative `user_version` or `application_id` values `PRAGMA` and `internal/dbfile` decode signed `int32` while `.dbinfo` formats all 4-byte fields unsigned with `%u`). In rollback mode, every committed write transaction advances header bytes 24–27 and 92–95 by exactly 1 in the database file. In WAL mode, a commit does not change the database file until checkpoint; commits that do not dirty page 1 change no header byte anywhere; and commits that dirty page 1 write `dbFileVers + 1`, where `dbFileVers` is refreshed whenever page 1 is read into the page cache (`readDbPage`)—so on one connection the counter holds steady at `base + 1` while page 1 stays cached (C1), advances once per new connection (C3), and advances on every commit on one connection if `PRAGMA shrink_memory` drops page 1 from the cache before each step (C4). The in-header page count (bytes 28–31) is trusted only when non-zero and bytes 24–27 agree with bytes 92–95; page size 65,536 is stored as `00 01` (`1`) in bytes 16–17.
 - **Evidence form:** `EXACT` (all lines except `INFO:` lines).
 - **Run command:**
   ```text
@@ -221,6 +221,7 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -486,6 +487,7 @@ func partA(ctx context.Context, dir string, cli *sqlitex.CLI) {
 	fmt.Printf("oracles: PRAGMA through the Go driver; %s\n", cliStatus)
 	fmt.Printf("  %-22s %-12s %-12s %-12s %s\n", "field", "ours", "PRAGMA", ".dbinfo", "match")
 	allMatch := true
+	checked, unchecked := 0, 0
 	for _, row := range rows {
 		cliValue := "-"
 		if row.cliName != "" {
@@ -494,11 +496,23 @@ func partA(ctx context.Context, dir string, cli *sqlitex.CLI) {
 				cliValue = dbinfo[row.cliName]
 			}
 		}
-		match := (row.pragma == "-" || row.pragma == row.ours) && (cliValue == "-" || cliValue == "?" || cliValue == row.ours)
-		allMatch = allMatch && match
-		fmt.Printf("  %-22s %-12s %-12s %-12s %v\n", row.name, row.ours, row.pragma, cliValue, match)
+		hasPragma, hasCLI := row.pragma != "-", cliValue != "-" && cliValue != "?"
+		verdict := "n/a"
+		if hasPragma || hasCLI {
+			match := (!hasPragma || row.pragma == row.ours) && (!hasCLI || cliValue == row.ours)
+			allMatch = allMatch && match
+			verdict = fmt.Sprint(match)
+			checked++
+		} else {
+			unchecked++
+		}
+		fmt.Printf("  %-22s %-12s %-12s %-12s %s\n", row.name, row.ours, row.pragma, cliValue, verdict)
 	}
-	check(allMatch, "every decoded header field equals SQLite's own report of it")
+	oracles := "PRAGMA or .dbinfo"
+	if cli == nil {
+		oracles = "PRAGMA only, no CLI"
+	}
+	check(allMatch && checked > 0, fmt.Sprintf("each of the %d decoded header fields that has an oracle here (%s) equals SQLite's own report of it; %d field(s) have none (n/a)", checked, oracles, unchecked))
 	check(h.SQLiteVersion == pinnedVersionNumber, fmt.Sprintf("bytes 96-99 read %d (the library that last wrote the file)", pinnedVersionNumber))
 	check(h.WALMode(), "bytes 18 and 19 are 2 and 2 in a WAL-mode file")
 	check(h.ChangeCountersAgree() && source == dbfile.PageCountFromHeader, "bytes 24-27 equal 92-95, so the in-header size at 28 is used")
@@ -592,20 +606,27 @@ func partC(ctx context.Context, dir string) {
 	copyFile(base, path)
 	db = must(r.Open(ctx, path))("open")
 	start := logicalHeader(ctx, db)
-	unchanged := true
+	unchanged, eachWroteOneRowAndGrewWAL := true, true
+	previousWAL := walSize(path)
 	for i := 1; i <= 3; i++ {
-		if _, err := db.ExecContext(ctx, "UPDATE accounts SET balance = balance + 1 WHERE id = 1"); err != nil {
+		result, err := db.ExecContext(ctx, "UPDATE accounts SET balance = balance + 1 WHERE id = 1")
+		if err != nil {
 			fatal("update", err)
 		}
+		affected := must(result.RowsAffected())("rows affected")
 		current := logicalHeader(ctx, db)
 		fmt.Printf("  commit %d (%s): ", i, walText(path))
 		printChanges("current vs base: ", start, current)
 		unchanged = unchanged && bytes.Equal(current, start)
+		eachWroteOneRowAndGrewWAL = eachWroteOneRowAndGrewWAL && affected == 1 && walSize(path) > previousWAL
+		previousWAL = walSize(path)
 	}
 	if err := db.Close(); err != nil {
 		fatal("close", err)
 	}
 	afterClose = readHeaderFromChild(path)
+	check(eachWroteOneRowAndGrewWAL, "WAL: each of the three UPDATEs changed one row and appended frames to the -wal")
+	check(must(equal.FileSHA256(path))("hash") != must(equal.FileSHA256(base))("hash base"), "after the checkpoint at close the database file differs from the base")
 	check(unchanged && bytes.Equal(afterClose, baseHeader), "WAL: commits that do not write page 1 leave every header byte unchanged, even the change counter, before and after the checkpoint")
 
 	fmt.Println("C3. steps 28, 29, 30 each on a NEW connection while a second idle connection stays open (so closing a writer does not checkpoint):")
@@ -636,6 +657,34 @@ func partC(ctx context.Context, dir string) {
 		fatal("close holder", err)
 	}
 	check(bytes.Equal(readHeaderFromChild(path), previous) && walSize(path) == -1, "closing the last connection checkpointed page 1 into the file and removed the -wal")
+
+	// Evicting page 1 from the connection's page cache before each commit forces
+	// readDbPage (src/pager.c:3093-3110) to refresh dbFileVers, proving that C1's
+	// constant counter is a page-cache effect rather than a per-connection rule.
+	fmt.Println("C4. steps 28, 29, 30 on ONE connection, with PRAGMA shrink_memory before each step (it drops unused pages, page 1 included, from the connection's cache):")
+	path = filepath.Join(dir, "wal-one-connection-shrink.db")
+	copyFile(base, path)
+	db = must(r.Open(ctx, path))("open")
+	previous = logicalHeader(ctx, db)
+	var shrunk []uint32
+	for step := 28; step <= 30; step++ {
+		if _, err := db.ExecContext(ctx, "PRAGMA shrink_memory"); err != nil {
+			fatal("shrink_memory", err)
+		}
+		if err := r.ApplyStep(ctx, db, step); err != nil {
+			fatal("apply", err)
+		}
+		current := logicalHeader(ctx, db)
+		fmt.Printf("  commit of step %d (%s):\n", step, walText(path))
+		printChanges("    current vs previous commit: ", previous, current)
+		counter, _ := counters(current)
+		shrunk = append(shrunk, counter)
+		previous = current
+	}
+	if err := db.Close(); err != nil {
+		fatal("close", err)
+	}
+	check(shrunk[0] == c0+1 && shrunk[1] == c0+2 && shrunk[2] == c0+3, fmt.Sprintf("WAL, one connection, page 1 dropped from the cache before each commit: the counter advances once per commit (%d, %d, %d), so C1's constant counter comes from page 1 staying cached, not from the connection", c0+1, c0+2, c0+3))
 }
 
 func partD(ctx context.Context, dir string) {
@@ -698,7 +747,7 @@ func partE(ctx context.Context, dir string) {
 		f, err := dbfile.FromBytes(edited)
 		if err == nil {
 			ours = fmt.Sprintf("%d (from %s)", f.PageCount(), f.PageCountSource())
-		} else if strings.Contains(err.Error(), dbfile.ErrCorrupt.Error()) {
+		} else if errors.Is(err, dbfile.ErrCorrupt) {
 			ours = "error: in-header size larger than the file"
 		}
 		db := openReadOnly(path)
@@ -714,7 +763,7 @@ func partE(ctx context.Context, dir string) {
 		case 1:
 			check(theirs == fmt.Sprint(filePages) && f != nil && f.PageCount() == filePages, "disagreeing counters: both ignore bytes 28-31 and use the file size")
 		case 2:
-			check(qerr != nil && strings.Contains(qerr.Error(), "malformed") && err != nil, "an agreeing in-header size larger than the file is corruption to both")
+			check(qerr != nil && strings.Contains(qerr.Error(), "malformed") && errors.Is(err, dbfile.ErrCorrupt), "an agreeing in-header size larger than the file is corruption to both")
 		case 3:
 			check(theirs == fmt.Sprint(filePages) && f != nil && f.PageCount() == filePages, "an in-header size of 0 is ignored by both")
 		}
@@ -740,7 +789,11 @@ func partF(ctx context.Context, dir string) {
 		raw := readHeaderFromChild(path)
 		h := parse(raw)
 		fmt.Printf("  PRAGMA page_size=%-5d bytes 16-17 = %02x %02x (stored %d), decoded %d, SQLite reports %s\n", size, raw[16], raw[17], binary.BigEndian.Uint16(raw[16:18]), h.PageSize, pragma)
-		check(fmt.Sprint(h.PageSize) == pragma, fmt.Sprintf("page size %d decodes to what SQLite reports", size))
+		wantStored := uint16(size)
+		if size == 65536 {
+			wantStored = 1
+		}
+		check(h.PageSize == size && fmt.Sprint(h.PageSize) == pragma && binary.BigEndian.Uint16(raw[16:18]) == wantStored, fmt.Sprintf("page size %d is stored as %d and decodes to the size asked for and to what SQLite reports", size, wantStored))
 	}
 }
 
@@ -752,12 +805,18 @@ func main() {
 	ctx := context.Background()
 	sqlitex.MustPinCheckMemory(ctx)
 	var cli *sqlitex.CLI
-	if located, err := sqlitex.LocateCLI(ctx); err == nil {
+	// Skip the .dbinfo oracle only when no CLI exists anywhere (ErrNoCLI); a
+	// missing explicit $SQLITE3_BIN or a CLI with the wrong pin fails the run.
+	located, err := sqlitex.LocateCLI(ctx)
+	switch {
+	case err == nil:
 		cli = &located
 		fmt.Println(located.PinLine())
 		fmt.Printf("INFO: CLI found via %s\n", located.Origin)
-	} else {
+	case errors.Is(err, sqlitex.ErrNoCLI):
 		fmt.Printf("NO-CLI: %v; the .dbinfo cross-check is skipped\n", err)
+	default:
+		check(false, fmt.Sprintf("the sqlite3 CLI that was found or named reports the pinned source id: %v", err))
 	}
 	dir := sqlitex.MustWorkDir("2.1")
 	fmt.Printf("INFO: work dir %s\n", displayPath(dir))
@@ -850,9 +909,9 @@ oracles: PRAGMA through the Go driver; pinned sqlite3 CLI .dbinfo
   text encoding number   1            -            1            true
   user version           30           30           30           true
   application id         1397836120   1397836120   1397836120   true
-  version-valid-for      32           -            -            true
+  version-valid-for      32           -            -            n/a
   SQLite version number  3053004      -            3053004      true
-check ok: every decoded header field equals SQLite's own report of it
+check ok: each of the 18 decoded header fields that has an oracle here (PRAGMA or .dbinfo) equals SQLite's own report of it; 1 field(s) have none (n/a)
 check ok: bytes 96-99 read 3053004 (the library that last wrote the file)
 check ok: bytes 18 and 19 are 2 and 2 in a WAL-mode file
 check ok: bytes 24-27 equal 92-95, so the in-header size at 28 is used
@@ -926,6 +985,8 @@ C2. three commits on ONE connection that do not touch page 1 (UPDATE one account
   commit 1 (-wal 4152 bytes): current vs base: no header byte changed
   commit 2 (-wal 8272 bytes): current vs base: no header byte changed
   commit 3 (-wal 12392 bytes): current vs base: no header byte changed
+check ok: WAL: each of the three UPDATEs changed one row and appended frames to the -wal
+check ok: after the checkpoint at close the database file differs from the base
 check ok: WAL: commits that do not write page 1 leave every header byte unchanged, even the change counter, before and after the checkpoint
 C3. steps 28, 29, 30 each on a NEW connection while a second idle connection stays open (so closing a writer does not checkpoint):
   step 28 on its own connection (-wal 82432 bytes):
@@ -951,6 +1012,28 @@ C3. steps 28, 29, 30 each on a NEW connection while a second idle connection sta
 check ok: WAL: with another connection open, the file's page 1 still equals the base after three commits
 check ok: WAL: each new connection reads page 1 afresh and writes counter + 1, so the counter advances once per connection that writes page 1
 check ok: closing the last connection checkpointed page 1 into the file and removed the -wal
+C4. steps 28, 29, 30 on ONE connection, with PRAGMA shrink_memory before each step (it drops unused pages, page 1 included, from the connection's cache):
+  commit of step 28 (-wal 82432 bytes):
+    current vs previous commit: bytes 24-27 file change counter: 29 -> 30 (changed bytes 27)
+    current vs previous commit: bytes 28-31 database size in pages: 244 -> 251 (changed bytes 31)
+    current vs previous commit: bytes 32-35 first freelist trunk page: 82 -> 131 (changed bytes 35)
+    current vs previous commit: bytes 60-63 user version: 27 -> 28 (changed bytes 63)
+    current vs previous commit: bytes 92-95 version-valid-for: 29 -> 30 (changed bytes 95)
+  commit of step 29 (-wal 156592 bytes):
+    current vs previous commit: bytes 24-27 file change counter: 30 -> 31 (changed bytes 27)
+    current vs previous commit: bytes 28-31 database size in pages: 251 -> 259 (changed bytes 30,31)
+    current vs previous commit: bytes 32-35 first freelist trunk page: 131 -> 0 (changed bytes 35)
+    current vs previous commit: bytes 36-39 freelist page count: 1 -> 0 (changed bytes 39)
+    current vs previous commit: bytes 60-63 user version: 28 -> 29 (changed bytes 63)
+    current vs previous commit: bytes 92-95 version-valid-for: 30 -> 31 (changed bytes 95)
+  commit of step 30 (-wal 280192 bytes):
+    current vs previous commit: bytes 24-27 file change counter: 31 -> 32 (changed bytes 27)
+    current vs previous commit: bytes 28-31 database size in pages: 259 -> 270 (changed bytes 31)
+    current vs previous commit: bytes 32-35 first freelist trunk page: 0 -> 230 (changed bytes 35)
+    current vs previous commit: bytes 36-39 freelist page count: 0 -> 3 (changed bytes 39)
+    current vs previous commit: bytes 60-63 user version: 29 -> 30 (changed bytes 63)
+    current vs previous commit: bytes 92-95 version-valid-for: 31 -> 32 (changed bytes 95)
+check ok: WAL, one connection, page 1 dropped from the cache before each commit: the counter advances once per commit (30, 31, 32), so C1's constant counter comes from page 1 staying cached, not from the connection
 
 == D. bytes 18-19: switching journal mode rewrites the header
 base: rollback-mode recipe built to step 3; bytes 18,19 = 1,1
@@ -988,27 +1071,28 @@ check ok: an in-header size of 0 is ignored by both
 
 == F. page size is stored in bytes 16-17; 65536 does not fit in two bytes and is stored as 1
   PRAGMA page_size=512   bytes 16-17 = 02 00 (stored 512), decoded 512, SQLite reports 512
-check ok: page size 512 decodes to what SQLite reports
+check ok: page size 512 is stored as 512 and decodes to the size asked for and to what SQLite reports
   PRAGMA page_size=4096  bytes 16-17 = 10 00 (stored 4096), decoded 4096, SQLite reports 4096
-check ok: page size 4096 decodes to what SQLite reports
+check ok: page size 4096 is stored as 4096 and decodes to the size asked for and to what SQLite reports
   PRAGMA page_size=65536 bytes 16-17 = 00 01 (stored 1), decoded 65536, SQLite reports 65536
-check ok: page size 65536 decodes to what SQLite reports
+check ok: page size 65536 is stored as 1 and decodes to the size asked for and to what SQLite reports
 
 HEADER OK
 ```
 
 #### Reading the evidence
 
-- **Lines 1–4 (pin and tools).** Both the Go driver and the `sqlite3` CLI report the pinned 3.53.4 Fossil check-in. The `INFO:` lines record that the CLI was found via `PATH` and scratch files live in `_work/2.1`.
-- **Lines 6–58 (Part A: full header decode of R0).** R0 (WAL mode, 30 steps) hashes to `24aa158fdf713808…`, matching Chapter 1. Lines 9–31 list all 23 fields covering bytes 0–99: page size `4096`, write/read versions `2/2` (WAL), change counter `32`, in-header database size `270`, first freelist trunk `230`, freelist page count `3`, schema cookie `4` (three `CREATE TABLE` statements in step 0 plus one `CREATE INDEX` in step 5), schema format `4`, `auto_vacuum` `NONE` (offsets 52 and 64 both `0`), text encoding `1 (UTF-8)`, `user_version` `30`, `application_id` `1397836120`, `version-valid-for` `32`, and SQLite version `3053004 (3.53.4)`. Because bytes 24–27 equal bytes 92–95 (`32 == 32`), the page count (`270`) is taken from the in-header size. Opening R0 on a normal connection to read the pragmas and closing it left the file byte-identical and at rest (line 33). Every row in the oracle comparison table (lines 35–54) prints `true`.
+- **Lines 1–4 (pin and tools).** Both the Go driver and the `sqlite3` CLI report the pinned 3.53.4 Fossil check-in. The `INFO:` lines record that the CLI was found via `PATH` and scratch files live in `_work/2.1`. (If no CLI is installed anywhere, `LocateCLI` returns `sqlitex.ErrNoCLI` and line 2 prints `NO-CLI:`; a missing explicit `$SQLITE3_BIN` or wrong-pin CLI fails the run.)
+- **Lines 6–58 (Part A: full header decode of R0).** R0 (WAL mode, 30 steps) hashes to `24aa158fdf713808…`, matching Chapter 1. Lines 9–31 list all 23 fields covering bytes 0–99: page size `4096`, write/read versions `2/2` (WAL), change counter `32`, in-header database size `270`, first freelist trunk `230`, freelist page count `3`, schema cookie `4` (three `CREATE TABLE` statements in step 0 plus one `CREATE INDEX` in step 5), schema format `4`, `auto_vacuum` `NONE` (offsets 52 and 64 both `0`), text encoding `1 (UTF-8)`, `user_version` `30`, `application_id` `1397836120`, `version-valid-for` `32`, and SQLite version `3053004 (3.53.4)`. Because bytes 24–27 equal bytes 92–95 (`32 == 32`), the page count (`270`) is taken from the in-header size. Opening R0 on a normal connection to read the pragmas and closing it left the file byte-identical and at rest (line 33). In the oracle comparison table (lines 35–55), 18 of 19 rows have an oracle (`PRAGMA` or `.dbinfo`) and print `true`, while `version-valid-for` (line 53) has neither oracle and prints `n/a`; without a CLI, 8 rows are checked against `PRAGMA` and 11 print `n/a`.
 - **Lines 60–87 (Part B: rollback-mode commits).** Starting from a rollback-mode recipe at step 27 (change counter `30`), steps 28, 29, and 30 run on a single connection. After every commit, the child process reads page 1 directly from the `.db` file and confirms it equals SQLite's `sqlite_dbpage` view. Each commit advances both bytes 24–27 and bytes 92–95 by exactly 1 (`30 -> 31 -> 32 -> 33`), updates database size (`244 -> 251 -> 259 -> 270`), updates freelist trunk/count as pages are reused and freed, and advances `user_version` (`27 -> 28 -> 29 -> 30`). Closing the connection changes nothing on page 1 (line 87).
-- **Lines 89–153 (Part C: WAL-mode commits).** Starting from a WAL-mode recipe at step 27 (change counter `29`), the experiment compares `current` (`sqlite_dbpage`, WAL included) against `file` (raw `.db` bytes read by a child process):
-  - **C1 (one connection, steps 28–30, lines 92–124):** Every recipe step writes `PRAGMA user_version`, dirtying page 1. Step 28 grows `-wal` to `82432` bytes and moves `current` bytes 24–27 and 92–95 from `29 -> 30`, while `file vs base: no header byte changed`. Steps 29 and 30 grow `-wal` to `156592` and `280192` bytes and update size, freelist, and `user_version` in `current`, but bytes 24–27 and 92–95 stay frozen at `30` (lines 101–115). Only when the connection closes does the checkpoint copy page 1 into the `.db` file and delete `-wal`, leaving counter `30` (not `32`) in the file (lines 117–124).
-  - **C2 (one connection, three `UPDATE`s not touching page 1, lines 125–129):** Each single-row update appends one 4,120-byte frame (`24`-byte frame header + `4096`-byte page) to `-wal` (`4152 -> 8272 -> 12392` bytes, starting after the 32-byte WAL header). Zero header bytes change in `current` or in the `.db` file, even after close checkpoints the WAL.
-  - **C3 (new connection per step under an idle holder, lines 130–153):** Each new writer calls `readDbPage` on page 1, refreshing `dbFileVers` from the latest WAL frame, so the counter advances `29 -> 30 -> 31 -> 32` across the three connections while the `.db` file stays untouched until the holder closes.
-- **Lines 155–168 (Part D: bytes 18–19).** Switching a rollback database to WAL with `PRAGMA journal_mode=WAL` changes bytes 18 and 19 from `1` to `2` and increments bytes 24–27 and 92–95 (`6 -> 7`). Switching back with `PRAGMA journal_mode=DELETE` sets bytes 18 and 19 back to `1` (`7 -> 8`).
-- **Lines 170–187 (Part E: in-header size rule).** On four edited copies of a 39-page rollback database: **E1** sets offset 28 to `38` with matching counters → both `internal/dbfile` and SQLite report `38`; **E2** increments byte 95 so counters disagree → both fall back to file size `39`; **E3** sets offset 28 to `44` with matching counters → both reject it (`in-header size larger than the file` vs `database disk image is malformed (11)`); **E4** sets offset 28 to `0` → both fall back to `39`.
-- **Lines 189–195 (Part F: page-size encoding).** `512` stores as `02 00` (`512`); `4096` stores as `10 00` (`4096`); `65536` stores as `00 01` (`1`) and decodes to `65536` in both `internal/dbfile` and `PRAGMA page_size`.
+- **Lines 89–177 (Part C: WAL-mode commits).** Starting from a WAL-mode recipe at step 27 (change counter `29`), the experiment compares `current` (`sqlite_dbpage`, WAL included) against `file` (raw `.db` bytes read by a child process):
+  - **C1 (one connection, steps 28–30, lines 92–124):** Every recipe step writes `PRAGMA user_version`, dirtying page 1. Step 28 grows `-wal` to `82432` bytes and moves `current` bytes 24–27 and 92–95 from `29 -> 30`, while `file vs base: no header byte changed`. Steps 29 and 30 grow `-wal` to `156592` and `280192` bytes and update size, freelist, and `user_version` in `current`, but because page 1 stays in the connection's page cache, bytes 24–27 and 92–95 stay frozen at `30` (lines 101–115). Only when the connection closes does the checkpoint copy page 1 into the `.db` file and delete `-wal`, leaving counter `30` (not `32`) in the file (lines 117–124).
+  - **C2 (one connection, three `UPDATE`s not touching page 1, lines 125–131):** Each single-row update modifies one row and appends one 4,120-byte frame (`24`-byte frame header + `4096`-byte page) to `-wal` (`4152 -> 8272 -> 12392` bytes, starting after the 32-byte WAL header). After close, the `.db` file's SHA-256 differs from the base, yet zero header bytes change in `current` or in the `.db` file before or after the checkpoint.
+  - **C3 (new connection per step under an idle holder, lines 132–155):** Each new writer calls `readDbPage` on page 1, refreshing `dbFileVers` from the latest WAL frame, so the counter advances `29 -> 30 -> 31 -> 32` across the three connections while the `.db` file stays untouched until the holder closes.
+  - **C4 (one connection with `PRAGMA shrink_memory` before each step, lines 156–177):** Dropping unused pages—page 1 included—from the connection's cache before each step forces `readDbPage` to re-read page 1 from `-wal` and refresh `dbFileVers`. On that single connection the counter advances on every commit (`29 -> 30 -> 31 -> 32`, `-wal` `82432 -> 156592 -> 280192`), proving C1's constant counter comes from page 1 staying cached, not from the connection itself.
+- **Lines 179–192 (Part D: bytes 18–19).** Switching a rollback database to WAL with `PRAGMA journal_mode=WAL` changes bytes 18 and 19 from `1` to `2` and increments bytes 24–27 and 92–95 (`6 -> 7`). Switching back with `PRAGMA journal_mode=DELETE` sets bytes 18 and 19 back to `1` (`7 -> 8`).
+- **Lines 194–211 (Part E: in-header size rule).** On four edited copies of a 39-page rollback database: **E1** sets offset 28 to `38` with matching counters → both `internal/dbfile` and SQLite report `38`; **E2** increments byte 95 so counters disagree → both fall back to file size `39`; **E3** sets offset 28 to `44` with matching counters → both reject it (`in-header size larger than the file` vs `database disk image is malformed (11)`); **E4** sets offset 28 to `0` → both fall back to `39`.
+- **Lines 213–219 (Part F: page-size encoding).** `512` is stored as `02 00` (`512`); `4096` is stored as `10 00` (`4096`); `65536` is stored as `00 01` (`1`) and decodes to `65536` in both `internal/dbfile` and `PRAGMA page_size`.
 
 ---
 
@@ -1033,11 +1117,11 @@ Every committed write transaction enters `pager_incr_changecounter` (`src/pager.
 
 ### 4.2 WAL mode (`journal_mode=wal`, the platform default)
 
-In WAL mode, commits append frames to `-wal` and never write the `.db` file. Header bytes move on two separate timelines—the latest page-1 frame inside `-wal`, and the copy on disk inside `.db`—and depend on whether page 1 was dirtied and whether a new connection read page 1:
+In WAL mode, commits append frames to `-wal` and never write the `.db` file. Header bytes move on two separate timelines—the latest page-1 frame inside `-wal`, and the copy on disk inside `.db`—and depend on whether page 1 was dirtied and whether page 1 was re-read into the connection's page cache (`readDbPage`):
 
 | Event (from base counter `29` at step 27) | `-wal` page-1 counter (bytes 24–27 & 92–95) | `.db` file page-1 counter | `-wal` size |
 | --- | --- | --- | --- |
-| **C1: single connection, page-1 dirty** | | | |
+| **C1: single connection, page-1 dirty (page 1 stays cached)** | | | |
 | Commit step 28 (`user_version=28`) | `30` (`29 + 1`, `pagerWalFrames` calls `pager_write_changecounter`) | `29` (unchanged) | `82,432` B |
 | Commit step 29 (`user_version=29`) | `30` (still `dbFileVers + 1`, `dbFileVers` was not refreshed) | `29` (unchanged) | `156,592` B |
 | Commit step 30 (`user_version=30`) | `30` (still `29 + 1`) | `29` (unchanged) | `280,192` B |
@@ -1052,6 +1136,11 @@ In WAL mode, commits append frames to `-wal` and never write the `.db` file. Hea
 | Writer 2 commits step 29, closes | `31` (read `30` from WAL, wrote `31`) | `29` (unchanged) | `156,592` B |
 | Writer 3 commits step 30, closes | `32` (read `31` from WAL, wrote `32`) | `29` (unchanged) | `280,192` B |
 | Holder closes (checkpoint) | no `-wal` | `32` (copied from last page-1 frame) | deleted |
+| **C4: single connection, `PRAGMA shrink_memory` before each step** | | | |
+| Shrink + commit step 28 (`user_version=28`) | `30` (`readDbPage` read `29`, wrote `30`) | `29` (unchanged) | `82,432` B |
+| Shrink + commit step 29 (`user_version=29`) | `31` (page 1 evicted; `readDbPage` read `30`, wrote `31`) | `29` (unchanged) | `156,592` B |
+| Shrink + commit step 30 (`user_version=30`) | `32` (page 1 evicted; `readDbPage` read `31`, wrote `32`) | `29` (unchanged) | `280,192` B |
+| Last connection closes (checkpoint) | no `-wal` | `32` (copied from last page-1 frame) | deleted |
 
 ---
 
@@ -1366,8 +1455,9 @@ func (h Header) InHeaderSizeValid() bool {
 	return h.DatabaseSize != 0 && h.ChangeCountersAgree()
 }
 
-// WALMode reports whether both format version bytes (18 and 19) are set to 2.
-func (h Header) WALMode() bool { return h.ReadVersion == 2 && h.WriteVersion == 2 }
+// WALMode reports whether the file uses WAL mode, which lockBtree decides from
+// the read format version byte alone (byte 19 == 2, src/btree.c:3341).
+func (h Header) WALMode() bool { return h.ReadVersion == 2 }
 
 // AutoVacuum reports whether auto-vacuum (FULL or INCREMENTAL) is enabled,
 // indicated by a non-zero largest-root-page field at offset 52 (src/btree.c:3423).
@@ -1474,7 +1564,7 @@ func HeaderFieldAt(offset int) (HeaderField, bool) {
 }
 ```
 
-`header.go` decodes all 23 fields of the 100-byte database header, turns stored page size `1` into `65536`, and mirrors `lockBtree`'s validation checks (`src/btree.c:3282-3459`): magic string, power-of-two page size in `512..65536`, format versions `1` or `2`, fixed payload fractions `64/32/32`, usable size `>= 480`, text encoding `<= 3`, and schema format `<= 4`. `Fields()` partitions bytes 0–99 without gaps or overlaps, and `InHeaderSizeValid()` encodes the `lockBtree` trust rule (`DatabaseSize != 0 && ChangeCounter == VersionValidFor`).
+`header.go` decodes all 23 fields of the 100-byte database header, turns stored page size `1` into `65536`, and mirrors `lockBtree`'s validation checks (`src/btree.c:3282-3459`): magic string, power-of-two page size in `512..65536`, format versions `1` or `2`, fixed payload fractions `64/32/32`, usable size `>= 480`, text encoding `<= 3`, and schema format `<= 4`. `Fields()` partitions bytes 0–99 without gaps or overlaps, `InHeaderSizeValid()` encodes the `lockBtree` trust rule (`DatabaseSize != 0 && ChangeCounter == VersionValidFor`), and `WALMode()` checks byte 19 alone (`ReadVersion == 2`, matching `lockBtree` at `src/btree.c:3341`).
 
 #### `internal/dbfile/file.go`
 
@@ -1669,7 +1759,10 @@ func (f *File) IsPointerMapPage(n int) bool {
 ```go
 package dbfile
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // PageType is the 1-byte flag at offset 0 of a B-tree page header
 // (decodeFlags, src/btree.c:2028-2085).
@@ -1754,7 +1847,9 @@ func headerOffsetFor(number int) int {
 }
 
 // ParseBTreePage decodes and validates a B-tree page header, its cell pointer
-// array, and its freeblock chain from raw page bytes.
+// array, its freeblock chain, its free-space bounds (btreeComputeFreeSpace,
+// src/btree.c:2146-2166), and its full cell/freeblock byte coverage
+// (checkTreePage, src/btree.c:11076-11108).
 func ParseBTreePage(data []byte, number int, usableSize int) (*BTreePage, error) {
 	if usableSize < MinUsableSize || usableSize > len(data) {
 		return nil, corruptPage(number, "usable size %d does not fit a %d-byte page", usableSize, len(data))
@@ -1801,7 +1896,9 @@ func ParseBTreePage(data []byte, number int, usableSize int) (*BTreePage, error)
 		}
 		p.CellPointers[i] = cellOffset
 	}
-	// Walk the freeblock list verifying ascending non-overlapping offsets and minimum 4-byte size (src/btreeInt.h:152-164).
+	// Walk the freeblock list verifying ascending offsets separated by at least
+	// 4 bytes (btreeComputeFreeSpace, src/btree.c:2146) and minimum 4-byte size
+	// (src/btreeInt.h:152-164).
 	previousEnd := 0
 	for next := p.FirstFreeblock; next != 0; {
 		if len(p.Freeblocks) >= usableSize/4 {
@@ -1810,8 +1907,8 @@ func ParseBTreePage(data []byte, number int, usableSize int) (*BTreePage, error)
 		if next < p.CellContentStart || next > usableSize-4 {
 			return nil, corruptAt(number, next, "freeblock at %d is outside the cell content area %d..%d", next, p.CellContentStart, usableSize-4)
 		}
-		if next < previousEnd {
-			return nil, corruptAt(number, next, "freeblock at %d overlaps or precedes the freeblock ending at %d", next, previousEnd)
+		if previousEnd > 0 && next < previousEnd+4 {
+			return nil, corruptAt(number, next, "freeblock at %d is less than 4 bytes after the freeblock ending at %d", next, previousEnd)
 		}
 		size := be16(data[next+2:])
 		if size < 4 || next+size > usableSize {
@@ -1821,7 +1918,54 @@ func ParseBTreePage(data []byte, number int, usableSize int) (*BTreePage, error)
 		previousEnd = next + size
 		next = be16(data[next:])
 	}
+	// Total free space must fit within the usable page (btreeComputeFreeSpace, src/btree.c:2166).
+	if free := p.CellContentStart + p.FragmentedBytes + p.FreeblockBytes(); free > usableSize {
+		return nil, corruptAt(number, offset+7, "content start %d + fragmented bytes %d + freeblock bytes %d = %d exceeds the usable size %d", p.CellContentStart, p.FragmentedBytes, p.FreeblockBytes(), free, usableSize)
+	}
+	if err := p.checkCoverage(); err != nil {
+		return nil, err
+	}
 	return p, nil
+}
+
+// byteRange is an inclusive [first, last] byte span inside a page's cell content area.
+type byteRange struct{ first, last int }
+
+// checkCoverage mirrors checkTreePage (src/btree.c:11076-11108): no byte of the
+// cell content area may belong to two cells or to both a cell and a freeblock,
+// and the bytes covered by neither must equal header byte 7 (FragmentedBytes).
+func (p *BTreePage) checkCoverage() error {
+	ranges := make([]byteRange, 0, p.CellCount+len(p.Freeblocks))
+	for i := range p.CellCount {
+		c, err := p.Cell(i)
+		if err != nil {
+			return err
+		}
+		ranges = append(ranges, byteRange{c.Offset, c.Offset + c.Size - 1})
+	}
+	for _, b := range p.Freeblocks {
+		ranges = append(ranges, byteRange{b.Offset, b.Offset + b.Size - 1})
+	}
+	sort.Slice(ranges, func(i, j int) bool {
+		if ranges[i].first != ranges[j].first {
+			return ranges[i].first < ranges[j].first
+		}
+		return ranges[i].last < ranges[j].last
+	})
+	fragmented := 0
+	previousLast := p.CellContentStart - 1
+	for _, r := range ranges {
+		if r.first <= previousLast {
+			return corruptAt(p.Number, r.first, "byte %d is used twice (by two cells, or a cell and a freeblock)", r.first)
+		}
+		fragmented += r.first - previousLast - 1
+		previousLast = r.last
+	}
+	fragmented += p.UsableSize - previousLast - 1
+	if fragmented != p.FragmentedBytes {
+		return corruptAt(p.Number, p.HeaderOffset+7, "%d bytes of the cell content area belong to no cell or freeblock, the header reports %d fragmented bytes", fragmented, p.FragmentedBytes)
+	}
+	return nil
 }
 
 // BTreePage reads page n from f and parses it as a B-tree page.
@@ -1990,7 +2134,7 @@ func (p *BTreePage) Cells() ([]Cell, error) {
 }
 ```
 
-`btree.go` decodes B-tree page headers at offset 100 on page 1 and offset 0 elsewhere (`ParseBTreePage`), validates the page type (`0x02`, `0x05`, `0x0a`, `0x0d`), checks that the cell-pointer array and every cell offset stay inside the usable bounds, validates the sorted non-overlapping freeblock chain, computes `Unused()` identically to `dbstat`, implements the `MaxLocalPayload`/`MinLocalPayload`/`LocalPayloadSize` overflow split from `src/btree.c:1178-1207`, and parses individual cells (`Cell`, `Cells`).
+`btree.go` decodes B-tree page headers at offset 100 on page 1 and offset 0 elsewhere (`ParseBTreePage`), validates the page type (`0x02`, `0x05`, `0x0a`, `0x0d`), checks that the cell-pointer array and every cell offset stay inside the usable bounds, walks the freeblock chain requiring ascending offsets separated by at least 4 bytes (`src/btree.c:2146`), enforces `CellContentStart + FragmentedBytes + FreeblockBytes <= usableSize` (`src/btree.c:2166`), and runs `checkCoverage()` (`src/btree.c:11076-11108`) to reject any byte shared by two cells or a cell and a freeblock and any mismatch between uncovered bytes and header byte 7 (`FragmentedBytes`). It also computes `Unused()` identically to `dbstat`, implements the `MaxLocalPayload`/`MinLocalPayload`/`LocalPayloadSize` overflow split from `src/btree.c:1178-1207`, and parses individual cells (`Cell`, `Cells`).
 
 #### `internal/dbfile/payload.go`
 
@@ -2059,10 +2203,13 @@ func (f *File) OverflowChain(sourcePage int, c Cell) ([]OverflowPage, error) {
 		remaining -= uint64(take)
 		from = next
 		next = int(page.Next)
-		// Only interior links must be non-zero; the last overflow page's next
-		// field is normally 0 and is not followed past count pages.
 		if i < count-1 && next == 0 {
 			return nil, corruptPage(from, "overflow chain of cell %d ends after %d of %d pages", c.Index, i+1, count)
+		}
+		// The final overflow page terminates the list with next == 0; checkList
+		// (src/btree.c:10729-10783) rejects a non-zero trailing pointer.
+		if i == count-1 && next != 0 {
+			return nil, corruptAt(from, 0, "last overflow page of cell %d on page %d has non-zero next pointer %d", c.Index, sourcePage, next)
 		}
 	}
 	return chain, nil
@@ -2091,7 +2238,7 @@ func (f *File) Payload(sourcePage int, c Cell) ([]byte, []OverflowPage, error) {
 }
 ```
 
-`payload.go` follows a cell's singly linked overflow chain (`OverflowChain`), computing the expected overflow page count `ceil((payload - local) / (usable - 4))`, rejecting loops, premature `next == 0` links, and pointers to page 1, the lock-byte page, or pointer-map pages. `Payload` concatenates local and overflow bytes after checking `PayloadSize <= FileSize` so a corrupt varint cannot trigger a huge allocation.
+`payload.go` follows a cell's singly linked overflow chain (`OverflowChain`), computing the expected overflow page count `ceil((payload - local) / (usable - 4))`, rejecting loops, premature `next == 0` links, a non-zero `next` pointer on the last overflow page (matching `checkList`, `src/btree.c:10729-10783`), and pointers to page 1, the lock-byte page, or pointer-map pages. `Payload` concatenates local and overflow bytes after checking `PayloadSize <= FileSize` so a corrupt varint cannot trigger a huge allocation.
 
 #### `internal/dbfile/record.go`
 
@@ -2717,7 +2864,10 @@ func (b *censusBuilder) walkTree(t *Tree) error {
 	f := b.file
 	walker := TreeWalker{File: f}
 	walker.OnPage = func(p *BTreePage, parent, depth int) error {
-		if depth == 0 && p.Type.IsTable() != (t.Type == "table") {
+		// A WITHOUT ROWID table has type "table" in sqlite_schema while storing
+		// its rows in an index B-tree (0x02/0x0a), so only an index entry whose
+		// root is a table B-tree page is corrupt.
+		if depth == 0 && p.Type.IsTable() && t.Type != "table" {
 			return corruptPage(p.Number, "root of %s %q is a %s page", t.Type, t.Name, p.Type)
 		}
 		t.Pages++
@@ -2805,7 +2955,7 @@ func (c *Census) SortedTrees() []Tree {
 }
 ```
 
-`census.go` assigns every page in the file at most one `Role`: first claiming the lock-byte page (if the file exceeds 1 GiB) and any auto-vacuum pointer-map pages, then decoding `sqlite_schema` and walking every B-tree and overflow chain, and finally walking the freelist trunk/leaf chain from header offset 32 and checking its total against header offset 36. Claiming any page twice returns `ErrCorrupt` naming both owners; any page left unclaimed is recorded in `Unaccounted` and reported by `Complete()`.
+`census.go` assigns every page in the file at most one `Role`: first claiming the lock-byte page (if the file exceeds 1 GiB) and any auto-vacuum pointer-map pages, then decoding `sqlite_schema` and walking every B-tree and overflow chain, and finally walking the freelist trunk/leaf chain from header offset 32 and checking its total against header offset 36. A `table` entry in `sqlite_schema` may have an index B-tree root (`WITHOUT ROWID` tables store their rows in index B-trees, so their pages receive `index-interior`/`index-leaf`/`overflow` roles while `Tree.Type` remains `"table"`); only an `index` entry whose root is a table B-tree page is refused (`WalkTable` still refuses non-table roots because decoding records for every table kind is out of scope). Claiming any page twice returns `ErrCorrupt` naming both owners; any page left unclaimed is recorded in `Unaccounted` and reported by `Complete()`.
 
 ### 5.2 The `internal/equal` package
 
@@ -3300,8 +3450,10 @@ func BuildManifest(f *dbfile.File) (equal.Manifest, error) {
 
 // Pages captures a closed database at dbPath into dir as pages.bin plus
 // manifest.txt. It refuses databases that are not at rest or whose byte size
-// disagrees with PageCount*PageSize, and re-checks at-rest status, size, and
-// mtime afterwards to catch a writer that started mid-capture.
+// disagrees with PageCount*PageSize, removes any prior capture in dir, writes
+// temporary .capture-tmp files, re-checks at-rest status, size, and mtime, and
+// renames the files into place only if every check passes so a failed capture
+// leaves no partial or stale capture behind.
 func Pages(dbPath, dir string) (equal.Manifest, error) {
 	if err := CheckAtRest(dbPath); err != nil {
 		return equal.Manifest{}, err
@@ -3325,25 +3477,66 @@ func Pages(dbPath, dir string) (equal.Manifest, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return equal.Manifest{}, err
 	}
-	if err := writePages(f, filepath.Join(dir, PagesFile), m); err != nil {
+	pagesPath, manifestPath := filepath.Join(dir, PagesFile), filepath.Join(dir, ManifestFile)
+	pagesTmp, manifestTmp := pagesPath+captureTmpSuffix, manifestPath+captureTmpSuffix
+	removeAll := func(paths ...string) {
+		for _, p := range paths {
+			os.Remove(p)
+		}
+	}
+	for _, p := range []string{manifestPath, pagesPath} {
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return equal.Manifest{}, err
+		}
+	}
+	if err := writeCapture(f, dbPath, before, m, pagesTmp, manifestTmp); err != nil {
+		removeAll(pagesTmp, manifestTmp)
 		return equal.Manifest{}, err
 	}
-	if err := os.WriteFile(filepath.Join(dir, ManifestFile), []byte(m.Text()), 0o644); err != nil {
+	if err := os.Rename(pagesTmp, pagesPath); err != nil {
+		removeAll(pagesTmp, manifestTmp)
 		return equal.Manifest{}, err
 	}
-	if err := CheckAtRest(dbPath); err != nil {
-		return equal.Manifest{}, fmt.Errorf("database changed during the capture: %w", err)
-	}
-	after, err := os.Stat(dbPath)
-	if err != nil {
+	if err := os.Rename(manifestTmp, manifestPath); err != nil {
+		removeAll(pagesPath, manifestTmp)
 		return equal.Manifest{}, err
-	}
-	if after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
-		return equal.Manifest{}, fmt.Errorf("%s: database changed during the capture", dbPath)
 	}
 	return m, nil
 }
 
+// captureTmpSuffix is appended to pages.bin and manifest.txt until the final
+// post-capture stability checks pass.
+const captureTmpSuffix = ".capture-tmp"
+
+// afterCaptureWritten is a test hook invoked after the temp files are written
+// and before the final at-rest and stat checks run.
+var afterCaptureWritten = func(dbPath string) {}
+
+// writeCapture streams pages.bin and manifest.txt to temporary paths and then
+// verifies the source database remained at rest with unchanged size and mtime.
+func writeCapture(f *dbfile.File, dbPath string, before os.FileInfo, m equal.Manifest, pagesPath, manifestPath string) error {
+	if err := writePages(f, pagesPath, m); err != nil {
+		return err
+	}
+	if err := os.WriteFile(manifestPath, []byte(m.Text()), 0o644); err != nil {
+		return err
+	}
+	afterCaptureWritten(dbPath)
+	if err := CheckAtRest(dbPath); err != nil {
+		return fmt.Errorf("database changed during the capture: %w", err)
+	}
+	after, err := os.Stat(dbPath)
+	if err != nil {
+		return err
+	}
+	if after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
+		return fmt.Errorf("%s: database changed during the capture", dbPath)
+	}
+	return nil
+}
+
+// writePages writes every page image in manifest order to path, re-hashing each
+// page as it goes so a concurrent overwrite fails immediately.
 func writePages(f *dbfile.File, path string, m equal.Manifest) error {
 	out, err := os.Create(path)
 	if err != nil {
@@ -3392,10 +3585,11 @@ type PageError struct {
 func (e *PageError) Error() string { return fmt.Sprintf("capture page %d: %s", e.Page, e.Problem) }
 
 // Rebuild reconstructs a database file at outPath from a capture directory
-// alone. It validates the manifest sequence, refuses stale sidecar files next
-// to outPath, verifies every page's SHA-256 while streaming into a temporary
-// file, fsyncs, and atomically renames into place; on any failure no output
-// file is left behind.
+// alone. It validates the manifest sequence (requiring at least one page),
+// refuses stale sidecar files next to outPath, verifies every page's SHA-256
+// while streaming into a temporary file, fsyncs, runs a full page census on
+// the rebuilt image to confirm it agrees with the manifest, and atomically
+// renames into place; on any failure no output or temp file is left behind.
 func Rebuild(dir, outPath string) (equal.Manifest, error) {
 	m, err := ReadManifest(dir)
 	if err != nil {
@@ -3403,6 +3597,9 @@ func Rebuild(dir, outPath string) (equal.Manifest, error) {
 	}
 	if err := m.CheckSequence(); err != nil {
 		return m, err
+	}
+	if m.PageCount() == 0 {
+		return m, errors.New("the manifest lists no pages; a database has at least one")
 	}
 	if m.PageSize < dbfile.MinPageSize || m.PageSize > dbfile.MaxPageSize || m.PageSize&(m.PageSize-1) != 0 {
 		return m, fmt.Errorf("manifest page size %d is not a valid page size", m.PageSize)
@@ -3412,6 +3609,8 @@ func Rebuild(dir, outPath string) (equal.Manifest, error) {
 	for _, suffix := range []string{"-wal", "-journal", "-shm"} {
 		if _, err := os.Stat(outPath + suffix); err == nil {
 			return m, fmt.Errorf("%s%s exists; SQLite would apply it to the rebuilt file", outPath, suffix)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return m, err
 		}
 	}
 	in, err := os.Open(filepath.Join(dir, PagesFile))
@@ -3457,11 +3656,44 @@ func Rebuild(dir, outPath string) (equal.Manifest, error) {
 		os.Remove(tmp)
 		return m, err
 	}
-	return m, os.Rename(tmp, outPath)
+	if err := checkRebuilt(tmp, m); err != nil {
+		os.Remove(tmp)
+		return m, err
+	}
+	if err := os.Rename(tmp, outPath); err != nil {
+		os.Remove(tmp)
+		return m, err
+	}
+	return m, nil
+}
+
+// checkRebuilt runs dbfile's page census on the rebuilt temp file and compares
+// the resulting manifest against m, catching coordinated truncation (where both
+// pages.bin and manifest.txt drop trailing pages) and tampered page roles.
+func checkRebuilt(path string, m equal.Manifest) error {
+	f, err := dbfile.Open(path)
+	if err != nil {
+		return fmt.Errorf("the rebuilt file is not a database the page census accepts: %w", err)
+	}
+	defer f.Close()
+	if int64(f.PageCount())*int64(f.PageSize()) != f.FileSize() {
+		return fmt.Errorf("the rebuilt file holds %d bytes but its header describes %d pages of %d bytes", f.FileSize(), f.PageCount(), f.PageSize())
+	}
+	got, err := BuildManifest(f)
+	if err != nil {
+		return fmt.Errorf("the rebuilt file is not a database the page census accepts: %w", err)
+	}
+	if diff := equal.CompareManifests(m, got); !diff.Equal {
+		if diff.FirstDifferingPage == 0 {
+			return fmt.Errorf("the rebuilt file's census disagrees with the manifest: %s", diff.Reason)
+		}
+		return &PageError{Page: diff.FirstDifferingPage, Problem: "the manifest disagrees with the rebuilt file's census: " + diff.Reason}
+	}
+	return nil
 }
 ```
 
-`capture.go` enforces the at-rest precondition (`CheckAtRest`: refuses a non-empty `-wal` or a hot `-journal` with non-zero first header byte, mirroring `hasHotJournal` at `src/pager.c:5180`), captures a closed database into `pages.bin` + `manifest.txt` (`Pages`, re-verifying each page hash while writing and checking size, mtime, and at-rest status again at the end), and rebuilds a database from a capture directory alone (`Rebuild`: validates sequence, page size, absence of stale sidecar files beside `outPath`, exact `pages.bin` length, and every page's SHA-256 while writing to `outPath.rebuild-tmp`, `fsync`ing, and atomically renaming into place).
+`capture.go` enforces the at-rest precondition (`CheckAtRest`: refuses a non-empty `-wal` or a hot `-journal` with non-zero first header byte, mirroring `hasHotJournal` at `src/pager.c:5180`), captures a closed database into `pages.bin` + `manifest.txt`, and rebuilds a verified database from a capture directory alone. `Pages` removes any prior `manifest.txt` and `pages.bin` in `dir`, writes temporary `.capture-tmp` files (`writeCapture` / `writePages`, re-verifying each page hash while writing), re-checks at-rest status, size, and mtime, and renames the temporary files into place only after every check passes—removing them on any failure so a failed capture leaves no partial or stale capture behind. `Rebuild` validates the manifest sequence, refuses a 0-page manifest, checks page size, rejects stale sidecar files beside `outPath` (propagating non-`ErrNotExist` stat errors), verifies `pages.bin` length and every page's SHA-256 while streaming into `outPath.rebuild-tmp`, `fsync`s, runs `checkRebuilt` (which executes `dbfile`'s full page census on the rebuilt temp file and compares its manifest against the input manifest, catching coordinated truncation and tampered page roles), and atomically renames into place, deleting `tmp` on any failure.
 
 ### 5.4 Experiment 2.2 — Page census (`2.2-page-census`)
 
@@ -3661,10 +3893,24 @@ func printRoleCounts(c *dbfile.Census) int {
 	return total
 }
 
+// census loads the closed database file into memory and runs dbfile.Census so
+// no os.File descriptor stays open when later checks open SQLite on the same path.
 func census(path string) (*dbfile.File, *dbfile.Census) {
-	f := must(dbfile.Open(path))("parse " + filepath.Base(path))
+	image := must(os.ReadFile(path))("read " + filepath.Base(path))
+	f := must(dbfile.FromBytes(image))("parse " + filepath.Base(path))
 	c := must(f.Census())("census " + filepath.Base(path))
 	return f, c
+}
+
+// treeNamed looks up a B-tree entry in c by its schema name.
+func treeNamed(c *dbfile.Census, name string) dbfile.Tree {
+	for _, t := range c.Trees {
+		if t.Name == name {
+			return t
+		}
+	}
+	fatal("tree "+name, errors.New("not in the schema"))
+	return dbfile.Tree{}
 }
 
 func canonicalWrite(h hash.Hash, class string, text string) {
@@ -3781,7 +4027,6 @@ func partA(ctx context.Context, dir string) {
 		fatal("build", err)
 	}
 	f, c := census(path)
-	defer f.Close()
 	fmt.Printf("  page size %d, usable %d, page count %d (from the %s)\n", c.PageSize, c.UsableSize, c.PageCount, f.PageCountSource())
 	fmt.Println("  schema table (page 1), decoded by our record reader:")
 	for _, e := range c.Schema {
@@ -3812,7 +4057,7 @@ func partA(ctx context.Context, dir string) {
 	fmt.Println("  overflow chains of the documents table:")
 	var chains, overflowPages, longest int
 	var shown int
-	err := f.WalkTable(c.SortedTrees()[2].RootPage, func(row dbfile.Row) error {
+	err := f.WalkTable(treeNamed(c, "documents").RootPage, func(row dbfile.Row) error {
 		if len(row.OverflowPages) == 0 {
 			return nil
 		}
@@ -3891,7 +4136,15 @@ func partB(ctx context.Context, dir string) {
 		"INSERT INTO b VALUES(2, zeroblob(4058))",
 		"INSERT INTO b VALUES(3, zeroblob(8149))")
 	f, c := census(path)
-	defer f.Close()
+	// Record each row's parsed local/overflow split from WalkTable rather than
+	// checking standalone arithmetic constants.
+	type split struct {
+		payload    uint64
+		local      int
+		overflow   int
+		lastFilled int
+	}
+	splits := map[int64]split{}
 	err := f.WalkTable(2, func(row dbfile.Row) error {
 		page := must(f.BTreePage(row.Page))("page")
 		for i := range page.CellCount {
@@ -3900,15 +4153,22 @@ func partB(ctx context.Context, dir string) {
 				continue
 			}
 			fmt.Printf("  row %d: blob %d bytes, payload %d bytes (record header 4 + blob), local %d, overflow pages %d\n", row.Rowid, len(row.Values[1].Bytes), cell.PayloadSize, cell.LocalSize, len(row.OverflowPages))
+			chain := must(f.OverflowChain(row.Page, cell))("chain")
+			s := split{payload: cell.PayloadSize, local: cell.LocalSize, overflow: len(chain)}
+			if len(chain) > 0 {
+				s.lastFilled = chain[len(chain)-1].Payload
+			}
+			splits[row.Rowid] = s
 		}
 		return nil
 	})
 	if err != nil {
 		fatal("walk", err)
 	}
-	check(dbfile.LocalPayloadSize(4096, dbfile.TableLeaf, 4061) == 4061, "payload 4061 (= maxLocal) stays entirely on the leaf")
-	check(dbfile.LocalPayloadSize(4096, dbfile.TableLeaf, 4062) == minLocal, fmt.Sprintf("payload 4062 keeps only minLocal %d bytes locally and spills 3573 to one overflow page", minLocal))
-	check(dbfile.LocalPayloadSize(4096, dbfile.TableLeaf, 8153) == 4061, "payload 8153 keeps 4061 locally so its overflow exactly fills one page (4092 bytes)")
+	check(len(splits) == 3, "limit.db holds the three rows 1, 2 and 3")
+	check(splits[1] == split{4061, 4061, 0, 0}, "row 1: payload 4061 (= maxLocal) stays entirely on the leaf")
+	check(splits[2] == split{4062, minLocal, 1, 4062 - minLocal}, fmt.Sprintf("row 2: payload 4062 keeps only minLocal %d bytes on the leaf and spills %d to one overflow page", minLocal, 4062-minLocal))
+	check(splits[3] == split{8153, 4061, 1, 4092}, "row 3: payload 8153 keeps 4061 on the leaf so its overflow exactly fills one page (4092 bytes)")
 	checkAgainstSQLite(ctx, path, c, "local limit")
 }
 
@@ -3920,8 +4180,7 @@ func partC(ctx context.Context, dir string) {
 		"CREATE TABLE big(id INTEGER PRIMARY KEY, v BLOB)",
 		"WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 600) INSERT INTO big SELECT i, zeroblob(1000) FROM n ORDER BY i",
 		"DELETE FROM big")
-	f, c := census(path)
-	defer f.Close()
+	_, c := census(path)
 	fmt.Printf("  page size 1024: a trunk holds at most usable/4-2 = %d leaf numbers\n", c.UsableSize/4-2)
 	for _, trunk := range c.FreelistTrunks {
 		fmt.Printf("  trunk page %d lists %d leaves, next trunk is the next in this list\n", trunk, c.Page(trunk).CellCount)
@@ -3940,7 +4199,6 @@ func partD(ctx context.Context, dir string) {
 		"CREATE TABLE big(id INTEGER PRIMARY KEY, v BLOB)",
 		"WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 400) INSERT INTO big SELECT i, zeroblob(900) FROM n ORDER BY i")
 	f, c := census(path)
-	defer f.Close()
 	var maps []int
 	for _, p := range c.Pages {
 		if p.Role == dbfile.RolePointerMap {
@@ -3999,8 +4257,16 @@ func partE(ctx context.Context, dir string) {
 	fmt.Printf("  built by editing a 2-page database (page size 65536): in-header size %d pages, page 3 a freelist trunk listing pages 4..%d except %d; the rest of the file is a hole (sparse)\n", pages, pages, lock)
 	fmt.Printf("  file size %d bytes (1 GiB = 1073741824); lock-byte page = 1073741824/65536 + 1 = %d\n", int64(pages)*pageSize, lock)
 	fmt.Printf("INFO: blocks on disk: %s\n", diskUsage(path))
-	f, c := census(path)
-	defer f.Close()
+	// A > 1 GiB sparse file is too large to load with os.ReadFile, so open it
+	// directly with dbfile.Open and close the descriptor before SQLite opens it.
+	f := must(dbfile.Open(path))("parse " + filepath.Base(path))
+	c, err := f.Census()
+	if closeErr := f.Close(); closeErr != nil {
+		fatal("close parsed file", closeErr)
+	}
+	if err != nil {
+		fatal("census "+filepath.Base(path), err)
+	}
 	printRoleCounts(c)
 	check(c.Page(lock).Role == dbfile.RoleLockByte && c.Complete() == nil, fmt.Sprintf("page %d is counted as the lock-byte page, not as lost", lock))
 	db := openSQLite(path, true)
@@ -4036,8 +4302,7 @@ func partF(ctx context.Context, dir string) {
 		"INSERT INTO t VALUES(3, zeroblob(10000))",
 		"DELETE FROM t WHERE id = 3")
 	good := must(os.ReadFile(base))("read")
-	f, c := census(base)
-	f.Close()
+	_, c := census(base)
 	fmt.Printf("  base: %d pages; table t root 2; roles: ", c.PageCount)
 	var roles []string
 	for _, p := range c.Pages {
@@ -4104,7 +4369,9 @@ func parseAll(image []byte) (verdict string) {
 	if err == nil {
 		for _, e := range c.Schema {
 			if e.Type == "table" && e.RootPage > 0 {
-				err = f.WalkTable(e.RootPage, func(dbfile.Row) error { return nil })
+				if err = f.WalkTable(e.RootPage, func(dbfile.Row) error { return nil }); err != nil {
+					break
+				}
 			}
 		}
 	}
@@ -4539,9 +4806,10 @@ check ok: table events: same rows and values, read from the bytes and through SQ
   row 1: blob 4057 bytes, payload 4061 bytes (record header 4 + blob), local 4061, overflow pages 0
   row 2: blob 4058 bytes, payload 4062 bytes (record header 4 + blob), local 489, overflow pages 1
   row 3: blob 8149 bytes, payload 8153 bytes (record header 4 + blob), local 4061, overflow pages 1
-check ok: payload 4061 (= maxLocal) stays entirely on the leaf
-check ok: payload 4062 keeps only minLocal 489 bytes locally and spills 3573 to one overflow page
-check ok: payload 8153 keeps 4061 locally so its overflow exactly fills one page (4092 bytes)
+check ok: limit.db holds the three rows 1, 2 and 3
+check ok: row 1: payload 4061 (= maxLocal) stays entirely on the leaf
+check ok: row 2: payload 4062 keeps only minLocal 489 bytes on the leaf and spills 3573 to one overflow page
+check ok: row 3: payload 8153 keeps 4061 on the leaf so its overflow exactly fills one page (4092 bytes)
 check ok: local limit: census complete, page_count 7 and freelist_count 0 agree, 7 pages match dbstat
 
 == C. a freelist longer than one trunk page
@@ -4594,7 +4862,7 @@ check ok: F4: our parser returns an error, without panicking
     SQLite: integrity_check: *** in database main *** / Tree 2 page 2 cell 0: Offset 9 out of range 2260..4092 / Page 3: never used / Page 4: never used / (+1 more lines)
 check ok: F5: our parser returns an error, without panicking
   F6 row 1 payload size varint -> 0x7f
-    ours:   error: database file is malformed: page 3: 2 page(s) have no role: [3 4]
+    ours:   error: tree "t" (root 2): database file is malformed: page 2 offset 7: 1699 bytes of the cell content area belong to no cell or freeblock, the header reports 0 fragmented bytes
     SQLite: integrity_check: *** in database main *** / Tree 2 page 2 cell 0: Rowid 21 out of order / Fragmentation of 1699 bytes reported as 0 on page 2 / Page 3: never used / (+2 more lines)
 check ok: F6: our parser returns an error, without panicking
   F7 overflow page 3 points back to itself
@@ -4620,11 +4888,11 @@ CENSUS OK
   - **Role sum (lines 18–20):** `table-interior=3`, `table-leaf=89`, `index-interior=1`, `index-leaf=4`, `overflow=170`, `freelist-trunk=1`, `freelist-leaf=2`, `pointer-map=0`, `lock-byte=0`, `unaccounted=0`; sum `270`, matching `PRAGMA page_count = 270` and `PRAGMA freelist_count = 3`.
   - **`dbstat` cross-check (lines 21–295):** All 267 B-tree and overflow pages print `match` across all six columns (`name`, `pagetype`, `ncell`, `payload`, `unused`, `mx_payload`). Pages 230, 231, and 232 (freelist) are not in `dbstat`. Notice how `accounts` has 183 rows (`177` on leaf 260 + `6` on leaf 261) and `184` cells total because its interior root (page 2) holds `1` divider cell.
   - **Overflow chains and row hashes (lines 296–310):** 83 `documents` rows overflow across all 170 overflow pages (longest chain 3 pages). Notice row 6's chain `[9 8 23]` is non-monotonic because pages 8 and 9 were reused from the freelist. Canonical row hashes (tagging every value with `typeof()` and substituting the rowid for `INTEGER PRIMARY KEY` column 0 `NULL`) match SQLite identically for all three tables: `accounts` (`183` rows, `8017137363561914`), `documents` (`96` rows, `973d4aa8fa24c3aa`), and `events` (`1177` rows, `afdcccdab84ea9c5`).
-- **Lines 312–320 (Part B: local payload boundary).** At usable size 4,096, `maxLocal` is `4061` and `minLocal` is `489`. With a 4-byte record header (`CREATE TABLE b(id INTEGER PRIMARY KEY, v BLOB)`), a 4,057-byte blob has payload `4061` and stays 100% local (`0` overflow pages). Adding 1 byte (`4058`-byte blob, payload `4062`) drops local storage all the way down to `489` bytes and spills `3573` bytes to 1 overflow page. An 8,149-byte blob (payload `8153`) keeps `4061` bytes locally so its overflow fills one overflow page to the exact byte (`4092` bytes).
-- **Lines 322–330 (Part C: multi-trunk freelist).** At page size 1,024, a trunk holds at most `1024/4 - 2 = 254` leaves on read, while `freePage2` stops writing at `1024/4 - 8 = 248` leaves. Deleting 600 rows leaves three trunks in chain order: trunk `502` (newest head, `175` leaves), trunk `252` (`248` leaves), and trunk `3` (`248` leaves), totaling `3 + 671 = 674` free pages of `676`.
-- **Lines 332–337 (Part D: `auto_vacuum=FULL` pointer-map pages).** At page size 1,024, header byte 52 is `3` (`FULL`), and pointer-map pages appear every `1024/5 + 1 = 205` pages from page 2: pages `2` and `207`. All 406 non-pointer-map pages match `dbstat`, and the 2 pointer-map pages are accounted for cleanly.
-- **Lines 339–346 (Part E: > 1 GiB lock-byte page).** Editing a 2-page, 65,536-byte-page database into a 16,386-page (`1,073,872,896`-byte) sparse file puts the lock-byte page at `1073741824 / 65536 + 1 = 16385`. Page 3 is a freelist trunk listing all `16,382` pages from 4..16386 except 16385. Only `196,608` bytes are allocated on disk (`INFO:` line). Both our census (`lock-byte=1`, `unaccounted=0`) and SQLite (`integrity_check=ok`, `page_count=16386`, `freelist_count=16383`) accept the file.
-- **Lines 348–386 (Part F: nine damaged files).** Every case returns a structured error without panicking; Section 6.1 examines all nine cases in detail.
+- **Lines 312–321 (Part B: local payload boundary).** At usable size 4,096, `maxLocal` is `4061` and `minLocal` is `489`. With a 4-byte record header (`CREATE TABLE b(id INTEGER PRIMARY KEY, v BLOB)`), the experiment records each row's parsed `(payload, local, overflow pages, bytes on the last overflow page)` from `WalkTable` and `OverflowChain` and checks four claims: all 3 rows exist; row 1 (4,057-byte blob, payload `4061`) stays 100% local (`0` overflow pages); row 2 (4,058-byte blob, payload `4062`) drops local storage down to `489` bytes and spills `3573` bytes to 1 overflow page; and row 3 (8,149-byte blob, payload `8153`) keeps `4061` bytes locally so its overflow fills one overflow page to the exact byte (`4092` bytes).
+- **Lines 323–331 (Part C: multi-trunk freelist).** At page size 1,024, a trunk holds at most `1024/4 - 2 = 254` leaves on read, while `freePage2` stops writing at `1024/4 - 8 = 248` leaves. Deleting 600 rows leaves three trunks in chain order: trunk `502` (newest head, `175` leaves), trunk `252` (`248` leaves), and trunk `3` (`248` leaves), totaling `3 + 671 = 674` free pages of `676`.
+- **Lines 333–338 (Part D: `auto_vacuum=FULL` pointer-map pages).** At page size 1,024, header byte 52 is `3` (`FULL`), and pointer-map pages appear every `1024/5 + 1 = 205` pages from page 2: pages `2` and `207`. All 406 non-pointer-map pages match `dbstat`, and the 2 pointer-map pages are accounted for cleanly.
+- **Lines 340–347 (Part E: > 1 GiB lock-byte page).** Editing a 2-page, 65,536-byte-page database into a 16,386-page (`1,073,872,896`-byte) sparse file puts the lock-byte page at `1073741824 / 65536 + 1 = 16385`. Page 3 is a freelist trunk listing all `16,382` pages from 4..16386 except 16385. Only `196,608` bytes are allocated on disk (`INFO:` line). Because a 1 GiB file is not loaded into memory via `os.ReadFile`, Part E opens it with `dbfile.Open`, runs the census, and explicitly closes the file descriptor before opening SQLite (Parts A–D load closed files into memory with `os.ReadFile` + `dbfile.FromBytes`, so no descriptor ever overlaps a live SQLite connection). Both our census (`lock-byte=1`, `unaccounted=0`) and SQLite (`integrity_check=ok`, `page_count=16386`, `freelist_count=16383`) accept the file.
+- **Lines 349–387 (Part F: nine damaged files).** Every case returns a structured error without panicking; Section 6.1 examines all nine cases in detail.
 
 ### 5.5 Experiment 2.3 — Page manifest, rung R1 (`2.3-page-manifest`)
 
@@ -4654,6 +4922,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -4799,8 +5068,11 @@ func partB(ctx context.Context, dir, original, captureDir string) {
 	check(!diff.Equal && diff.FirstDifferingPage == 1, "the manifest comparison names the first differing page (page 1: the header changes on every recipe step)")
 }
 
+// tamper defines one capture-corruption test case and the page-naming substring
+// that capture.Rebuild's refusal must contain.
 type tamper struct {
 	name string
+	want string
 	edit func(entries []string) []string
 	page func(pages []byte, pageSize int)
 }
@@ -4811,11 +5083,11 @@ func partC(dir, captureDir string) {
 	original := must(os.ReadFile(filepath.Join(captureDir, capture.ManifestFile)))("read manifest")
 	pages := must(os.ReadFile(filepath.Join(captureDir, capture.PagesFile)))("read pages")
 	cases := []tamper{
-		{name: "drop the manifest entry for page 100", edit: func(e []string) []string { return append(e[:99:99], e[100:]...) }},
-		{name: "list page 50 twice (in place of page 51)", edit: func(e []string) []string { e[50] = e[49]; return e }},
-		{name: "swap the entries for pages 120 and 121", edit: func(e []string) []string { e[119], e[120] = e[120], e[119]; return e }},
-		{name: "flip one byte in the image of page 200", page: func(p []byte, size int) { p[199*size+1000] ^= 0x01 }},
-		{name: "swap the images of pages 7 and 8", page: func(p []byte, size int) {
+		{name: "drop the manifest entry for page 100", want: "page 100: missing", edit: func(e []string) []string { return append(e[:99:99], e[100:]...) }},
+		{name: "list page 50 twice (in place of page 51)", want: "page 50: listed twice", edit: func(e []string) []string { e[50] = e[49]; return e }},
+		{name: "swap the entries for pages 120 and 121", want: "page 121: out of order", edit: func(e []string) []string { e[119], e[120] = e[120], e[119]; return e }},
+		{name: "flip one byte in the image of page 200", want: "capture page 200:", page: func(p []byte, size int) { p[199*size+1000] ^= 0x01 }},
+		{name: "swap the images of pages 7 and 8", want: "capture page 7:", page: func(p []byte, size int) {
 			a := append([]byte(nil), p[6*size:7*size]...)
 			copy(p[6*size:7*size], p[7*size:8*size])
 			copy(p[7*size:8*size], a)
@@ -4834,7 +5106,7 @@ func partC(dir, captureDir string) {
 			lines = append(lines[:3:3], entries...)
 			lines[2] = fmt.Sprintf("pages %d", len(entries))
 			manifestText = strings.Join(lines, "\n") + "\n"
-			if len(entries) < len(lines) {
+			if len(entries)*4096 < len(pageBytes) {
 				pageBytes = pageBytes[:len(entries)*4096]
 			}
 		}
@@ -4851,7 +5123,7 @@ func partC(dir, captureDir string) {
 		_, err := capture.Rebuild(target, out)
 		_, statErr := os.Stat(out)
 		fmt.Printf("  C%d %s\n    -> %v\n", i+1, c.name, err)
-		check(err != nil && errors.Is(statErr, os.ErrNotExist), fmt.Sprintf("C%d: the rebuild is refused and no output file is written", i+1))
+		check(err != nil && strings.Contains(err.Error(), c.want) && errors.Is(statErr, os.ErrNotExist), fmt.Sprintf("C%d: the rebuild is refused naming %q, and no output file is written", i+1, c.want))
 	}
 }
 
@@ -4912,17 +5184,22 @@ func copyMainFileOnly(from, to string) {
 	}
 }
 
+// queryString runs a single-column SQL query against path (passing mode=ro via
+// url.Values when readOnly is true) and fails immediately on query or close error.
 func queryString(ctx context.Context, path string, readOnly bool, query string) string {
-	uri := must(sqlitex.FileURI(path, nil))("uri")
+	values := url.Values{}
 	if readOnly {
-		uri += "?mode=ro"
+		values.Set("mode", "ro")
 	}
+	uri := must(sqlitex.FileURI(path, values))("uri")
 	db := must(sql.Open("sqlite", uri))("open")
-	defer db.Close()
 	db.SetMaxOpenConns(1)
 	var value string
 	if err := db.QueryRowContext(ctx, query).Scan(&value); err != nil {
-		return "error: " + err.Error()
+		fatal(query, err)
+	}
+	if err := db.Close(); err != nil {
+		fatal("close", err)
 	}
 	return value
 }
@@ -5347,19 +5624,19 @@ check ok: the manifest comparison names the first differing page (page 1: the he
 == C. a damaged capture is refused, and the refusal names the page
   C1 drop the manifest entry for page 100
     -> manifest entry 100: page 100: missing (entry 100 lists page 101)
-check ok: C1: the rebuild is refused and no output file is written
+check ok: C1: the rebuild is refused naming "page 100: missing", and no output file is written
   C2 list page 50 twice (in place of page 51)
     -> manifest entry 51: page 50: listed twice (entries 50 and 51)
-check ok: C2: the rebuild is refused and no output file is written
+check ok: C2: the rebuild is refused naming "page 50: listed twice", and no output file is written
   C3 swap the entries for pages 120 and 121
     -> manifest entry 120: page 121: out of order (entry 120 should be page 120)
-check ok: C3: the rebuild is refused and no output file is written
+check ok: C3: the rebuild is refused naming "page 121: out of order", and no output file is written
   C4 flip one byte in the image of page 200
     -> capture page 200: image sha256 does not match the manifest
-check ok: C4: the rebuild is refused and no output file is written
+check ok: C4: the rebuild is refused naming "capture page 200:", and no output file is written
   C5 swap the images of pages 7 and 8
     -> capture page 7: image sha256 does not match the manifest
-check ok: C5: the rebuild is refused and no output file is written
+check ok: C5: the rebuild is refused naming "capture page 7:", and no output file is written
 
 == D. a database that is not at rest is refused, because its file alone is stale or torn
 D1. WAL mode: a child process commits one UPDATE and exits without closing its connection
@@ -5407,7 +5684,7 @@ Starting from a 6-page rollback-mode database (`1=table-leaf`, `2=table-leaf`, `
 | **F3** | Page 2 type byte `0x0d` → `0x07` | `page 2 offset 0: page type byte 0x07 is not 0x02, 0x05, 0x0a or 0x0d` | `database disk image is malformed (11)` |
 | **F4** | Page 2 cell count `2` → `3000` | `page 2 offset 3: 3000 cells do not fit: the cell pointer array would end at 6008, usable size 4096` | `database disk image is malformed (11)` |
 | **F5** | Page 2 first cell pointer → `9` | `page 2 offset 8: cell 0 pointer 9 is outside the cell content area 2260..4092` | `Offset 9 out of range 2260..4092` (+ unused pages 3, 4) |
-| **F6** | Row 1 payload-size varint → `0x7f` | `page 3: 2 page(s) have no role: [3 4]` | `Rowid 21 out of order` + `Fragmentation of 1699 bytes reported as 0 on page 2` + `Page 3: never used` |
+| **F6** | Row 1 payload-size varint → `0x7f` | `tree "t" (root 2): ... page 2 offset 7: 1699 bytes of the cell content area belong to no cell or freeblock, the header reports 0 fragmented bytes` | `Rowid 21 out of order` + `Fragmentation of 1699 bytes reported as 0 on page 2` + `Page 3: never used` |
 | **F7** | Overflow page 3 next pointer → `3` (self-loop) | `page 3: overflow chain of cell 0 loops back to page 3` | `2nd reference to page 3` + `Page 4: never used` |
 | **F8** | Header offset 32 (freelist trunk) → `2` (table page) | `page 2: page claimed twice: as table-leaf of "t" and as freelist-trunk` | `freelist leaf count too big on page 2` + `2nd reference to page 2` |
 | **F9** | Header offset 36 (freelist count) `+ 1` (`2` → `3`) | `file offset 36: header counts 3 freelist pages, the trunk chain holds 2` | `Freelist: size is 2 but should be 3` |
@@ -5415,22 +5692,24 @@ Starting from a 6-page rollback-mode database (`1=table-leaf`, `2=table-leaf`, `
 Two cases clarify deliberate design boundaries:
 
 - **F2 (partial last page — stricter than SQLite on purpose).** SQLite rounds a 22,528-byte file up to 6 whole pages and zero-fills the missing 2,048 bytes on read, so `integrity_check` returns `ok` because the truncated page happens to be an unread freelist leaf. `internal/dbfile` returns `ErrTruncated` because a page-level capture of a partial page could not reconstruct the file.
-- **F6 (what the census does not check).** Shrinking row 1's payload-size varint to `0x7f` makes cell 0 appear non-overflowing so our parser catches it through the orphaned overflow pages `[3 4]`. `internal/dbfile` intentionally does not verify key ordering across cells, cell-to-cell byte overlap, fragmentation sums, or pointer-map entry contents; those belong to `PRAGMA integrity_check` (Chapters 3 and 9).
-- **No-panic guarantee.** Beyond F1–F9, `internal/dbfile/dbfile_test.go` ran 3,000 single-bit flips on a 6-step recipe file (262 rejected; the rest landed inside opaque payload data bytes) plus 8 truncations and 85,919 native Go fuzz inputs in `FuzzParse`, all with zero panics.
+- **F6 (what `ParseBTreePage` checks versus what remains out of scope).** Shrinking row 1's payload-size varint to `0x7f` shortens cell 0 on page 2, leaving 1,699 bytes of the cell content area uncovered while header byte 7 reports `0`. `ParseBTreePage`'s `checkCoverage()` catches that exact `1699` vs `0` fragmentation error on page 2—matching SQLite's own `Fragmentation of 1699 bytes reported as 0 on page 2`—alongside cell-to-cell and cell-to-freeblock byte overlaps and freeblock spacing rules. `internal/dbfile` still intentionally does not verify key ordering across cells or pointer-map entry contents; those belong to `PRAGMA integrity_check` (Chapters 3 and 9).
+- **No-panic guarantee.** Beyond F1–F9, `internal/dbfile/dbfile_test.go` ran 3,000 single-bit flips on a 6-step recipe file (319 rejected; the rest landed inside opaque payload data bytes) plus 8 truncations and 85,919 native Go fuzz inputs in `FuzzParse`, all with zero panics.
 
 ### 6.2 Five tampered rung R1 captures (Experiment 2.3 part C)
 
-Every tampered copy of the 270-page capture is refused by `capture.Rebuild` with the offending page named and zero output file written:
+Every tampered copy of the 270-page capture is refused by `capture.Rebuild`, with each check asserting the refusal names the offending page substring and writes no output file:
 
-- **C1 (drop manifest entry for page 100):** `manifest entry 100: page 100: missing (entry 100 lists page 101)`.
-- **C2 (list page 50 twice in place of 51):** `manifest entry 51: page 50: listed twice (entries 50 and 51)`.
-- **C3 (swap manifest entries 120 and 121):** `manifest entry 120: page 121: out of order (entry 120 should be page 120)`.
-- **C4 (flip one byte inside page 200 of `pages.bin`):** `capture page 200: image sha256 does not match the manifest`.
-- **C5 (swap the images of pages 7 and 8 in `pages.bin`):** `capture page 7: image sha256 does not match the manifest`.
+- **C1 (drop manifest entry for page 100):** `manifest entry 100: page 100: missing (entry 100 lists page 101)` (checks `"page 100: missing"`).
+- **C2 (list page 50 twice in place of 51):** `manifest entry 51: page 50: listed twice (entries 50 and 51)` (checks `"page 50: listed twice"`).
+- **C3 (swap manifest entries 120 and 121):** `manifest entry 120: page 121: out of order (entry 120 should be page 120)` (checks `"page 121: out of order"`).
+- **C4 (flip one byte inside page 200 of `pages.bin`):** `capture page 200: image sha256 does not match the manifest` (checks `"capture page 200:"`).
+- **C5 (swap the images of pages 7 and 8 in `pages.bin`):** `capture page 7: image sha256 does not match the manifest` (checks `"capture page 7:"`).
+
+In addition, `capture.Rebuild` refuses a 0-page manifest and runs `dbfile`'s full page census on the rebuilt temp file (`checkRebuilt`) before renaming it into place, rejecting coordinated truncation (where both `manifest.txt` and `pages.bin` drop trailing pages) and tampered page roles in `manifest.txt`.
 
 ### 6.3 Databases not at rest (Experiment 2.3 part D)
 
-`capture.CheckAtRest` defines "not at rest" precisely: a `-wal` file with size `> 0`, or a hot `-journal` file (size `> 0` and first header byte non-zero, matching SQLite's `hasHotJournal` at `src/pager.c:5180`). A zero-byte `-wal` (left after `wal_checkpoint(TRUNCATE)` or under `PERSIST_WAL`) and a zero-byte or zero-header `-journal` (left by `TRUNCATE` or `PERSIST` journal modes) are at rest because the `.db` file alone holds the full committed state.
+`capture.CheckAtRest` defines "not at rest" as any condition where the `.db` file alone does not hold the complete committed state: a `-wal` file with size `> 0`, or a hot `-journal` file (size `> 0` and first header byte non-zero, matching SQLite's `hasHotJournal` at `src/pager.c:5180`). A zero-byte `-wal` (left after `wal_checkpoint(TRUNCATE)` or under `PERSIST_WAL`, even while `-shm` remains or an open connection holds an uncommitted write transaction) and a zero-byte or zero-header `-journal` (left by `TRUNCATE` or `PERSIST` journal modes) are treated as at rest because every committed frame is already in the `.db` file; if a writer commits mid-capture, `-wal` grows and the post-capture check in `capture.Pages` fails and removes the temporary capture files.
 
 - **D1 (WAL mode with uncheckpointed frames).** A child process commits `UPDATE accounts SET balance = balance + 1000 WHERE id = 1` on a 6-step WAL database and exits with status `3` without closing, leaving `-wal` (4,152 bytes) and `-shm` (32,768 bytes). `capture.Pages` refuses with `-wal holds 4152 bytes of frames not yet checkpointed into the database file`. Copying the `.db` file alone shows its SHA-256 is unchanged and account 1's balance is stale (`43047`), whereas opening the database with its `-wal` returns the committed balance (`44047`), checkpoints on close, removes the sidecar files, and allows `capture.Pages` to succeed (60 pages).
 - **D2 (rollback mode with a hot journal).** An interrupted rollback-mode transaction does not create a hot journal until SQLite syncs the journal header—either at `COMMIT` or when dirty pages spill out of the page cache (`src/pager.c:1494-1501` writes the initial journal header with zeroed magic; `src/pager.c:4377` writes the live magic at sync). Part D2 forces a mid-transaction spill using `cache_size=10` while updating every document body, then exits before `COMMIT`, leaving a 203,312-byte hot `-journal`. `capture.Pages` refuses it. Copying the `.db` file alone yields a torn state (`17 rows, 15 bodies all zero`) that no transaction ever committed. Opening the database with SQLite rolls the hot journal back (`17 rows, 0 bodies all zero`), removes `-journal`, restores the exact pre-transaction SHA-256, and allows capture to succeed.
@@ -5438,6 +5717,31 @@ Every tampered copy of the 270-page capture is refused by `capture.Rebuild` with
 ### What attacked this chapter
 
 <!-- adversarial-results -->
+
+Four adversarial programs (`36` attacks total, driven by [`run-all.sh`](../agent_work/ch02/adversarial/run-all.sh)) tested the chapter's claims against the pinned SQLite 3.53.4 build:
+
+- [`header-falsify`](../agent_work/ch02/adversarial/header-falsify/main.go) (`HDR-01`–`HDR-10`) attacked Experiment 2.1 and `internal/dbfile/header.go` across all 8 page sizes, file truncations, WAL cache eviction (`PRAGMA shrink_memory` and `cache_size=2`), checkpointed WAL commits, rollback no-op/rolled-back transactions, negative signed header fields, `0xffffffff` counter wraparound, mismatched format version bytes (`write=1, read=2`), mutated `sqlite/PIN`, and a wrong-version `$SQLITE3_BIN`.
+- [`census-edge`](../agent_work/ch02/adversarial/census-edge/main.go) (`CEN-01`–`CEN-08`) attacked Experiment 2.2 and `internal/dbfile` with 512-byte multi-trunk freelists at reader capacity (`126`/`127`), local/overflow boundaries across 512/4096/65536-byte pages and index interior pages, `WITHOUT ROWID` tables, multi-page overflowing `sqlite_schema`, non-zero reserved bytes, a sparse > 1 GiB 4 KiB-page file with a live overflow page past the lock-byte page, all 8 page sizes, and UTF-16le/be schemas with emoji, `STRICT` tables, and `ALTER TABLE ADD COLUMN`.
+- [`corrupt-fuzz`](../agent_work/ch02/adversarial/corrupt-fuzz/main.go) (`COR-01`–`COR-06`) attacked `internal/dbfile`'s no-panic and corruption-rejection claims with 656 exhaustive single-byte header mutations, page-header corruptions, overflow pointer corruptions (including the last overflow page's `next` pointer), 14 structural tree/freelist/pointer-map corruptions, anti-OOM huge varints, duplicate overlapping cell pointers, and a 10,000-iteration seeded mutation storm.
+- [`manifest-capture`](../agent_work/ch02/adversarial/manifest-capture/main.go) (`CAP-01`–`CAP-08`) attacked Experiment 2.3, `internal/capture`, and `internal/equal` with 13 capture tampers, coordinated last-page truncation, tampered manifest roles, 0-page manifests, 8 not-at-rest and stale-sidecar conditions, live open WAL connections after `wal_checkpoint(TRUNCATE)`, mid-capture concurrent WAL writes, cross-config E1 round-trips, `WITHOUT ROWID` captures, and manifest parsing edge cases.
+
+**Run 1** produced **22 HELD, 14 BROKEN**. Eleven broken attacks exposed real bugs that were fixed in code:
+
+- `HDR-08`: `Header.WALMode()` was changed to check byte 19 alone (`ReadVersion == 2`), matching `lockBtree` (`src/btree.c:3341`).
+- `HDR-10`: `sqlitex.LocateCLI` added `ErrNoCLI` so Experiment 2.1 skips `.dbinfo` only when no CLI exists anywhere and fails (exit 1) when `$SQLITE3_BIN` names a missing path or wrong-pin binary.
+- `CEN-03`, `CAP-07`: `census.go` now accepts `WITHOUT ROWID` tables (index B-tree roots for `type = 'table'` rows), refusing only an `index` entry with a table root.
+- `COR-02`, `COR-05b`: `ParseBTreePage` added the 4-byte freeblock gap check, total free-space bound, and `checkCoverage()` (rejecting overlapping cells/freeblocks and mismatched fragmented-byte counts).
+- `COR-03b`: `OverflowChain` now rejects a non-zero `next` pointer on the last overflow page.
+- `CAP-02a`, `CAP-02b`, `CAP-02c`: `capture.Rebuild` now rejects 0-page manifests and runs `checkRebuilt` (full page census + manifest comparison) before renaming into place.
+- `CAP-05`: `capture.Pages` now removes prior capture files, writes `.capture-tmp` files, and renames only after the final stability checks pass, leaving an empty directory on mid-capture failure.
+
+Three broken attacks showed claims or oracle assumptions that had to be narrowed or clarified in the chapter rather than changed in `dbfile`/`capture`:
+
+- `HDR-03` disproved the over-general "one connection ⇒ constant WAL change counter" wording: `PRAGMA shrink_memory` evicted page 1 on one connection and advanced the counter on every commit (`9 -> 10 -> 11`). Experiment 2.1 gained Part C4 and the chapter now states the exact cache rule (`dbFileVers + 1`, refreshed whenever `readDbPage` reads page 1).
+- `HDR-06` exposed an oracle disagreement on negative `user_version` / `application_id` values: `PRAGMA` and `internal/dbfile` decode signed `int32` (`-1`), while CLI `.dbinfo` prints every 4-byte field unsigned with `%u` (`4294967295`, `src/shell.c.in:5561-5562`). The chapter now states this oracle difference explicitly.
+- `CAP-04` tested capturing a WAL database whose `-wal` was 0 bytes (`-shm` 32,768 bytes) while a live connection held an uncommitted `+99` write transaction after `wal_checkpoint(TRUNCATE)`. Because the chapter's "at rest" rule defines completeness by whether the `.db` file holds every committed frame (and checking live locks on `-shm` would violate the POSIX descriptor rule), `capture.Pages` accepts a 0-byte `-wal` and rebuilds the exact committed state (`integrity_check ok`, uncommitted write excluded, E1-equal after rollback). Section 6.3 now states this boundary explicitly.
+
+After the fixes and updating `HDR-03`, `HDR-06`, and `CAP-04` to assert the clarified rules, the final run of [`run-all.sh`](../agent_work/ch02/adversarial/run-all.sh) passed **36 HELD, 0 BROKEN** ([`results.txt`](../agent_work/ch02/adversarial/results.txt)).
 
 ---
 
@@ -5447,11 +5751,11 @@ Every operational rule below is tied directly to this chapter's experiments:
 
 1. **The page is the unit of storage, replication, and verification (Experiments 2.1 C, 2.2 A, 2.3 A).** R0 is 270 pages of 4,096 bytes (`1,105,920` bytes); every WAL commit appends whole 4,096-byte pages wrapped in 24-byte frame headers (`+4,120` bytes per modified page in 2.1 C2); rung R1 captures and hashes one page per manifest line.
 2. **Choose page size once at creation (Experiment 2.1 F, `lockBtree`).** Page size is recorded in header bytes 16–17 (`65536` stored as `1`) and fixed when page 1 is initialized; changing it later requires rebuilding the database (`VACUUM`).
-3. **Never use header bytes 24–27 as a change detector in WAL mode (Experiment 2.1 B, C1–C3).** Bytes 24–27 advance on every commit in rollback mode only. In WAL mode, commits do not touch the `.db` file until checkpoint, repeated page-1 writes on one connection hold the counter constant at `base + 1`, and commits that never dirty page 1 leave all 100 header bytes identical even after checkpoint. Detect WAL changes with `PRAGMA data_version` per connection or by watching the `-wal` file, never header bytes 24–27.
+3. **Never use header bytes 24–27 as a change detector in WAL mode (Experiment 2.1 B, C1–C4).** Bytes 24–27 advance on every commit in rollback mode only. In WAL mode, commits do not touch the `.db` file until checkpoint; commits that dirty page 1 write `dbFileVers + 1`, holding the counter constant at `base + 1` on one connection while page 1 stays cached (C1) and advancing it only when page 1 is re-read into the cache—on a new connection (C3) or after `PRAGMA shrink_memory` (C4)—while commits that never dirty page 1 leave all 100 header bytes identical even after checkpoint (C2). Detect WAL changes with `PRAGMA data_version` per connection or by watching the `-wal` file, never header bytes 24–27.
 4. **E1 byte hashes are stable only within one SQLite library version (Experiment 2.1 A).** Header bytes 96–99 store the last writer's `SQLITE_VERSION_NUMBER` (`3053004`). Upgrading SQLite changes those four bytes on the next write; cross-version verification requires equality levels E2 or E3 (Chapter 3).
 5. **Never copy or page-capture a database that is not at rest (Experiment 2.3 D1–D2).** Copying a WAL database without its non-empty `-wal` silently drops committed writes (`43047` vs `44047`); copying a rollback database beside a hot `-journal` captures a torn uncommitted spill (`15` of `17` bodies zeroed). In WAL mode, take an R1 capture only after a `TRUNCATE` checkpoint or after every connection closes; otherwise take a live snapshot inside a read transaction (rung R4, Chapter 6).
 6. **Do not inspect closed WAL databases with `mode=ro` if they must stay clean on disk (Experiment 2.1 A).** Opening a WAL-mode database read-only and closing it leaves `-wal` and `-shm` sidecar files behind because a read-only connection cannot run the close checkpoint that removes them. Either inspect closed WAL files with a read-only byte parser (`internal/dbfile`) or open a normal connection when checking pragmas.
-7. **Never call `os.Open` and `Close` on a database file inside a process that holds an SQLite connection to it (Experiment 2.1 child reader).** On POSIX systems, closing any file descriptor for a file drops every POSIX byte-range lock that process holds on that file. Read raw bytes from a closed database or from a separate child process.
+7. **Never call `os.Open` and `Close` on a database file inside a process that holds an SQLite connection to it (Experiment 2.1 child reader, Experiment 2.2).** On POSIX systems, closing any file descriptor for a file drops every POSIX byte-range lock that process holds on that file. Read raw bytes from a closed database before opening any SQLite connection (as Experiment 2.2 does via `os.ReadFile` + `FromBytes`, or explicit `Close` in Part E) or from a separate child process (as Experiment 2.1 does).
 8. **Page accounting reveals where space actually goes and prevents false lost-page alarms (Experiment 2.2 A, D, E).** In R0, 170 of 270 pages (63%) are overflow pages of `documents`—invisible if a service only counts tables or rows. Services that grow files past 1 GiB must account for the single unused lock-byte page (`1073741824 / pageSize + 1`), and databases with `auto_vacuum` enabled must account for periodic pointer-map pages.
 9. **Enable `secure_delete=ON` if freed pages must not leak stale bytes (Experiment 2.3 A, `freePage2`).** With `secure_delete=ON`, freelist leaves are zeroed on free (pages 231 and 232 both hash to `ad7facb2…`), preventing deleted customer data or history-dependent bytes from surviving in page captures.
 
@@ -5462,7 +5766,7 @@ Every operational rule below is tied directly to this chapter's experiments:
 Answers are in [answers.md](answers.md).
 
 1. Under what exact condition do SQLite (`lockBtree`, `src/btree.c:3298-3302`) and `internal/dbfile` trust the 4-byte in-header database size at offset 28, and what happens in Experiment 2.1 part E when the two counters agree but offset 28 is larger than the OS file size?
-2. In Experiment 2.1 part C, why did three consecutive recipe commits on a single WAL connection leave header bytes 24–27 stuck at `30` (rather than advancing to `32`), why did three `UPDATE accounts` commits leave all 100 header bytes unchanged even after close, and what changed when each step ran on a new connection?
+2. In Experiment 2.1 part C, why did three consecutive recipe commits on a single WAL connection leave header bytes 24–27 stuck at `30` (C1) while running `PRAGMA shrink_memory` before each step on that same connection advanced the counter to `30`, `31`, `32` (C4), why did three `UPDATE accounts` commits leave all 100 header bytes unchanged even after close (C2), and why did opening a new connection per step also advance the counter (C3)?
 3. On a table-leaf page with usable size 4,096 bytes (`maxLocal = 4061`, `minLocal = 489`), Experiment 2.2 part B inserted three rows with payloads of 4,061, 4,062, and 8,153 bytes. How many bytes stayed local and how many overflow pages were allocated for each row, and why did adding 1 byte past `4061` reduce local bytes from `4061` to `489`?
 4. In Experiment 2.2 part F2, why did SQLite's `PRAGMA integrity_check` report `ok` on a database whose last page was truncated in half, while `internal/dbfile` returned `ErrTruncated`?
 5. In Experiment 2.3 part D, what concrete data corruption or loss would result from capturing the `.db` file alone in D1 (WAL mode) versus D2 (rollback mode), and why did D2 need `cache_size=10` and a full-table `UPDATE` to produce a hot journal before `COMMIT`?
