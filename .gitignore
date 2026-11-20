@@ -1,0 +1,6 @@
+/sqlite-src/
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+/bin/
