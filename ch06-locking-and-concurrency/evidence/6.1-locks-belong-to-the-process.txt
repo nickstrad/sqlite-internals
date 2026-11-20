@@ -1,0 +1,126 @@
+sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
+INFO: work dir _work/6.1, GOOS linux
+
+== A. rollback mode (journal_mode=delete): the write lock is a byte-range lock on the database file
+INFO: holder pid 1954533, contender pid 1954540
+step  1  holder     begin immediate                      -> SQLITE_OK
+step  2  holder     exec INSERT INTO lab VALUES (1, 'holder') -> SQLITE_OK
+  database file locks (fcntl F_GETLK from the parent):
+    PENDING            byte 1073741824  unlocked
+    RESERVED           byte 1073741825  write-locked by holder
+    SHARED             bytes 1073741826-1073742335 read-locked
+  database file locks in /proc/locks:
+    holder     POSIX READ  1073741826-1073742335 SHARED
+    holder     POSIX WRITE 1073741825            RESERVED
+check ok: the holder's open write transaction is a write lock on the RESERVED byte and a read lock on the SHARED range of the database file
+step  3  contender  begin immediate                      -> SQLITE_BUSY (5)
+check ok: a second process is refused the write lock: BEGIN IMMEDIATE returns SQLITE_BUSY (5)
+step  4  holder     stray-close db                       -> SQLITE_OK
+  database file locks (fcntl F_GETLK from the parent):
+    PENDING            byte 1073741824  unlocked
+    RESERVED           byte 1073741825  unlocked
+    SHARED             bytes 1073741826-1073742335 unlocked
+  database file locks in /proc/locks: none
+check ok: after the holder opened and closed the database file with os.Open, none of its locks remain
+step  5  holder     query SELECT count(*) FROM lab       -> SQLITE_OK 1
+check ok: the holder still sees its uncommitted row: as far as SQLite knows, its write transaction is intact
+step  6  contender  begin immediate                      -> SQLITE_OK
+check ok: the second process is now admitted: BEGIN IMMEDIATE returns SQLITE_OK while the holder's transaction is still open
+step  7  contender  exec INSERT INTO lab VALUES (2, 'contender') -> SQLITE_OK
+  database file locks (fcntl F_GETLK from the parent):
+    PENDING            byte 1073741824  unlocked
+    RESERVED           byte 1073741825  write-locked by contender
+    SHARED             bytes 1073741826-1073742335 read-locked
+  database file locks in /proc/locks:
+    contender  POSIX READ  1073741826-1073742335 SHARED
+    contender  POSIX WRITE 1073741825            RESERVED
+check ok: the RESERVED byte is now write-locked by the second process
+step  8  contender  commit                               -> SQLITE_OK
+check ok: the second process commits: its COMMIT returns SQLITE_OK
+step  9  holder     commit                               -> SQLITE_IOERR_DELETE_NOENT (5898)
+check ok: the holder's COMMIT writes its pages, then fails to delete the rollback journal the other process already deleted: SQLITE_IOERR_DELETE_NOENT (5898)
+after both processes closed: integrity_check ok; 1 row(s): holder
+check ok: the file passes integrity_check but holds only the holder's row: the commit that returned SQLITE_OK is lost
+
+== B. WAL mode: the write lock is a byte-range lock on the -shm file
+INFO: holder pid 1954551, contender pid 1954557
+step 10  holder     begin immediate                      -> SQLITE_OK
+step 11  holder     exec INSERT INTO lab VALUES (1, 'holder') -> SQLITE_OK
+  -shm locks (fcntl F_GETLK from the parent):
+    WAL_WRITE_LOCK     byte 120         write-locked by holder
+    WAL_CKPT_LOCK      byte 121         unlocked
+    WAL_RECOVER_LOCK   byte 122         unlocked
+    WAL_READ_LOCK(0)   byte 123         read-locked
+    WAL_READ_LOCK(1)   byte 124         unlocked
+    WAL_READ_LOCK(2)   byte 125         unlocked
+    WAL_READ_LOCK(3)   byte 126         unlocked
+    WAL_READ_LOCK(4)   byte 127         unlocked
+    DMS                byte 128         read-locked
+  -shm locks in /proc/locks:
+    contender  POSIX READ  128                   DMS
+    holder     POSIX READ  123                   WAL_READ_LOCK(0)
+    holder     POSIX READ  128                   DMS
+    holder     POSIX WRITE 120                   WAL_WRITE_LOCK
+  database file locks (fcntl F_GETLK from the parent):
+    PENDING            byte 1073741824  unlocked
+    RESERVED           byte 1073741825  unlocked
+    SHARED             bytes 1073741826-1073742335 read-locked
+  database file locks in /proc/locks:
+    contender  POSIX READ  1073741826-1073742335 SHARED
+    holder     POSIX READ  1073741826-1073742335 SHARED
+check ok: the holder's write transaction is a write lock on -shm byte 120 (WAL_WRITE_LOCK), next to its read lock on byte 123 (WAL_READ_LOCK(0))
+check ok: on the database file both processes hold only the SHARED read lock: WAL mode does not use RESERVED for writers
+step 12  contender  begin immediate                      -> SQLITE_BUSY (5)
+check ok: a second process is refused: BEGIN IMMEDIATE returns SQLITE_BUSY (5)
+step 13  holder     stray-close db                       -> SQLITE_OK
+  -shm locks (fcntl F_GETLK from the parent):
+    WAL_WRITE_LOCK     byte 120         write-locked by holder
+    WAL_CKPT_LOCK      byte 121         unlocked
+    WAL_RECOVER_LOCK   byte 122         unlocked
+    WAL_READ_LOCK(0)   byte 123         read-locked
+    WAL_READ_LOCK(1)   byte 124         unlocked
+    WAL_READ_LOCK(2)   byte 125         unlocked
+    WAL_READ_LOCK(3)   byte 126         unlocked
+    WAL_READ_LOCK(4)   byte 127         unlocked
+    DMS                byte 128         read-locked
+  -shm locks in /proc/locks:
+    contender  POSIX READ  128                   DMS
+    holder     POSIX READ  123                   WAL_READ_LOCK(0)
+    holder     POSIX READ  128                   DMS
+    holder     POSIX WRITE 120                   WAL_WRITE_LOCK
+  database file locks (fcntl F_GETLK from the parent):
+    PENDING            byte 1073741824  unlocked
+    RESERVED           byte 1073741825  unlocked
+    SHARED             bytes 1073741826-1073742335 read-locked
+  database file locks in /proc/locks:
+    contender  POSIX READ  1073741826-1073742335 SHARED
+check ok: a stray close of the database file leaves the -shm write lock in place
+step 14  contender  begin immediate                      -> SQLITE_BUSY (5)
+check ok: so the second process is still refused
+step 15  holder     stray-close -shm                     -> SQLITE_OK
+  -shm locks (fcntl F_GETLK from the parent):
+    WAL_WRITE_LOCK     byte 120         unlocked
+    WAL_CKPT_LOCK      byte 121         unlocked
+    WAL_RECOVER_LOCK   byte 122         unlocked
+    WAL_READ_LOCK(0)   byte 123         unlocked
+    WAL_READ_LOCK(1)   byte 124         unlocked
+    WAL_READ_LOCK(2)   byte 125         unlocked
+    WAL_READ_LOCK(3)   byte 126         unlocked
+    WAL_READ_LOCK(4)   byte 127         unlocked
+    DMS                byte 128         read-locked
+  -shm locks in /proc/locks:
+    contender  POSIX READ  128                   DMS
+check ok: a stray close of the -shm file releases the holder's -shm locks
+step 16  holder     query SELECT count(*) FROM lab       -> SQLITE_OK 1
+check ok: the holder still sees its uncommitted row
+step 17  contender  begin immediate                      -> SQLITE_OK
+check ok: the second process is now admitted while the holder's transaction is still open
+step 18  contender  exec INSERT INTO lab VALUES (2, 'contender') -> SQLITE_OK
+step 19  contender  commit                               -> SQLITE_OK
+check ok: the second process commits: its COMMIT returns SQLITE_OK
+step 20  holder     commit                               -> SQLITE_PROTOCOL (15)
+check ok: the holder's COMMIT finds the wal-index header changed under its write lock, retries, and gives up with SQLITE_PROTOCOL (15)
+after both processes closed: integrity_check ok; 1 row(s): contender
+check ok: the file passes integrity_check and holds only the second process's row: the holder's transaction is lost, and the holder was told
+
+LOCKS BELONG TO THE PROCESS OK
