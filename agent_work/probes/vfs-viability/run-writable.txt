@@ -1,0 +1,22 @@
+registered logshim with io_methods version 3
+delete: journal_mode=delete rows_after_reopen=50 integrity=ok
+  write phase VFS calls: xOpen=52 xFileControl=165 xRead=103 xLock=154 xUnlock=104 xWrite=508 xSync=153 xClose=52 xDelete=51
+  reopen phase VFS calls: xOpen=1 xFileControl=9 xRead=9 xLock=3 xUnlock=4 xClose=1
+    xOpen shim-delete.db flags=0x146 rc=0
+wal: journal_mode=wal rows_after_reopen=50 integrity=ok
+  write phase VFS calls: xOpen=3 xFileControl=68 xRead=11 xLock=6 xUnlock=4 xWrite=128 xSync=57 xClose=3 xDelete=2 xShmMap=2 xShmLock=320 xTruncate=1 xShmUnmap=1
+  reopen phase VFS calls: xOpen=2 xFileControl=11 xRead=8 xLock=2 xShmMap=2 xShmLock=18 xShmUnmap=1 xClose=2 xDelete=1 xUnlock=1
+    xOpen shim-wal.db flags=0x146 rc=0
+fault delete xWrite #1 fired=true insert="disk I/O error (10)" rows_after_reopen=1 integrity=ok
+fault delete xWrite #2 fired=true insert="disk I/O error (10)" rows_after_reopen=1 integrity=ok
+fault delete xWrite #3 fired=true insert="disk I/O error (10)" rows_after_reopen=1 integrity=ok
+fault delete xSync #1 fired=true insert="disk I/O error (10)" rows_after_reopen=1 integrity=ok
+fault delete xSync #2 fired=true insert="disk I/O error (10)" rows_after_reopen=1 integrity=ok
+fault delete xSync #3 fired=true insert="disk I/O error (10)" rows_after_reopen=1 integrity=ok
+fault wal xWrite #1 fired=true insert="disk I/O error (10)" rows_after_reopen=1 integrity=ok
+fault wal xWrite #2 fired=true insert="disk I/O error (10)" rows_after_reopen=1 integrity=ok
+fault wal xWrite #3 fired=false insert="ok" rows_after_reopen=2 integrity=ok
+fault wal xSync #1 fired=true insert="disk I/O error (10)" rows_after_reopen=1 integrity=ok
+fault wal xSync #2 fired=false insert="ok" rows_after_reopen=2 integrity=ok
+fault wal xSync #3 fired=false insert="ok" rows_after_reopen=2 integrity=ok
+wal two connections through the shim: reader snapshot before=0 during=0 after_commit_visible=100 checkpoint busy=0 log=0 ckpt=0

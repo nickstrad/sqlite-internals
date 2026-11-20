@@ -1,0 +1,26 @@
+rollback.db size=253952 pages=62
+logging os.DirFS point lookup: result_prefix="value-00377-" err=<nil> reads=10
+    Open rollback.db err=false
+    Read rollback.db ofst=0 n=100 got=100
+    Open rollback.db-journal err=true
+    Open rollback.db-wal err=true
+    Read rollback.db ofst=0 n=4096 got=4096
+    Open rollback.db-journal err=true
+    Read rollback.db ofst=24 n=16 got=16
+    Open rollback.db-wal err=true
+    Read rollback.db ofst=4096 n=4096 got=4096
+    Read rollback.db ofst=188416 n=4096 got=4096
+logging os.DirFS full count: result=500 err=<nil> reads=37
+fstest.MapFS in-memory: integrity=ok err=<nil>
+HTTP range reader point lookup: result_prefix="value-00377-" err=<nil> http_requests=10
+HTTP range reader full count: result=500 err=<nil> http_requests=37
+walclean.db header bytes 18,19 = 2,2 (2,2 = WAL)
+WAL-format file via fs VFS dsn="": result="" err=unable to open database file (14)
+WAL-format file via fs VFS dsn="&mode=ro": result="" err=unable to open database file (14)
+WAL-format file via fs VFS dsn="&immutable=1": result="500" err=<nil>
+WAL-format file via fs VFS dsn="&mode=ro&immutable=1": result="500" err=<nil>
+WAL-format file with header bytes 18,19 rewritten to 1,1: result="500" err=<nil>
+waldirty.db: 50 rows checkpointed, 1 row only in the -wal (8272 bytes), writer still open
+WAL with uncheckpointed frames via fs VFS dsn="&immutable=1": result="50" err=<nil>
+sanity SELECT 1: err=<nil>
+write through fs VFS: err=out of memory (7)
