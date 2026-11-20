@@ -13,3 +13,12 @@ Run 1 — 2026-11-20, on the Opus build with Neon's comments, `run-all.sh`. Raw 
 | SNAP-04 | overwrite served object in place (step 29 -> step 30) while an immutable=1 connection stays open | connection stays consistent at step 29 (proving whether immutable=1 tolerates in-place object overwrites) | before(uv=29 ev=1130) after(uv=29 docs=0 docErr=database disk image is malformed (11) ic="*** in database main ***; Tree 3 page 3 cell 0: invalid page number 269; Tree 3 page 3 cell 67: invalid page n |
 | SNAP-06 | hostile S3 endpoint returns 200 OK with full object (ignoring Range: bytes=4096-8191) to rangefs.S3Source.ReadRange | S3Source rejects non-206 / missing Content-Range response instead of silently returning offset 0 bytes | err=<nil> n=4096 firstByte=0xaa (want error or 0xbb, offset 0 is 0xaa) |
 | SNAP-07 | rangefs edge cases: 0-byte ReadAt, failed ReadRange BytesRead accounting, Seek/Stat after Close, New(nil, HTTPSource) | 0-byte ReadAt logs 0 requests, failed ReadRange adds 0 BytesRead, Seek/Stat after Close return ErrClosed, nil ctx does not panic | zeroReadClean=false(logged="range a.db bytes 0--1 (0 bytes)") failBytes=4096(want 0) seekAfterClose=<nil> statAfterClose=<nil> nilCtxPanicked=false |
+
+Run 2 — after the Opus repair round (5449623): 29 HELD, 5 BROKEN (`results-run2.txt`).
+The repair report (`../REPAIR-REPORT.md`) says for each run-1 finding whether it was fixed or answered. Still BROKEN in run 2:
+
+- MAP-04 — full table scan (100x600B rows) in CLI -vfstrace+strace with PRAGMA mmap_size=268435456
+- MAP-08 — replay 7.1 portable() macOS check (strings.Contains(c.Raw, "delete=1")) on real CLI -vfstrace
+- COST-05 — 20x50 commits in delete/EXTRA, persist/NORMAL, and truncate/FULL under strace
+- SNAP-03 — repeat 18-page events full scan on same immutable=1 connection with PRAGMA cache_size=4
+- SNAP-04 — overwrite served object in place (step 29 -> step 30) while an immutable=1 connection stays open
