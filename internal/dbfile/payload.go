@@ -64,6 +64,8 @@ func (f *File) OverflowChain(sourcePage int, c Cell) ([]OverflowPage, error) {
 		if i < count-1 && next == 0 {
 			return nil, corruptPage(from, "overflow chain of cell %d ends after %d of %d pages", c.Index, i+1, count)
 		}
+		// The final overflow page terminates the list with next == 0; checkList
+		// (src/btree.c:10729-10783) rejects a non-zero trailing pointer.
 		if i == count-1 && next != 0 {
 			return nil, corruptAt(from, 0, "last overflow page of cell %d on page %d has non-zero next pointer %d", c.Index, sourcePage, next)
 		}

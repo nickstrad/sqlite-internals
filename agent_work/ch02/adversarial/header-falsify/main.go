@@ -432,14 +432,17 @@ func main() {
 			return db.QueryRowContext(ctx, "SELECT sum(length(body)) FROM documents").Scan(&n)
 		})
 
-		// 2.1 Part C1 asserts: "WAL, one connection: every commit writes the same change counter (base + 1), it does not advance per commit".
-		stayedFlat := shrinkCounters[0] == c0+1 && shrinkCounters[1] == c0+1 && shrinkCounters[2] == c0+1 &&
-			cacheCounters[0] == c0+1 && cacheCounters[1] == c0+1 && cacheCounters[2] == c0+1
+		// 2.1 Part C1 + C4 rule: WAL commits that dirty page 1 write dbFileVers + 1,
+		// where dbFileVers refreshes whenever page 1 is read into the page cache (readDbPage).
+		// PRAGMA shrink_memory evicts page 1 so the counter advances each commit; when page 1
+		// stays cached (as under the cache_size=2 scan here), the counter stays at base + 1.
+		shrinkAdvanced := shrinkCounters[0] == c0+1 && shrinkCounters[1] == c0+2 && shrinkCounters[2] == c0+3 && shrinkFinal == c0+3
+		cachedFlat := cacheCounters[0] == c0+1 && cacheCounters[1] == c0+1 && cacheCounters[2] == c0+1 && cacheFinal == c0+1
 		report("HDR-03",
 			"WAL mode on ONE connection: 3 page-1 commits separated by PRAGMA shrink_memory or cache_size=2 scan",
-			fmt.Sprintf("2.1 C1 one-connection rule predicts constant counter [%d %d %d]", c0+1, c0+1, c0+1),
+			fmt.Sprintf("2.1 C1+C4 cache rule: shrink_memory advances [%d %d %d] (final=%d); cached stays [%d %d %d] (final=%d)", c0+1, c0+2, c0+3, c0+3, c0+1, c0+1, c0+1, c0+1),
 			fmt.Sprintf("base=%d, shrink_memory=%v (final=%d), cache_size=2=%v (final=%d)", c0, shrinkCounters, shrinkFinal, cacheCounters, cacheFinal),
-			stayedFlat)
+			shrinkAdvanced && cachedFlat)
 	}
 
 	// HDR-04: WAL mode on ONE connection with explicit PRAGMA wal_checkpoint(TRUNCATE) between commits.
@@ -610,14 +613,16 @@ func main() {
 		if fmt.Sprint(h.UserVersion) != uvPragma {
 			diffs = append(diffs, fmt.Sprintf("user_version: dbfile=%d pragma=%s", h.UserVersion, uvPragma))
 		}
-		if fmt.Sprint(h.UserVersion) != info["user version"] {
-			diffs = append(diffs, fmt.Sprintf("user_version: dbfile=%d dbinfo=%s", h.UserVersion, info["user version"]))
+		// CLI .dbinfo prints every 4-byte field unsigned (%u, src/shell.c.in:5561-5562),
+		// whereas PRAGMA and dbfile decode user_version and application_id as signed int32.
+		if fmt.Sprint(uint32(h.UserVersion)) != info["user version"] {
+			diffs = append(diffs, fmt.Sprintf("user_version: uint32(dbfile)=%d dbinfo=%s", uint32(h.UserVersion), info["user version"]))
 		}
 		if fmt.Sprint(h.ApplicationID) != aidPragma {
 			diffs = append(diffs, fmt.Sprintf("application_id: dbfile=%d pragma=%s", h.ApplicationID, aidPragma))
 		}
-		if fmt.Sprint(h.ApplicationID) != info["application id"] {
-			diffs = append(diffs, fmt.Sprintf("application_id: dbfile=%d dbinfo=%s", h.ApplicationID, info["application id"]))
+		if fmt.Sprint(uint32(h.ApplicationID)) != info["application id"] {
+			diffs = append(diffs, fmt.Sprintf("application_id: uint32(dbfile)=%d dbinfo=%s", uint32(h.ApplicationID), info["application id"]))
 		}
 		if fmt.Sprint(h.DefaultCacheSize) != dcsPragma {
 			diffs = append(diffs, fmt.Sprintf("default_cache_size: dbfile=%d pragma=%s", h.DefaultCacheSize, dcsPragma))
@@ -663,7 +668,7 @@ func main() {
 
 		report("HDR-06",
 			"negative user_version/application_id/default_cache_size (-1,-1,-100) + all 3 encodings x 3 auto_vacuum modes",
-			"dbfile.Header agrees with PRAGMA and CLI .dbinfo on every field",
+			"dbfile.Header agrees with signed PRAGMA, matches unsigned CLI .dbinfo (%u) bit-for-bit, and matches all 3x3 encoding/auto_vacuum modes",
 			fmt.Sprintf("diffs=%d (%v)", len(diffs), diffs),
 			len(diffs) == 0)
 	}

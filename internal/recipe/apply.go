@@ -104,10 +104,12 @@ func CheckAtRest(path string) error {
 // ApplyInSession opens path, commits s in one transaction, closes the
 // connection, and verifies the database is at rest.
 //
-// Opening a fresh connection per step makes the WAL file change counter
-// (header bytes 24..27 and 92..95) advance by one per step: pagerWalFrames
-// (src/pager.c:3264) writes dbFileVers+1 (src/pager.c:3135), and dbFileVers is
-// refreshed only when page 1 is read from disk (src/pager.c:3109-3110).
+// Because every recipe step dirties page 1 (PRAGMA user_version = k), opening
+// a fresh connection per step makes the WAL file change counter (header bytes
+// 24..27 and 92..95) advance by one per step: pagerWalFrames (src/pager.c:3264)
+// calls pager_write_changecounter only when pList->pgno == 1, writing
+// dbFileVers+1 (src/pager.c:3135), and dbFileVers is refreshed only when page 1
+// is read from disk (src/pager.c:3109-3110).
 func (r Recipe) ApplyInSession(ctx context.Context, path string, s Step) error {
 	db, err := r.Open(ctx, path)
 	if err != nil {

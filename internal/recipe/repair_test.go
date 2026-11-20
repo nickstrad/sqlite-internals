@@ -13,6 +13,8 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
 )
 
+// TestInvalidRecipeIsRejectedByStepAndBuild checks that Step, Build, and
+// BuildEach reject recipes failing Validate without creating a database file.
 func TestInvalidRecipeIsRejectedByStepAndBuild(t *testing.T) {
 	invalid := Recipe{Seed: 1, Steps: MaxSteps + 1, JournalMode: sqlitex.JournalWAL}
 	if _, err := invalid.Step(0); err == nil {
@@ -31,6 +33,9 @@ func TestInvalidRecipeIsRejectedByStepAndBuild(t *testing.T) {
 	}
 }
 
+// TestMatchStepRejectsDisagreeingCounters checks that MatchStep rejects files
+// whose bytes 24..27 and 92..95 disagree while still accepting a masked match
+// when both counters moved together.
 func TestMatchStepRejectsDisagreeingCounters(t *testing.T) {
 	ctx := context.Background()
 	t.Setenv(sqlitex.WorkDirEnv, t.TempDir())
@@ -85,6 +90,9 @@ func writeRawCache(t *testing.T, path string, hashes []FileHashes, checksum stri
 	}
 }
 
+// TestStepHashesRejectsTamperedAndStaleCaches checks that StepHashes discards
+// and rewrites caches with missing, mismatched, or step-0-stale checksums, and
+// that cacheChecksum depends on the recipe.
 func TestStepHashesRejectsTamperedAndStaleCaches(t *testing.T) {
 	ctx := context.Background()
 	t.Setenv(sqlitex.WorkDirEnv, t.TempDir())
@@ -147,6 +155,8 @@ func TestStepHashesRejectsTamperedAndStaleCaches(t *testing.T) {
 	}
 }
 
+// TestWriteHashCacheRemovesTempFileWhenRenameFails checks that writeHashCache
+// cleans up its sibling temporary file if os.Rename fails.
 func TestWriteHashCacheRemovesTempFileWhenRenameFails(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "cache.txt")

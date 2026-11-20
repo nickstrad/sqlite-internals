@@ -654,6 +654,18 @@ func main() {
 					changed, dbWrites, walWrites, writesMatch, syncsMatch, otherMatch, hashMatch),
 				held,
 			)
+		case "TWIN-10":
+			// Compile-option boundary: Go driver has ENABLE_STAT4 and writes sqlite_stat4,
+			// while the C CLI lacks STAT4 and writes only sqlite_stat1.
+			held := !writesMatch && !hashMatch && len(goWrites) > len(cliWrites)
+			report(
+				spec.id,
+				spec.desc,
+				"ANALYZE diverges between ENABLE_STAT4 Go driver and non-STAT4 C CLI (more writes, different DB bytes)",
+				fmt.Sprintf("goWrites=%d cliWrites=%d goSyncs=%d cliSyncs=%d writesEq=%v hashEq=%v writeDiff(%s)",
+					len(goWrites), len(cliWrites), len(goSyncs), len(cliSyncs), writesMatch, hashMatch, firstDiff(goWrites, cliWrites)),
+				held,
+			)
 		case "TWIN-12":
 			// Must-be-able-to-fail: Go FULL vs CLI NORMAL must differ in syncs.
 			detected := !syncsMatch

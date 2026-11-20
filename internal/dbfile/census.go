@@ -230,6 +230,9 @@ func (b *censusBuilder) walkTree(t *Tree) error {
 	f := b.file
 	walker := TreeWalker{File: f}
 	walker.OnPage = func(p *BTreePage, parent, depth int) error {
+		// A WITHOUT ROWID table has type "table" in sqlite_schema while storing
+		// its rows in an index B-tree (0x02/0x0a), so only an index entry whose
+		// root is a table B-tree page is corrupt.
 		if depth == 0 && p.Type.IsTable() && t.Type != "table" {
 			return corruptPage(p.Number, "root of %s %q is a %s page", t.Type, t.Name, p.Type)
 		}

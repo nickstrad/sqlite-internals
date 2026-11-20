@@ -158,6 +158,8 @@ func (h Header) InHeaderSizeValid() bool {
 	return h.DatabaseSize != 0 && h.ChangeCountersAgree()
 }
 
+// WALMode reports whether the file uses WAL mode, which lockBtree decides from
+// the read format version byte alone (byte 19 == 2, src/btree.c:3341).
 func (h Header) WALMode() bool { return h.ReadVersion == 2 }
 
 // AutoVacuum reports whether auto-vacuum (FULL or INCREMENTAL) is enabled,

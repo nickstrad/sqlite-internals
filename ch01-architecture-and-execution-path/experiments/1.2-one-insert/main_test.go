@@ -7,6 +7,9 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/trace"
 )
 
+// TestNormalizedKeepsErrorsLengthsAndShortTransfers checks that normalized
+// preserves errno values, read/write lengths, and short-transfer byte counts
+// so failed or partial syscalls never compare equal to successful ones.
 func TestNormalizedKeepsErrorsLengthsAndShortTransfers(t *testing.T) {
 	cases := []struct {
 		call trace.Syscall
@@ -35,6 +38,8 @@ func TestNormalizedKeepsErrorsLengthsAndShortTransfers(t *testing.T) {
 	}
 }
 
+// TestExpectedFreshWALWrites checks the full offset+length sequence for a new
+// WAL file and verifies that missing or unexpected extra writes fail to match.
 func TestExpectedFreshWALWrites(t *testing.T) {
 	frames := []walFrame{{Index: 1, Page: 2, CommitSize: 0}, {Index: 2, Page: 1, CommitSize: 2}}
 	want := []string{"0+32", "32+24", "56+4096", "4152+24", "4176+4096"}
@@ -54,6 +59,8 @@ func TestExpectedFreshWALWrites(t *testing.T) {
 	}
 }
 
+// TestExpectedChangedPages checks the expected modified page lists for WAL and
+// rollback modes.
 func TestExpectedChangedPages(t *testing.T) {
 	if !slices.Equal(expectedChangedPages("wal"), []int{2}) || !slices.Equal(expectedChangedPages("delete"), []int{1, 2}) {
 		t.Fatal("expected changed pages")
