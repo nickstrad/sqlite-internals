@@ -18,7 +18,8 @@ func TestCurrentPinParses(t *testing.T) {
 	}
 }
 
-// TestPinMatchesGoMod verifies that go.mod and the compiled binary use the driver version recorded in sqlite/PIN.
+// TestPinMatchesGoMod verifies that go.mod requires the driver version recorded
+// in sqlite/PIN, and checks debug.ReadBuildInfo when dependency metadata is present.
 func TestPinMatchesGoMod(t *testing.T) {
 	data, err := os.ReadFile("../go.mod")
 	if err != nil {

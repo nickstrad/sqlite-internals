@@ -130,7 +130,8 @@ func backupDestinationURI(path string) (string, error) {
 // Backup copies the database open on source to destinationPath using SQLite's
 // online backup API (sqlite3_backup_init/step/finish, backup.c). Pass
 // pagesPerStep = -1 to copy every page in one step; afterStep runs after each
-// step so experiments can observe restarts or interleave writes.
+// step so experiments can observe restarts or interleave writes. Backup checks
+// ctx.Err() before each step and finishes the handle before returning on cancellation.
 func Backup(ctx context.Context, source *sql.Conn, destinationPath string, pagesPerStep int, afterStep func(BackupStep) error) ([]BackupStep, error) {
 	if pagesPerStep == 0 {
 		return nil, errors.New("pagesPerStep must be non-zero; use -1 for all pages in one step")

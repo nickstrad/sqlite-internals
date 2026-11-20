@@ -14,6 +14,7 @@ func parseLines(t *testing.T, lines ...string) *StraceLog {
 	return log
 }
 
+// TestUnfinishedSplitAfterComma checks that <unfinished ...> splits after a comma rejoin without shifting later arguments.
 func TestUnfinishedSplitAfterComma(t *testing.T) {
 	log := parseLines(t,
 		`100 openat(AT_FDCWD</w>, "t.db", <unfinished ...>`,
@@ -42,6 +43,7 @@ func TestUnfinishedSplitAfterComma(t *testing.T) {
 	}
 }
 
+// TestRestartedSyscallIsNotASuccess verifies that "? ERESTARTSYS" records an errno failure rather than a succeeded or unfinished call.
 func TestRestartedSyscallIsNotASuccess(t *testing.T) {
 	log := parseLines(t,
 		`100 pwrite64(3</db/a.db>, "abc", 4096, 0) = -1 EINTR (Interrupted system call)`,
@@ -62,6 +64,7 @@ func TestRestartedSyscallIsNotASuccess(t *testing.T) {
 	}
 }
 
+// TestFDReuseAcrossThreadsWithoutAnnotations verifies the shared fd table tracks cross-thread close and reopen when -y is absent.
 func TestFDReuseAcrossThreadsWithoutAnnotations(t *testing.T) {
 	log := parseLines(t,
 		`100 openat(AT_FDCWD, "/db/a.db", O_RDWR|O_CREAT, 0644) = 5`,
@@ -79,6 +82,7 @@ func TestFDReuseAcrossThreadsWithoutAnnotations(t *testing.T) {
 	}
 }
 
+// TestDeletedPathAnnotation confirms strace's fd</path>(deleted) suffix still yields the underlying path for UnderDir.
 func TestDeletedPathAnnotation(t *testing.T) {
 	log := parseLines(t,
 		`100 pwrite64(3</work/db/gone.db>(deleted), "x", 1, 0) = 1`,
@@ -90,6 +94,7 @@ func TestDeletedPathAnnotation(t *testing.T) {
 	}
 }
 
+// TestWritevLength verifies writev sums iov_len outside quoted iov_base strings.
 func TestWritevLength(t *testing.T) {
 	log := parseLines(t,
 		`7 writev(1<pipe:[9]>, [{iov_base="trace.xSync(", iov_len=12}, {iov_base="iov_len=99)", iov_len=11}], 2) = 23`,
@@ -103,6 +108,7 @@ func TestWritevLength(t *testing.T) {
 	}
 }
 
+// TestParseVFSLineResultWithParentheses checks numeric error codes, parenthesized detail strings, void calls, and unterminated lines.
 func TestParseVFSLineResultWithParentheses(t *testing.T) {
 	call, ok := ParseVFSLine("trace.xRead(t.db,n=100,ofst=0) -> 9999 (0x270f)")
 	if !ok || call.Method != "xRead" || call.Amount != 100 || call.Offset != 0 || call.Result != "9999 (0x270f)" || len(call.Args) != 3 {
@@ -121,6 +127,7 @@ func TestParseVFSLineResultWithParentheses(t *testing.T) {
 	}
 }
 
+// TestMergeSplitPrefixAndFailedWrites verifies MergeStdoutVFS handles split "trace.x" prefixes, failed writes, and partial writes.
 func TestMergeSplitPrefixAndFailedWrites(t *testing.T) {
 	log := parseLines(t,
 		`7 write(1<pipe:[9]>, "trace.", 6) = 6`,

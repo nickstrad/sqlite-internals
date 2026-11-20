@@ -24,7 +24,9 @@ type Lock struct {
 }
 
 // Syscall holds one parsed system call from strace output, ordered by call entry.
-// FD, Offset, and Length are -1 when not applicable to the syscall.
+// FD, Offset, and Length are -1 when not applicable to the syscall; for writev
+// and readv, Length is the sum of iov_len entries. Interrupted restart results
+// ("? ERESTARTSYS") record Result -1 and Errno with Unfinished false.
 type Syscall struct {
 	Index      int
 	PID        int
@@ -139,8 +141,10 @@ type straceParser struct {
 }
 
 // ParseStrace reads strace output produced with "-f" (pid-prefixed lines,
-// optionally with "-y" path annotations), rejoining split unfinished/resumed
-// calls at their entry index and marking calls interrupted by a kill as Unfinished.
+// optionally with "-y" path annotations including "(deleted)" suffixes),
+// rejoining split unfinished/resumed calls at their entry index and marking
+// calls interrupted by a kill as Unfinished. When "-y" annotations are absent,
+// one shared fd-to-path table tracks open/close across all traced threads.
 func ParseStrace(r io.Reader) (*StraceLog, error) {
 	parser := &straceParser{pending: map[int]pendingCall{}, fdPaths: map[int]string{}}
 	scanner := bufio.NewScanner(r)
@@ -225,6 +229,8 @@ func (p *straceParser) line(raw string) error {
 	return nil
 }
 
+// joinSplitArgs rejoins the two halves of an <unfinished ...> / <... resumed>
+// argument list without doubling a trailing comma left before the split.
 func joinSplitArgs(before, after string) string {
 	before = strings.TrimRight(before, ", ")
 	after = strings.TrimLeft(after, ", ")

@@ -1,7 +1,7 @@
-// Package sqlitex opens SQLite databases with explicit, verified settings,
-// checks the pinned SQLite revision, wraps modernc.org/sqlite driver calls
-// reached through sql.Conn.Raw, manages scratch directories, and locates the
-// pinned sqlite3 CLI and companion tools.
+// Package sqlitex opens file-backed and in-memory SQLite databases with
+// explicit, verified settings, checks the pinned SQLite revision and driver
+// modules, wraps modernc.org/sqlite driver calls reached through sql.Conn.Raw,
+// manages scratch directories, and locates the pinned sqlite3 CLI and companion tools.
 package sqlitex
 
 import (
@@ -160,7 +160,8 @@ func boolPragma(value bool) string {
 	return "OFF"
 }
 
-// Validate checks that every per-connection setting has a value SQLite accepts.
+// Validate checks that every per-connection setting has a value SQLite accepts,
+// including requiring BusyTimeout to be a non-negative whole number of milliseconds.
 func (c ConnSettings) Validate() error {
 	if _, err := synchronousLevel(c.Synchronous); err != nil {
 		return err
@@ -213,6 +214,7 @@ func (c ConnSettings) pragmas() []string {
 	}
 }
 
+// layoutPragmas returns the header settings that must run before page 1 is written.
 func (f FileSettings) layoutPragmas() []string {
 	return []string{
 		fmt.Sprintf("PRAGMA page_size=%d", f.PageSize),
@@ -221,6 +223,7 @@ func (f FileSettings) layoutPragmas() []string {
 	}
 }
 
+// identityPragmas returns the header metadata stamps applied after journal_mode is established.
 func (f FileSettings) identityPragmas() []string {
 	return []string{
 		fmt.Sprintf("PRAGMA application_id=%d", f.ApplicationID),

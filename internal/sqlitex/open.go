@@ -53,6 +53,7 @@ func (c *configuredConnector) Connect(ctx context.Context) (driver.Conn, error) 
 
 // FileURI converts a filesystem path and query parameters into an SQLite file
 // URI with percent-escaped special characters (such as spaces, '?', and '#').
+// It rejects empty paths and MemoryPath so in-memory opens never create a file on disk.
 func FileURI(path string, query url.Values) (string, error) {
 	if path == "" || path == MemoryPath {
 		return "", fmt.Errorf("FileURI needs a filesystem path, got %q; use OpenMemory for an in-memory database", path)
@@ -67,7 +68,8 @@ func FileURI(path string, query url.Values) (string, error) {
 }
 
 // DSN builds the modernc.org/sqlite data source name for path and options,
-// encoding _txlock=immediate and mode=ro when requested.
+// encoding _txlock=immediate and mode=ro when requested. MemoryPath becomes
+// "file::memory:" (with ?_txlock=immediate if set) and rejects ReadOnly.
 func DSN(path string, options Options) (string, error) {
 	query := url.Values{}
 	if options.ImmediateTx {
@@ -88,9 +90,13 @@ func DSN(path string, options Options) (string, error) {
 	return FileURI(path, query)
 }
 
-// Open validates options, opens path through modernc.org/sqlite, applies
-// file and per-connection pragmas on every physical connection, and verifies
-// that an existing database matches the requested file settings.
+// Open validates options, opens path through modernc.org/sqlite, applies file
+// and per-connection pragmas on every physical connection, and verifies that an
+// existing database matches the requested file settings without converting it
+// into or out of WAL mode. For MemoryPath it requires SingleConnection and
+// JournalMemory or JournalOff. On a new or unstamped empty database, file
+// settings run in layout -> journal_mode -> identity order, retrying on
+// SQLITE_BUSY up to Conn.BusyTimeout.
 func Open(ctx context.Context, path string, options Options) (*DB, error) {
 	if err := options.File.Validate(); err != nil {
 		return nil, err
@@ -141,8 +147,11 @@ func OpenDefault(ctx context.Context, path string) (*DB, error) {
 	return Open(ctx, path, DefaultOptions())
 }
 
+// MemoryPath is the special path accepted by Open and DSN for an in-memory database.
 const MemoryPath = ":memory:"
 
+// MemoryOptions returns Options suited to an in-memory database: DefaultOptions
+// with JournalMemory and SingleConnection enabled so every query shares one database.
 func MemoryOptions() Options {
 	options := DefaultOptions()
 	options.File.JournalMode = JournalMemory
@@ -150,6 +159,7 @@ func MemoryOptions() Options {
 	return options
 }
 
+// OpenMemory opens a single-connection in-memory database configured with MemoryOptions.
 func OpenMemory(ctx context.Context) (*DB, error) {
 	return Open(ctx, MemoryPath, MemoryOptions())
 }
@@ -186,6 +196,7 @@ func configureConnection(ctx context.Context, conn driver.Conn, options Options)
 		return err
 	}
 	if !options.ReadOnly {
+		// Retry file setup on SQLITE_BUSY so concurrent openers of a brand-new file settle cleanly.
 		deadline := time.Now().Add(options.Conn.BusyTimeout)
 		for {
 			err := applyFileSettings(ctx, run, queryer, options.File)
@@ -216,6 +227,9 @@ func configureConnection(ctx context.Context, conn driver.Conn, options Options)
 	return compareConnSettings(options.Conn, actual)
 }
 
+// applyFileSettings configures an empty file in layout -> journal_mode -> identity
+// order, refuses to convert an existing database into or out of WAL mode, and
+// stamps an empty database whose application_id and schema_version are still 0.
 func applyFileSettings(ctx context.Context, run func(string) error, queryer driver.QueryerContext, file FileSettings) error {
 	pageCount, err := driverQueryInt(ctx, queryer, "PRAGMA page_count")
 	if err != nil {

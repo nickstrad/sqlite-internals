@@ -10,6 +10,10 @@ import (
 	"strings"
 )
 
+// IsDirective reports whether a Go comment is a recognized compiler or linter
+// directive (// +build, //line, //export, //extern, known //go:<verb> forms,
+// or //nolint:<list>). Directives count as code, not prose comments, while
+// arbitrary //word:... prose is rejected.
 func IsDirective(comment string) bool {
 	if strings.HasPrefix(comment, "// +build") {
 		return true

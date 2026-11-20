@@ -440,6 +440,7 @@ func TestConcurrentOpenOfNewDatabase(t *testing.T) {
 	}
 }
 
+// TestCLIExecQuotesAwkwardPaths checks that CLI.Exec handles paths with quotes, spaces, backslashes, and newlines.
 func TestCLIExecQuotesAwkwardPaths(t *testing.T) {
 	cli, err := LocateCLI(context.Background())
 	if err != nil {
@@ -461,6 +462,7 @@ func TestCLIExecQuotesAwkwardPaths(t *testing.T) {
 	}
 }
 
+// TestOpenScriptQuoting checks the exact double-quoted dot-command escaping produced by OpenScript.
 func TestOpenScriptQuoting(t *testing.T) {
 	got := OpenScript(`/a'b/c"d\e`+"\n"+`f.db`, "SELECT 1;")
 	want := `.open --normal "/a'b/c\"d\\e\nf.db"` + "\nSELECT 1;"
@@ -469,6 +471,7 @@ func TestOpenScriptQuoting(t *testing.T) {
 	}
 }
 
+// TestMemoryPathNeverCreatesAFile verifies in-memory validation, OpenMemory settings, and that no :memory: file is created on disk.
 func TestMemoryPathNeverCreatesAFile(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -516,6 +519,7 @@ func TestMemoryPathNeverCreatesAFile(t *testing.T) {
 	}
 }
 
+// TestExistingWALDatabaseIsNotConverted ensures opening a WAL database with any rollback mode fails without mutating header bytes 18-19.
 func TestExistingWALDatabaseIsNotConverted(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "w.db")
@@ -546,6 +550,7 @@ func TestExistingWALDatabaseIsNotConverted(t *testing.T) {
 	}
 }
 
+// TestExistingRollbackDatabaseIsNotConvertedToWAL ensures rollback databases refuse WAL conversion while allowing switches between rollback modes.
 func TestExistingRollbackDatabaseIsNotConvertedToWAL(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "r.db")
@@ -578,6 +583,7 @@ func TestExistingRollbackDatabaseIsNotConvertedToWAL(t *testing.T) {
 	}
 }
 
+// TestSubMillisecondBusyTimeoutRejected verifies Validate and Open reject BusyTimeout values that are not whole milliseconds.
 func TestSubMillisecondBusyTimeoutRejected(t *testing.T) {
 	settings := DefaultConnSettings()
 	settings.BusyTimeout = 1500 * time.Microsecond
@@ -591,6 +597,7 @@ func TestSubMillisecondBusyTimeoutRejected(t *testing.T) {
 	}
 }
 
+// TestReadOnlyOpen confirms Options.ReadOnly allows queries and rejects writes.
 func TestReadOnlyOpen(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "ro.db")
@@ -618,6 +625,7 @@ func TestReadOnlyOpen(t *testing.T) {
 	}
 }
 
+// TestDriverModuleVersionCheck verifies version matching, replace directives, and missing-module detection in checkModuleVersions.
 func TestDriverModuleVersionCheck(t *testing.T) {
 	if err := CheckDriverModules(); err != nil {
 		t.Fatal(err)
@@ -641,6 +649,7 @@ func TestDriverModuleVersionCheck(t *testing.T) {
 	}
 }
 
+// TestBackupStopsOnCancelledContext confirms Backup returns context.Canceled before stepping when ctx is already cancelled.
 func TestBackupStopsOnCancelledContext(t *testing.T) {
 	db := openTest(t, DefaultOptions())
 	if _, err := db.Exec("CREATE TABLE t(x); INSERT INTO t VALUES(1)"); err != nil {
@@ -658,6 +667,7 @@ func TestBackupStopsOnCancelledContext(t *testing.T) {
 	}
 }
 
+// TestUnstampedEmptyDatabaseIsStampedButUsedOneIsNot verifies that an empty WAL file with application_id 0 is stamped while one with a schema is rejected.
 func TestUnstampedEmptyDatabaseIsStampedButUsedOneIsNot(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

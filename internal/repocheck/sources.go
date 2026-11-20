@@ -60,8 +60,8 @@ func fileSHA256(name string) (string, error) {
 var chapterRootAllowed = map[string]bool{"SOURCES.sha256": true, "SPANS.txt": true, "answers.md": true}
 
 // CheckSources verifies every entry in chapter/SOURCES.sha256 against both the
-// pinned SQLite tree and the unmodified copy at the chapter root, and flags
-// unlisted files or stray .go files at the chapter root.
+// pinned SQLite tree and the unmodified copy at the chapter root, reporting a
+// missing SOURCES.sha256, unlisted files, or stray .go files at the chapter root.
 func CheckSources(chapter Chapter, tree string) ([]Problem, int, error) {
 	var problems []Problem
 	sourcesFile := filepath.Join(chapter.Path, "SOURCES.sha256")

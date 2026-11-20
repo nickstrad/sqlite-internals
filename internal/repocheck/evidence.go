@@ -92,7 +92,8 @@ func (o EvidenceOutcome) Passed() bool {
 }
 
 // CheckEvidence builds experiment once and runs it runs times from root,
-// comparing stdout (minus INFO: lines) against experiment.Evidence.
+// comparing stdout (minus INFO: lines) against experiment.Evidence. It returns
+// status ERROR when runs < 1.
 func CheckEvidence(ctx context.Context, root string, experiment Experiment, runs int) EvidenceOutcome {
 	outcome := EvidenceOutcome{Experiment: experiment}
 	if runs < 1 {

@@ -111,7 +111,8 @@ func fenceFor(content string) string {
 
 // FindIncludeBlocks scans markdown text and returns every include marker paired
 // with its immediately following closed fenced block (used by CheckProse to
-// exempt inlined code from prose authorship checks).
+// exempt inlined code from prose authorship checks), ignoring markers inside
+// other backtick or tilde code fences.
 func FindIncludeBlocks(text string) []Include {
 	lines := splitKeepingNewlines(text)
 	var blocks []Include
@@ -140,8 +141,9 @@ func FindIncludeBlocks(text string) []Include {
 }
 
 // ProcessInline resolves every include marker in text relative to markdownPath's
-// directory, reports any missing or stale blocks in Result.Problems, and builds
-// the synchronized markdown output.
+// directory (ignoring markers inside other backtick or tilde code fences),
+// reports any missing or stale blocks in Result.Problems, and builds the
+// synchronized markdown output.
 func ProcessInline(markdownPath string, text string) InlineResult {
 	baseDir := filepath.Dir(markdownPath)
 	lines := splitKeepingNewlines(text)

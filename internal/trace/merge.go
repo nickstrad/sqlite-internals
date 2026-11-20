@@ -76,7 +76,10 @@ const (
 // "sqlite3 -vfstrace". Because vfstrace flushes "trace.xName(args)" to stdout
 // before calling the real VFS method (ext/misc/vfstrace.c:420, shell.c.in:12911)
 // and flushes " -> rc\n" after it returns, syscalls observed between those two
-// writes on stdoutFD belong to that VFS call. Methods that print only after
+// writes on stdoutFD belong to that VFS call. Failed stdout writes are ignored,
+// partial writes contribute only Result bytes, and line classification waits
+// until the 7-byte "trace.x" prefix or a newline is known so writes split inside
+// the prefix still enclose their syscalls. Methods that print only after
 // returning (such as xOpen) leave their syscalls unenclosed (Enclosed == -1).
 func MergeStdoutVFS(log *StraceLog, stdoutFD int, includeSyscall func(Syscall) bool) (*Merged, error) {
 	merged := &Merged{Log: log}

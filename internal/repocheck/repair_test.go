@@ -7,6 +7,7 @@ import (
 	"testing"
 )
 
+// TestMissingSourcesFileIsAProblem confirms CheckSources flags an absent SOURCES.sha256 while allowing an empty one.
 func TestMissingSourcesFileIsAProblem(t *testing.T) {
 	root := t.TempDir()
 	chapter := Chapter{Number: "07", Dir: "ch07-x", Path: filepath.Join(root, "ch07-x")}
@@ -25,6 +26,7 @@ func TestMissingSourcesFileIsAProblem(t *testing.T) {
 	}
 }
 
+// TestCheckEvidenceRejectsNonPositiveRuns ensures CheckEvidence returns ERROR instead of PASS when runs < 1.
 func TestCheckEvidenceRejectsNonPositiveRuns(t *testing.T) {
 	root := t.TempDir()
 	chapter := Chapter{Number: "01", Dir: "ch01-x", Path: filepath.Join(root, "ch01-x")}
@@ -42,6 +44,7 @@ func TestCheckEvidenceRejectsNonPositiveRuns(t *testing.T) {
 	}
 }
 
+// TestIncludeMarkersInsideFencesAreIgnored verifies ProcessInline and FindIncludeBlocks skip markers inside backtick and tilde fences.
 func TestIncludeMarkersInsideFencesAreIgnored(t *testing.T) {
 	dir := t.TempDir()
 	code := "package main\n"

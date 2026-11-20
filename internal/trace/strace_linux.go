@@ -50,7 +50,8 @@ func straceArgs(options Options, output string) ([]string, error) {
 
 // Run executes options.Command under strace, parses the trace file, and returns
 // the result. A non-zero exit or injected SIGKILL of the traced process is
-// recorded in Result rather than returned as an error.
+// recorded in Result rather than returned as an error; a ptrace permission
+// failure returns an error wrapping ErrPtraceDenied.
 func Run(ctx context.Context, options Options) (*Result, error) {
 	if len(options.Command) == 0 {
 		return nil, errors.New("trace.Run: empty command")

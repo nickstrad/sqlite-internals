@@ -56,6 +56,8 @@ func (c VFSCall) String() string {
 
 // ParseVFSLine parses one line of the form "trace.xMethod(args) -> result[, detail]"
 // (or without " -> ..." for void methods such as xShmBarrier and xRandomness).
+// It splits on the first ") -> " (else a trailing ")") so parentheses inside
+// numeric error codes or out="..." details are preserved.
 func ParseVFSLine(line string) (VFSCall, bool) {
 	line = strings.TrimRight(line, "\r\n")
 	m := vfsCallHead.FindStringSubmatch(line)

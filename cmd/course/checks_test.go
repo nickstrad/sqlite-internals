@@ -10,6 +10,7 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/repocheck"
 )
 
+// TestInlineCheckFromAnotherDirectory verifies inlineOne reads the chapter file by full path even when run outside the repo root.
 func TestInlineCheckFromAnotherDirectory(t *testing.T) {
 	root := t.TempDir()
 	chapterDir := filepath.Join(root, "ch99-tmp")
@@ -36,6 +37,7 @@ func TestInlineCheckFromAnotherDirectory(t *testing.T) {
 	}
 }
 
+// TestRunsMustBePositive checks that check evidence and check all reject non-positive -runs with exit code 2.
 func TestRunsMustBePositive(t *testing.T) {
 	root := t.TempDir()
 	for _, args := range [][]string{{"evidence", "-runs", "0"}, {"evidence", "-runs", "-3"}, {"all", "-runs", "0"}} {

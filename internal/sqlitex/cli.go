@@ -160,10 +160,12 @@ func (c CLI) Run(ctx context.Context, run CLIRun) (CLIResult, error) {
 }
 
 // OpenScript builds an stdin script that opens dbPath with ".open --normal"
-// before running sql. Naming a file on the command line or using plain ".open"
-// makes the 3.53.4 shell probe-open it read-only via isDatabaseFile /
-// deduceDatabaseType (shell.c.in:4229-4320, 4495, 10222), adding extra syscalls
-// and -shm writes that do not belong to the statement.
+// before running sql, double-quoting dbPath with backslash escapes for \, ",
+// LF, and CR to match SQLite's dot-command parser (parseDotCmdArgs and
+// resolve_backslashes at shell.c.in:4778, 8985-8998). Naming a file on the
+// command line or using plain ".open" makes the 3.53.4 shell probe-open it
+// read-only via isDatabaseFile / deduceDatabaseType (shell.c.in:4229-4320,
+// 4495, 10222), adding extra syscalls and -shm writes that do not belong to the statement.
 func OpenScript(dbPath, sql string) string {
 	return ".open --normal " + dotCommandQuote(dbPath) + "\n" + sql
 }

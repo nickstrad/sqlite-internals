@@ -31,8 +31,8 @@ func SourceID(ctx context.Context, q Querier) (string, error) {
 	return id, err
 }
 
-// CheckPin queries sqlite_source_id() on q and returns a *PinMismatchError if
-// it does not match sqlite.Current().SourceID.
+// CheckPin queries sqlite_source_id() on q and verifies the linked driver
+// modules, returning *PinMismatchError or *DriverModuleMismatchError on mismatch.
 func CheckPin(ctx context.Context, q Querier) (string, error) {
 	id, err := SourceID(ctx, q)
 	if err != nil {
@@ -44,16 +44,23 @@ func CheckPin(ctx context.Context, q Querier) (string, error) {
 	return id, CheckDriverModules()
 }
 
+// DriverModuleMismatchError reports that the running binary links a
+// modernc.org/sqlite or modernc.org/libc module version different from sqlite/PIN.
 type DriverModuleMismatchError struct {
 	Module string
 	Got    string
 	Want   string
 }
 
+// Error formats the mismatch naming the Go module, linked version, and pinned version.
 func (e *DriverModuleMismatchError) Error() string {
 	return fmt.Sprintf("this binary links %s %s, the pin is %s", e.Module, e.Got, e.Want)
 }
 
+// CheckDriverModules compares the linked modernc.org/sqlite and modernc.org/libc
+// module versions from debug.ReadBuildInfo (using the replacement version for
+// replace directives) against sqlite/PIN. It is a no-op when the binary records
+// no dependency list, which is normal for "go test" binaries.
 func CheckDriverModules() error {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
@@ -119,7 +126,8 @@ func PinLine(id string) string {
 }
 
 // WritePinCheck queries sqlite_source_id() on q, writes PinLine to w, and
-// returns an error if the ID does not match the pin.
+// returns *PinMismatchError or *DriverModuleMismatchError if the source ID or
+// linked driver modules do not match sqlite/PIN.
 func WritePinCheck(ctx context.Context, w io.Writer, q Querier) error {
 	id, err := SourceID(ctx, q)
 	if err != nil {
@@ -133,8 +141,8 @@ func WritePinCheck(ctx context.Context, w io.Writer, q Querier) error {
 	return CheckDriverModules()
 }
 
-// MustPinCheck writes the pin check line to stdout and exits 1 if q does not
-// run the pinned SQLite revision.
+// MustPinCheck writes the pin check line to stdout and exits 1 if q's source ID
+// or the binary's linked driver modules do not match sqlite/PIN.
 func MustPinCheck(ctx context.Context, q Querier) {
 	if err := WritePinCheck(ctx, os.Stdout, q); err != nil {
 		fmt.Fprintln(os.Stderr, "FAIL:", err)
@@ -143,7 +151,8 @@ func MustPinCheck(ctx context.Context, q Querier) {
 }
 
 // MustPinCheckMemory opens a temporary in-memory database, prints the pin check
-// line to stdout, and exits 1 if the Go driver does not match sqlite/PIN.
+// line to stdout, and exits 1 if the Go driver source ID or linked modules do
+// not match sqlite/PIN.
 func MustPinCheckMemory(ctx context.Context) {
 	db, err := openMemory(ctx)
 	if err != nil {
