@@ -184,6 +184,8 @@ func printRoleCounts(c *dbfile.Census) int {
 	return total
 }
 
+// census loads the closed database file into memory and runs dbfile.Census so
+// no os.File descriptor stays open when later checks open SQLite on the same path.
 func census(path string) (*dbfile.File, *dbfile.Census) {
 	image := must(os.ReadFile(path))("read " + filepath.Base(path))
 	f := must(dbfile.FromBytes(image))("parse " + filepath.Base(path))
@@ -191,6 +193,7 @@ func census(path string) (*dbfile.File, *dbfile.Census) {
 	return f, c
 }
 
+// treeNamed looks up a B-tree entry in c by its schema name.
 func treeNamed(c *dbfile.Census, name string) dbfile.Tree {
 	for _, t := range c.Trees {
 		if t.Name == name {
@@ -424,6 +427,8 @@ func partB(ctx context.Context, dir string) {
 		"INSERT INTO b VALUES(2, zeroblob(4058))",
 		"INSERT INTO b VALUES(3, zeroblob(8149))")
 	f, c := census(path)
+	// Record each row's parsed local/overflow split from WalkTable rather than
+	// checking standalone arithmetic constants.
 	type split struct {
 		payload    uint64
 		local      int
@@ -543,6 +548,8 @@ func partE(ctx context.Context, dir string) {
 	fmt.Printf("  built by editing a 2-page database (page size 65536): in-header size %d pages, page 3 a freelist trunk listing pages 4..%d except %d; the rest of the file is a hole (sparse)\n", pages, pages, lock)
 	fmt.Printf("  file size %d bytes (1 GiB = 1073741824); lock-byte page = 1073741824/65536 + 1 = %d\n", int64(pages)*pageSize, lock)
 	fmt.Printf("INFO: blocks on disk: %s\n", diskUsage(path))
+	// A > 1 GiB sparse file is too large to load with os.ReadFile, so open it
+	// directly with dbfile.Open and close the descriptor before SQLite opens it.
 	f := must(dbfile.Open(path))("parse " + filepath.Base(path))
 	c, err := f.Census()
 	if closeErr := f.Close(); closeErr != nil {

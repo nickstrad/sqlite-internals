@@ -114,6 +114,9 @@ func LocateCLI(ctx context.Context) (CLI, error) {
 	return CLI{}, ErrNoCLI
 }
 
+// ErrNoCLI is returned by LocateCLI only when no sqlite3 CLI binary is found on
+// any search path (as opposed to an explicit $SQLITE3_BIN that does not exist or
+// a found binary whose sqlite_source_id does not match the pin).
 var ErrNoCLI = errors.New("no sqlite3 CLI found ($SQLITE3_BIN, $COURSE_TOOLS_DIR/bin or _tools/bin, PATH); run: go run ./cmd/course build-tools")
 
 // QuerySourceID runs sqlite3 against :memory: and returns SELECT sqlite_source_id().

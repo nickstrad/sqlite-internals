@@ -403,6 +403,9 @@ func TestLocateCLIRespectsEnvAndPin(t *testing.T) {
 	}
 }
 
+// TestLocateCLIReportsErrNoCLIOnlyWhenNothingIsFound verifies that LocateCLI
+// returns ErrNoCLI when no binary exists anywhere, but returns a distinct error
+// when $SQLITE3_BIN explicitly names a missing path.
 func TestLocateCLIReportsErrNoCLIOnlyWhenNothingIsFound(t *testing.T) {
 	empty := t.TempDir()
 	t.Setenv(CLIEnv, "")

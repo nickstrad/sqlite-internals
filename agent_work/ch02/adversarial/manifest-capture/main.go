@@ -537,12 +537,28 @@ func main() {
 	}
 
 	// CAP-04: Live OPEN WAL connection holding an active uncommitted transaction AFTER wal_checkpoint(TRUNCATE).
-	// Here -wal exists with size 0 and -shm exists with size 32768 while the database is NOT closed!
+	// Under the chapter's "at rest" rule (file alone is complete: 0-byte -wal and no hot -journal),
+	// capture.Pages accepts a 0-byte -wal and must produce a valid rebuilt snapshot of the committed
+	// state (including the checkpointed +1, excluding the uncommitted +99, E1-equal after rollback).
 	{
 		pLive := filepath.Join(scratch, "live-trunc-wal.db")
 		if err := recipe.Default().Build(ctx, pLive, 4); err != nil {
 			fatal("build live-trunc-wal", err)
 		}
+		queryBal := func(path string) int {
+			db, err := openRaw(path, true)
+			if err != nil {
+				fatal("open bal", err)
+			}
+			defer db.Close()
+			var b int
+			if err := db.QueryRowContext(ctx, "SELECT balance FROM accounts WHERE id = 1").Scan(&b); err != nil {
+				fatal("query bal", err)
+			}
+			return b
+		}
+		balBefore := queryBal(pLive)
+
 		cmdArgs, err := trace.SelfCommand(childHoldTruncatedWAL, pLive)
 		if err != nil {
 			fatal("self cmd hold", err)
@@ -575,18 +591,37 @@ func main() {
 			shmSz = shmInfo.Size()
 		}
 
-		// While the child STILL holds an open connection + active write tx, call capture.Pages!
+		// While the child holds an uncommitted +99 write tx after checkpoint(TRUNCATE),
+		// capture.Pages accepts the 0-byte -wal and must rebuild the exact committed state.
+		capDir := filepath.Join(scratch, "live-trunc-cap")
 		atRestErr := capture.CheckAtRest(pLive)
-		_, capErr := capture.Pages(pLive, filepath.Join(scratch, "live-trunc-cap"))
+		m, capErr := capture.Pages(pLive, capDir)
 
 		_ = stdin.Close()
 		_ = cmd.Wait()
 
+		rebuilt := filepath.Join(scratch, "live-trunc-rebuilt.db")
+		var rebuildErr error
+		var rebuiltIC string
+		var rebuiltBal int
+		var cmp equal.Result
+		if capErr == nil {
+			_, rebuildErr = capture.Rebuild(capDir, rebuilt)
+			if rebuildErr == nil {
+				rebuiltIC, _ = integrityCheck(ctx, rebuilt, true)
+				rebuiltBal = queryBal(rebuilt)
+				cmp, _ = equal.CompareFiles(pLive, rebuilt, m.PageSize)
+			}
+		}
+
+		held := atRestErr == nil && capErr == nil && rebuildErr == nil &&
+			rebuiltIC == "ok" && rebuiltBal == balBefore+1 && cmp.Equal
 		report("CAP-04",
-			"capture a WAL DB while a live connection holds an open write tx after wal_checkpoint(TRUNCATE) (-wal=0 bytes, -shm=32768 bytes)",
-			"capture refuses an unclosed database whose -wal and -shm side files are live (OUTLINE 2.3)",
-			fmt.Sprintf("-wal=%d bytes, -shm=%d bytes, CheckAtRest=%v, capture.Pages_err=%v", walSz, shmSz, atRestErr, capErr),
-			errors.Is(atRestErr, capture.ErrNotAtRest) && errors.Is(capErr, capture.ErrNotAtRest))
+			"capture a WAL DB while a live connection holds an uncommitted +99 write tx after wal_checkpoint(TRUNCATE) (-wal=0 bytes, -shm=32768 bytes)",
+			fmt.Sprintf("0-byte -wal is at rest: capture rebuilds a valid DB with committed balance %d (excluding uncommitted +99) and E1-equal after rollback", balBefore+1),
+			fmt.Sprintf("-wal=%d bytes, -shm=%d bytes, CheckAtRest=%v, capErr=%v, rebuildErr=%v, ic=%q, bal=%d (want %d), e1=%v",
+				walSz, shmSz, atRestErr, capErr, rebuildErr, rebuiltIC, rebuiltBal, balBefore+1, cmp.Equal),
+			held)
 	}
 
 	// CAP-05: Mid-capture mutation hygiene — if capture.Pages fails because the DB changed during capture,

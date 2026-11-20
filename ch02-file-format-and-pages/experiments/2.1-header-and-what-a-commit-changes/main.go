@@ -452,6 +452,9 @@ func partC(ctx context.Context, dir string) {
 	}
 	check(bytes.Equal(readHeaderFromChild(path), previous) && walSize(path) == -1, "closing the last connection checkpointed page 1 into the file and removed the -wal")
 
+	// Evicting page 1 from the connection's page cache before each commit forces
+	// readDbPage (src/pager.c:3093-3110) to refresh dbFileVers, proving that C1's
+	// constant counter is a page-cache effect rather than a per-connection rule.
 	fmt.Println("C4. steps 28, 29, 30 on ONE connection, with PRAGMA shrink_memory before each step (it drops unused pages, page 1 included, from the connection's cache):")
 	path = filepath.Join(dir, "wal-one-connection-shrink.db")
 	copyFile(base, path)
@@ -596,6 +599,8 @@ func main() {
 	ctx := context.Background()
 	sqlitex.MustPinCheckMemory(ctx)
 	var cli *sqlitex.CLI
+	// Skip the .dbinfo oracle only when no CLI exists anywhere (ErrNoCLI); a
+	// missing explicit $SQLITE3_BIN or a CLI with the wrong pin fails the run.
 	located, err := sqlitex.LocateCLI(ctx)
 	switch {
 	case err == nil:
