@@ -795,3 +795,14 @@ All four were run in the lab container and gave the host's evidence exactly.
   (`CKPT_SYNC_FLAGS`), writes each page into the database, truncates the database to its new size
   if needed, syncs the database, and records how far it got; with RESTART/TRUNCATE it also waits for
   readers and resets the log.
+
+## Repair round (Opus) — new facts
+
+See `REPAIR-REPORT.md` for the full table and the narrowed-claim facts (MAP-04 mmap, COST-05 PERSIST/TRUNCATE still sync the directory every commit on unix, SNAP-03 cache caveat, SNAP-04 in-place overwrite). Behaviour changes:
+
+- `rangefs`: `ReadAt(p)` with `len(p)==0` returns `0, nil` and logs nothing. A failed or short range read logs `Request{Kind: range, Failed: true, Length: bytes received}` printed as `range NAME at OFF failed (N bytes received)`; `Summarize` adds only received bytes. `Seek`/`Stat` after `Close` return `fs.ErrClosed`. `New(nil, src)` uses `context.Background()`. `S3Source.ReadRange` requires the reply's `Content-Range` to start `bytes OFF-LAST/` (an S3 endpoint that ignores Range and answers 200 with the whole object now errors instead of returning offset-0 bytes).
+- `govfs`: `injectFault(call)` decides, builds the injected `Call` (Result = fault code, Injected), appends it (if recording) and stores it as the fired call in one locked section, so `Disarm` never sees a half-filled call; when recording is off the injected call has `Seq 0` and the sequence does not advance. `Register` frees the C name and the vfs block on every failure; a losing concurrent `methodTableFor` frees its table. `xGetLastError` is now recorded (vfstrace.c:1091-1101 logs it too). `xFileControl(SQLITE_FCNTL_VFSNAME)` returns `<shim name>/<lower VFS names>` (e.g. `govfs-test-1/unix`), as sqlite.h.in:1008-1018 asks of shims. `Out` of xAccess/xFileSize/xCheckReservedLock is read only on rc 0 with a non-null pointer.
+- 7.1: macOS path matches `delFlag=1` (the real vfstrace argument); the outside-VFS check covers pread64, pwrite64, read, write, writev — still none outside.
+- 7.2: WAL check additionally requires at least one checkpoint and one restart per checkpoint (evidence: 1 and 1 at NORMAL and FULL); failed syscalls are not counted.
+- 7.3: every fault trial must report Fired (n ≤ total) / not Fired (n = total+1), primary code 10, clean close, and an exact (unmasked) recipe match. Evidence unchanged.
+- 7.4: repeat check names the cache fit (4/15/20 reads vs 500-page default cache); new section shows the full scan repeated at `cache_size=4` costs 17 range requests, 69632 bytes. Runtime still a few seconds.
