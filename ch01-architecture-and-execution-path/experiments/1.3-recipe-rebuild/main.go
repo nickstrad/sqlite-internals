@@ -57,6 +57,9 @@ func (d fileDiff) String() string {
 	if d.Equal {
 		return "identical"
 	}
+	if len(d.DifferingPages) == 0 {
+		return fmt.Sprintf("differ: sizes %d and %d bytes", d.SizeA, d.SizeB)
+	}
 	text := fmt.Sprintf("differ: first differing page %d, %d page(s) differ %v", d.DifferingPages[0], len(d.DifferingPages), limitPages(d.DifferingPages))
 	if d.SizeA != d.SizeB {
 		text += fmt.Sprintf(", sizes %d and %d pages", d.SizeA/pageSize, d.SizeB/pageSize)
@@ -85,23 +88,28 @@ func compareFiles(a, b string) fileDiff {
 	if err != nil {
 		fatal("read", err)
 	}
+	return diffImages(dataA, dataB)
+}
+
+func pageSlice(data []byte, p int) []byte {
+	start := p * pageSize
+	if start >= len(data) {
+		return nil
+	}
+	return data[start:min((p+1)*pageSize, len(data))]
+}
+
+func diffImages(dataA, dataB []byte) fileDiff {
 	d := fileDiff{Equal: bytes.Equal(dataA, dataB), SizeA: len(dataA), SizeB: len(dataB)}
-	pages := max(len(dataA), len(dataB)) / pageSize
+	pages := (max(len(dataA), len(dataB)) + pageSize - 1) / pageSize
 	for p := range pages {
-		start, end := p*pageSize, (p+1)*pageSize
-		var pageA, pageB []byte
-		if end <= len(dataA) {
-			pageA = dataA[start:end]
-		}
-		if end <= len(dataB) {
-			pageB = dataB[start:end]
-		}
+		pageA, pageB := pageSlice(dataA, p), pageSlice(dataB, p)
 		if bytes.Equal(pageA, pageB) {
 			continue
 		}
 		d.DifferingPages = append(d.DifferingPages, p+1)
-		if p == 0 && pageA != nil && pageB != nil {
-			for i := range pageSize {
+		if p == 0 {
+			for i := range min(len(pageA), len(pageB)) {
 				if pageA[i] != pageB[i] {
 					d.Page1Bytes = append(d.Page1Bytes, i)
 				}
@@ -118,7 +126,11 @@ func onlyChangeCounter(d fileDiff) bool {
 	if d.Equal || d.SizeA != d.SizeB || !slices.Equal(d.DifferingPages, []int{1}) {
 		return false
 	}
-	for _, offset := range d.Page1Bytes {
+	return onlyCounterBytes(d.Page1Bytes)
+}
+
+func onlyCounterBytes(offsets []int) bool {
+	for _, offset := range offsets {
 		inCounter := false
 		for _, span := range recipe.ChangeCounterRanges {
 			if offset >= span[0] && offset < span[1] {
@@ -188,7 +200,9 @@ func applyStatementsInSession(ctx context.Context, r recipe.Recipe, path string,
 	if err := tx.Commit(); err != nil {
 		fatal("commit", err)
 	}
-	conn.Close()
+	if err := conn.Close(); err != nil {
+		fatal("conn close", err)
+	}
 	if err := db.Close(); err != nil {
 		fatal("close", err)
 	}
@@ -261,14 +275,13 @@ func waitForNextSecond() {
 // secure_delete=OFF.
 var mergedWithNext = []int{2, 4}
 
-func batchVariant(ctx context.Context, r recipe.Recipe, dir string, secureDelete bool) (fileDiff, unusedReport) {
+func batchVariant(ctx context.Context, r recipe.Recipe, dir, secureDelete string) (fileDiff, unusedReport) {
 	plan, err := r.WithSteps(variantBase).Plan()
 	if err != nil {
 		fatal("plan", err)
 	}
 	options := r.SQLiteOptions()
-	options.Conn.SecureDelete = secureDelete
-	label := fmt.Sprintf("%s-secure-delete-%v", r.JournalMode, secureDelete)
+	label := fmt.Sprintf("%s-secure-delete-%s", r.JournalMode, strings.ToLower(secureDelete))
 	a := filepath.Join(dir, "batches-"+label+"-one-per-step.db")
 	b := filepath.Join(dir, "batches-"+label+"-merged.db")
 	for _, path := range []string{a, b} {
@@ -279,9 +292,16 @@ func batchVariant(ctx context.Context, r recipe.Recipe, dir string, secureDelete
 		if err != nil {
 			fatal("open", err)
 		}
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			fatal("conn", err)
+		}
+		if _, err := conn.ExecContext(ctx, "PRAGMA secure_delete="+secureDelete); err != nil {
+			fatal("secure_delete", err)
+		}
 		merge := path == b
 		for i := 0; i < len(plan); i++ {
-			tx, err := db.BeginTx(ctx, nil)
+			tx, err := conn.BeginTx(ctx, nil)
 			if err != nil {
 				fatal("begin", err)
 			}
@@ -298,8 +318,14 @@ func batchVariant(ctx context.Context, r recipe.Recipe, dir string, secureDelete
 				fatal("commit", err)
 			}
 		}
+		if err := conn.Close(); err != nil {
+			fatal("conn close", err)
+		}
 		if err := db.Close(); err != nil {
 			fatal("close", err)
+		}
+		if err := recipe.CheckAtRest(path); err != nil {
+			fatal("at rest", err)
 		}
 	}
 	fmt.Printf("INFO: batches %s sha256 one-per-step %s, merged %s\n", label, hashOf(a).Exact, hashOf(b).Exact)
@@ -315,63 +341,121 @@ func be32(data []byte, offset int) int {
 	return int(data[offset])<<24 | int(data[offset+1])<<16 | int(data[offset+2])<<8 | int(data[offset+3])
 }
 
-// freelistPages walks SQLite's freelist trunk chain starting from header
-// offset 32 (4-byte big-endian first trunk page number). Each trunk holds the
-// next trunk pointer at offset 0, the leaf count at offset 4, and 4-byte leaf
-// page numbers starting at offset 8.
-func freelistPages(data []byte) []int {
-	var free []int
-	for trunk := be32(data, 32); trunk != 0 && len(free) <= len(data)/pageSize; trunk = be32(data, (trunk-1)*pageSize) {
-		free = append(free, trunk)
-		base := (trunk - 1) * pageSize
-		for i := range be32(data, base+4) {
-			free = append(free, be32(data, base+8+4*i))
-		}
-	}
-	return free
+type freelist struct {
+	trunkLeafCounts map[int]int
+	leaves          map[int]bool
 }
 
-// unusedBytes marks every byte offset on page that belongs to no live cell:
-// all bytes of a freelist page, or on a B-tree page the unallocated gap
-// between the cell-pointer array and the cell content area plus the bodies of
-// all freeblocks.
-func unusedBytes(data []byte, page int, free []int) []bool {
+func readFreelist(data []byte) (freelist, error) {
+	fl := freelist{trunkLeafCounts: map[int]int{}, leaves: map[int]bool{}}
+	if len(data) < pageSize || len(data)%pageSize != 0 {
+		return fl, fmt.Errorf("file size %d is not a whole number of %d-byte pages", len(data), pageSize)
+	}
+	if headerPageSize := be16(data, 16); headerPageSize != pageSize {
+		return fl, fmt.Errorf("header page size %d, want %d", headerPageSize, pageSize)
+	}
+	pageCount := len(data) / pageSize
+	maxLeaves := (pageSize - 8) / 4
+	for trunk := be32(data, 32); trunk != 0; {
+		if trunk < 1 || trunk > pageCount {
+			return fl, fmt.Errorf("freelist trunk page %d outside 1..%d", trunk, pageCount)
+		}
+		if _, seen := fl.trunkLeafCounts[trunk]; seen || fl.leaves[trunk] {
+			return fl, fmt.Errorf("freelist page %d listed twice", trunk)
+		}
+		base := (trunk - 1) * pageSize
+		leafCount := be32(data, base+4)
+		if leafCount > maxLeaves {
+			return fl, fmt.Errorf("freelist trunk page %d claims %d leaves, at most %d fit", trunk, leafCount, maxLeaves)
+		}
+		fl.trunkLeafCounts[trunk] = leafCount
+		for i := range leafCount {
+			leaf := be32(data, base+8+4*i)
+			if leaf < 1 || leaf > pageCount {
+				return fl, fmt.Errorf("freelist leaf page %d outside 1..%d", leaf, pageCount)
+			}
+			if _, seen := fl.trunkLeafCounts[leaf]; seen || fl.leaves[leaf] {
+				return fl, fmt.Errorf("freelist page %d listed twice", leaf)
+			}
+			fl.leaves[leaf] = true
+		}
+		trunk = be32(data, base)
+	}
+	if total := be32(data, 36); total != len(fl.trunkLeafCounts)+len(fl.leaves) {
+		return fl, fmt.Errorf("header counts %d freelist pages, the chain holds %d", total, len(fl.trunkLeafCounts)+len(fl.leaves))
+	}
+	return fl, nil
+}
+
+func (fl freelist) contains(page int) bool {
+	_, trunk := fl.trunkLeafCounts[page]
+	return trunk || fl.leaves[page]
+}
+
+func isBtreePageType(t byte) bool {
+	return t == 0x02 || t == 0x05 || t == 0x0a || t == 0x0d
+}
+
+func unusedBytes(data []byte, page int, fl freelist) ([]bool, string, error) {
 	unused := make([]bool, pageSize)
-	if slices.Contains(free, page) {
+	if fl.leaves[page] {
 		for i := range unused {
 			unused[i] = true
 		}
-		return unused
+		return unused, "freelist leaf page", nil
+	}
+	if leafCount, ok := fl.trunkLeafCounts[page]; ok {
+		for i := 8 + 4*leafCount; i < pageSize; i++ {
+			unused[i] = true
+		}
+		return unused, "freelist trunk page, bytes after the leaf list", nil
 	}
 	content := data[(page-1)*pageSize : page*pageSize]
 	header := 0
 	if page == 1 {
 		header = 100
 	}
+	if !isBtreePageType(content[header]) {
+		return unused, fmt.Sprintf("not a b-tree or freelist page (byte %d is 0x%02x)", header, content[header]), nil
+	}
 	headerSize := 8
 	if content[header] == 0x02 || content[header] == 0x05 {
 		headerSize = 12
 	}
-	cells := be16(content, header+3)
+	cellPointersEnd := header + headerSize + 2*be16(content, header+3)
 	contentStart := be16(content, header+5)
 	if contentStart == 0 {
 		contentStart = 65536
 	}
-	for i := header + headerSize + 2*cells; i < contentStart && i < pageSize; i++ {
+	contentStart = min(contentStart, pageSize)
+	if cellPointersEnd > contentStart {
+		return nil, "", fmt.Errorf("page %d: cell pointers end at %d, after the content area starts at %d", page, cellPointersEnd, contentStart)
+	}
+	for i := cellPointersEnd; i < contentStart; i++ {
 		unused[i] = true
 	}
-	for block := be16(content, header+1); block != 0 && block+4 <= pageSize; block = be16(content, block) {
+	previousEnd := contentStart
+	for block := be16(content, header+1); block != 0; block = be16(content, block) {
+		if block < previousEnd || block+4 > pageSize {
+			return nil, "", fmt.Errorf("page %d: freeblock at %d is out of order or outside the content area", page, block)
+		}
 		size := be16(content, block+2)
-		for i := block + 4; i < block+size && i < pageSize; i++ {
+		if size < 4 || block+size > pageSize {
+			return nil, "", fmt.Errorf("page %d: freeblock at %d has size %d", page, block, size)
+		}
+		for i := block + 4; i < block+size; i++ {
 			unused[i] = true
 		}
+		previousEnd = block + size
 	}
-	return unused
+	return unused, "b-tree page, unallocated space and freeblocks", nil
 }
 
 type unusedReport struct {
-	OnlyUnused bool
-	Kinds      []string
+	OnlyUnused    bool
+	Kinds         []string
+	LeafPages     []int
+	FreelistPages []int
 }
 
 func classifyDifferences(a, b string, d fileDiff) unusedReport {
@@ -383,27 +467,52 @@ func classifyDifferences(a, b string, d fileDiff) unusedReport {
 	if err != nil {
 		fatal("read", err)
 	}
-	report := unusedReport{OnlyUnused: len(dataA) == len(dataB)}
-	if !report.OnlyUnused {
+	return classifyImages(dataA, dataB, d)
+}
+
+func classifyImages(dataA, dataB []byte, d fileDiff) unusedReport {
+	report := unusedReport{OnlyUnused: len(dataA) == len(dataB) && len(d.DifferingPages) > 0}
+	if len(dataA) != len(dataB) {
 		return report
 	}
-	freeA, freeB := freelistPages(dataA), freelistPages(dataB)
+	freeA, errA := readFreelist(dataA)
+	freeB, errB := readFreelist(dataB)
+	if errA != nil || errB != nil {
+		report.OnlyUnused = false
+		report.Kinds = append(report.Kinds, fmt.Sprintf("freelist unreadable: %v / %v", errA, errB))
+		return report
+	}
 	for _, page := range d.DifferingPages {
-		unusedA := unusedBytes(dataA, page, freeA)
-		unusedB := unusedBytes(dataB, page, freeB)
+		unusedA, kindA, errA := unusedBytes(dataA, page, freeA)
+		unusedB, kindB, errB := unusedBytes(dataB, page, freeB)
+		if errA != nil || errB != nil {
+			report.OnlyUnused = false
+			report.Kinds = append(report.Kinds, fmt.Sprintf("page %d: unparseable (%v / %v)", page, errA, errB))
+			continue
+		}
 		base := (page - 1) * pageSize
-		count := 0
+		count, inUse := 0, 0
 		for i := range pageSize {
 			if dataA[base+i] != dataB[base+i] {
 				count++
 				if !unusedA[i] || !unusedB[i] {
+					inUse++
 					report.OnlyUnused = false
 				}
 			}
 		}
-		kind := "b-tree page, unallocated space and freeblocks"
-		if slices.Contains(freeA, page) || slices.Contains(freeB, page) {
-			kind = "freelist page"
+		if freeA.leaves[page] && freeB.leaves[page] {
+			report.LeafPages = append(report.LeafPages, page)
+		}
+		if freeA.contains(page) && freeB.contains(page) {
+			report.FreelistPages = append(report.FreelistPages, page)
+		}
+		kind := kindA
+		if kindB != kindA {
+			kind = kindA + " / " + kindB
+		}
+		if inUse > 0 {
+			kind += fmt.Sprintf("; %d of these bytes are outside unused space", inUse)
 		}
 		report.Kinds = append(report.Kinds, fmt.Sprintf("page %d: %d bytes (%s)", page, count, kind))
 	}
@@ -536,19 +645,25 @@ func main() {
 	check(unorderedSame.Equal, "FINDING: an unordered INSERT ... SELECT run twice on the same build with the same plan gives identical files")
 	check(!unorderedPlan.Equal && orderedPlan.Equal, "an unordered INSERT ... SELECT changes the file when the scan order changes; ORDER BY removes the dependence")
 
-	batchesWAL, _ := batchVariant(ctx, r, dir, true)
+	batchesWAL, _ := batchVariant(ctx, r, dir, "ON")
 	fmt.Printf("4. steps 0-%d on one connection, steps 2+3 and 4+5 each committed as one transaction instead of two:\n", variantBase)
 	fmt.Printf("   WAL mode, recipe settings (secure_delete=ON): %s\n", batchesWAL)
-	batchesWALOff, unusedWALOff := batchVariant(ctx, r, dir, false)
+	batchesWALOff, unusedWALOff := batchVariant(ctx, r, dir, "OFF")
 	fmt.Printf("   WAL mode, secure_delete=OFF: %s\n", batchesWALOff)
 	for _, kind := range unusedWALOff.Kinds {
 		fmt.Printf("     %s\n", kind)
 	}
-	batchesDelete, _ := batchVariant(ctx, deleteRecipe, dir, true)
+	batchesDelete, _ := batchVariant(ctx, deleteRecipe, dir, "ON")
 	fmt.Printf("   rollback mode, secure_delete=ON: %s\n", batchesDelete)
 	check(batchesWAL.Equal, "FINDING: in WAL mode on one connection with secure_delete=ON, different transaction batches give identical files")
 	check(!batchesWALOff.Equal && unusedWALOff.OnlyUnused, "with secure_delete=OFF different batches differ, and only in bytes no cell uses (stale content left in unallocated space, freeblocks or freelist pages)")
 	check(onlyChangeCounter(batchesDelete), "in rollback mode different batches differ, and with secure_delete=ON only in the change counter (it counts commits)")
+	fastVsOn, fastVsOnUnused := secureDeleteFastVariant(ctx, r, dir)
+	fmt.Printf("   WAL mode, one transaction per step, secure_delete=FAST vs secure_delete=ON: %s\n", fastVsOn)
+	for _, kind := range fastVsOnUnused.Kinds {
+		fmt.Printf("     %s\n", kind)
+	}
+	check(!fastVsOn.Equal && fastVsOnUnused.OnlyUnused && slices.Equal(fastVsOnUnused.FreelistPages, fastVsOn.DifferingPages), "secure_delete=FAST is not ON: on the same history FAST leaves old bytes in the unused space of freelist pages that ON zeroes")
 
 	rowidDiff := runTwice(ctx, r, dir, variant{
 		name: "rowid",
@@ -564,10 +679,29 @@ func main() {
 	fmt.Println("\n== a source of variation the outline did not list: connection sessions ==")
 	walSessions := sessionVariant(ctx, r, dir)
 	deleteSessions := sessionVariant(ctx, deleteRecipe, dir)
+	walSessionsNoPage1 := sessionsWithoutPage1(ctx, r, dir)
 	fmt.Printf("6. WAL mode, steps 0-%d one connection per step vs one connection for all steps: %s\n", variantBase, walSessions)
 	fmt.Printf("   rollback mode, the same comparison: %s\n", deleteSessions)
 	check(onlyChangeCounter(walSessions), "FINDING: in WAL mode the number of connection sessions changes the file, and only the change counter (bytes 24-27 and 92-95)")
 	check(deleteSessions.Equal, "in rollback mode the number of connection sessions does not change the file")
+	fmt.Printf("   WAL mode, recipe to step %d, then %d commits that never write page 1, one connection per commit vs one connection for all: %s\n", variantBase, page1UntouchedCommits, walSessionsNoPage1)
+	check(walSessionsNoPage1.Equal, "in WAL mode only a commit that writes page 1 writes the change counter: sessions whose commits never touch page 1 leave the file identical")
+
+	fmt.Println("\n== a source of variation the outline did not list: rolled-back work inside a committed transaction ==")
+	walAborted, walAbortedUnused := abortedSavepointVariant(ctx, r, dir)
+	deleteAborted, deleteAbortedUnused := abortedSavepointVariant(ctx, deleteRecipe, dir)
+	fmt.Printf("7. recipe to step %d, then one transaction committing one INSERT; run 2 first inserts %d documents of %d bytes inside a SAVEPOINT and rolls back to it\n", variantBase, abortedDocuments, abortedDocumentBytes)
+	fmt.Printf("   WAL mode, secure_delete=ON: %s\n", walAborted)
+	for _, kind := range walAbortedUnused.Kinds {
+		fmt.Printf("     %s\n", kind)
+	}
+	fmt.Printf("   rollback mode, secure_delete=ON: %s\n", deleteAborted)
+	for _, kind := range deleteAbortedUnused.Kinds {
+		fmt.Printf("     %s\n", kind)
+	}
+	walRest := slices.DeleteFunc(slices.Clone(walAborted.DifferingPages), func(page int) bool { return page == 1 })
+	check(!walAborted.Equal && onlyCounterBytes(walAborted.Page1Bytes) && len(walRest) > 0 && slices.Equal(walRest, walAbortedUnused.LeafPages), "WAL mode: a rolled-back SAVEPOINT changes the committed file even with secure_delete=ON: reused freelist leaf pages keep the rolled-back bytes, and page 1's change counter moves")
+	check(!deleteAborted.Equal && deleteAbortedUnused.OnlyUnused && slices.Equal(deleteAbortedUnused.LeafPages, deleteAborted.DifferingPages), "rollback mode: a rolled-back SAVEPOINT leaves the rolled-back bytes in reused freelist leaf pages (secure_delete=ON does not clear them)")
 
 	fmt.Println()
 	if len(failures) > 0 {
@@ -575,6 +709,65 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("RECIPE REBUILD OK")
+}
+
+const touchAccountSQL = "UPDATE accounts SET balance = balance + 1 WHERE id = 1"
+
+func secureDeleteFastVariant(ctx context.Context, r recipe.Recipe, dir string) (fileDiff, unusedReport) {
+	batchVariant(ctx, r, dir, "FAST")
+	on := filepath.Join(dir, "batches-"+r.JournalMode+"-secure-delete-on-one-per-step.db")
+	fast := filepath.Join(dir, "batches-"+r.JournalMode+"-secure-delete-fast-one-per-step.db")
+	d := compareFiles(on, fast)
+	return d, classifyDifferences(on, fast, d)
+}
+
+func sessionsWithoutPage1(ctx context.Context, r recipe.Recipe, dir string) fileDiff {
+	perSession := filepath.Join(dir, "page1-untouched-"+r.JournalMode+"-one-per-commit.db")
+	oneSession := filepath.Join(dir, "page1-untouched-"+r.JournalMode+"-one-for-all.db")
+	for _, path := range []string{perSession, oneSession} {
+		buildBase(ctx, r, path)
+	}
+	for range page1UntouchedCommits {
+		applyStatementsInSession(ctx, r, perSession, nil, touchAccountSQL)
+	}
+	db, err := r.Open(ctx, oneSession)
+	if err != nil {
+		fatal("open", err)
+	}
+	for range page1UntouchedCommits {
+		if _, err := db.ExecContext(ctx, touchAccountSQL); err != nil {
+			fatal("update", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		fatal("close", err)
+	}
+	if err := recipe.CheckAtRest(oneSession); err != nil {
+		fatal("at rest", err)
+	}
+	fmt.Printf("INFO: page1-untouched sha256 one-per-commit %s, one-for-all %s\n", hashOf(perSession).Exact, hashOf(oneSession).Exact)
+	return compareFiles(perSession, oneSession)
+}
+
+const (
+	page1UntouchedCommits = 3
+	abortedDocuments      = 10
+	abortedDocumentBytes  = 12000
+	committedEventSQL     = "INSERT INTO events(id, account_id, kind, amount, note) VALUES(900003, 1, 'fee', 42, 'committed')"
+)
+
+func abortedSavepointVariant(ctx context.Context, r recipe.Recipe, dir string) (fileDiff, unusedReport) {
+	clean := filepath.Join(dir, "savepoint-"+r.JournalMode+"-never-run.db")
+	aborted := filepath.Join(dir, "savepoint-"+r.JournalMode+"-rolled-back.db")
+	for _, path := range []string{clean, aborted} {
+		buildBase(ctx, r, path)
+	}
+	applyStatementsInSession(ctx, r, clean, nil, committedEventSQL)
+	insertDocuments := fmt.Sprintf("WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < %d) INSERT INTO documents(id, account_id, title, body) SELECT 900000 + i, 1, 'aborted', unhex(replace(hex(zeroblob(%d)), '00', 'AB')) FROM n", abortedDocuments-1, abortedDocumentBytes)
+	applyStatementsInSession(ctx, r, aborted, nil, "SAVEPOINT aborted", insertDocuments, "ROLLBACK TO aborted", "RELEASE aborted", committedEventSQL)
+	fmt.Printf("INFO: savepoint %s sha256 never-run %s, rolled-back %s\n", r.JournalMode, hashOf(clean).Exact, hashOf(aborted).Exact)
+	d := compareFiles(clean, aborted)
+	return d, classifyDifferences(clean, aborted, d)
 }
 
 func runTwiceWithPlanChange(ctx context.Context, r recipe.Recipe, dir, name string, statements ...string) fileDiff {
