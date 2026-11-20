@@ -111,8 +111,7 @@ func (p *httpPublisher) describe() string {
 }
 
 type s3Publisher struct {
-	client   *s3.Client
-	endpoint string
+	client *s3.Client
 }
 
 func (p *s3Publisher) publish(ctx context.Context, name string, body []byte) error {
@@ -154,7 +153,7 @@ func main() {
 			fatal("S3 bucket", fmt.Errorf("%w (start the store with: docker compose up -d seaweedfs)", err))
 		}
 		fmt.Printf("INFO: S3 endpoint %s\n", cfg.Endpoint)
-		pub = &s3Publisher{client: client, endpoint: cfg.Endpoint}
+		pub = &s3Publisher{client: client}
 	} else {
 		p, err := newHTTPPublisher(filepath.Join(dir, "published"))
 		if err != nil {
@@ -188,6 +187,10 @@ func main() {
 	for _, q := range queries {
 		runQuery(ctx, q, local, vfsName, remote)
 	}
+
+	fmt.Println()
+	fmt.Printf("== immutable=1 keeps cached pages valid, not cached: the full scan again with PRAGMA cache_size=%d ==\n", smallCachePages)
+	smallCache(ctx, queries[len(queries)-1], vfsName, remote)
 
 	fmt.Println()
 	fmt.Println("== why immutable=1: the same WAL-format snapshot opened without it ==")
@@ -317,6 +320,9 @@ func localResult(ctx context.Context, path, query string) (int, string, string, 
 		}
 		plan = append(plan, detail)
 	}
+	if err := rows.Err(); err != nil {
+		fatal("plan", err)
+	}
 	return n, digest, first, plan
 }
 
@@ -370,6 +376,7 @@ func runQuery(ctx context.Context, q query, local, vfsName string, remote *range
 	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema").Scan(&tables); err != nil {
 		fatal("remote schema", err)
 	}
+	cachePages := mustCachePages(ctx, db)
 	openRequests := remote.TakeRequests()
 	rows, digest, first, err := render(ctx, db, q.sql)
 	if err != nil {
@@ -395,8 +402,46 @@ func runQuery(ctx context.Context, q query, local, vfsName string, remote *range
 	fmt.Printf("  first query on a new connection, total: %d requests, %d bytes\n", openStats.Requests()+queryStats.Requests(), openStats.BytesRead+queryStats.BytesRead)
 	_, oddOpen := classify(openRequests)
 	check(rows > 0 && rows == localRows && digest == localDigest, fmt.Sprintf("%s: the remote result equals the local file's (%d row(s), digest %s)", q.name, rows, digest))
-	check(len(odd) == 0 && len(oddOpen) == 0 && queryStats.StatRequests == 0, fmt.Sprintf("%s: every read is one range request for one whole %d-byte page (or the %d-byte header): one request per page miss, no read-ahead", q.name, pageSize, headerBytes))
-	check(repeatStats.Requests() == 0, fmt.Sprintf("%s: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid)", q.name))
+	check(len(odd) == 0 && len(oddOpen) == 0 && queryStats.StatRequests == 0 && queryStats.RangeRequests > 0, fmt.Sprintf("%s: every read is one range request for one whole %d-byte page (or the %d-byte header): one request per page miss, no read-ahead", q.name, pageSize, headerBytes))
+	pagesHeld := openStats.RangeRequests + queryStats.RangeRequests
+	check(repeatStats.Requests() == 0 && pagesHeld <= cachePages, fmt.Sprintf("%s: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid; the %d reads so far fit in the %d-page cache)", q.name, pagesHeld, cachePages))
+}
+
+const smallCachePages = 4
+
+func mustCachePages(ctx context.Context, db *sql.DB) int {
+	var cacheSize int
+	if err := db.QueryRowContext(ctx, "PRAGMA cache_size").Scan(&cacheSize); err != nil {
+		fatal("cache_size", err)
+	}
+	if cacheSize < 0 {
+		return -cacheSize * 1024 / pageSize
+	}
+	return cacheSize
+}
+
+func smallCache(ctx context.Context, q query, vfsName string, remote *rangefs.FS) {
+	db, err := openSingle(remoteDSN(vfsName, snapshotName, "immutable=1"))
+	if err != nil {
+		fatal("small-cache open", err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA cache_size=%d", smallCachePages)); err != nil {
+		fatal("small-cache pragma", err)
+	}
+	cachePages := mustCachePages(ctx, db)
+	_, firstDigest, _, err := render(ctx, db, q.sql)
+	if err != nil {
+		fatal("small-cache query", err)
+	}
+	remote.TakeRequests()
+	_, repeatDigest, _, err := render(ctx, db, q.sql)
+	if err != nil {
+		fatal("small-cache repeat", err)
+	}
+	repeatStats := rangefs.Summarize(remote.TakeRequests())
+	fmt.Printf("%s with a %d-page cache, repeated on the same connection: %s\n", q.name, cachePages, repeatStats)
+	check(firstDigest == repeatDigest && repeatStats.RangeRequests > cachePages, fmt.Sprintf("%s: when the query reads more pages than the cache holds, the repeat reads evicted pages again (%d range requests); only pages still in the cache are free", q.name, repeatStats.RangeRequests))
 }
 
 func errorLine(err error) string {
@@ -604,5 +649,5 @@ func staleRead(ctx context.Context, r recipe.Recipe, dir string, pub publisher, 
 	}
 	fresh, err, _ := tryOpen(ctx, vfsName, remote, liveName, "immutable=1")
 	fmt.Printf("after the writer closed (last connection: checkpoint, -wal deleted: %t) and the main file was republished: remote, immutable=1: %s\n", os.IsNotExist(walErr), fallback(fresh, err))
-	check(err == nil && fresh == truth, fmt.Sprintf("once the commit is checkpointed into the main file, the republished snapshot shows step %d", r.Steps))
+	check(err == nil && fresh == truth && os.IsNotExist(walErr), fmt.Sprintf("once the commit is checkpointed into the main file, the republished snapshot shows step %d", r.Steps))
 }

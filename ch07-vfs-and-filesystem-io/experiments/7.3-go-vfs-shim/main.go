@@ -323,7 +323,7 @@ func partA(ctx context.Context, cli sqlitex.CLI, v *govfs.VFS, dir string, c con
 		}
 		fmt.Printf("  first difference at call %d: Go %q, CLI %q\n", first+1, at(goKeys, first), at(cliKeys, first))
 	}
-	check(same && goCounts.String() == cliCounts.String(), fmt.Sprintf("%s: the Go driver makes the same %d VFS calls, in the same order with the same files, offsets, lengths, lock levels and sync labels, as the C CLI", c, len(goCalls)))
+	check(same && len(goCalls) > 0 && goCounts.String() == cliCounts.String(), fmt.Sprintf("%s: the Go driver makes the same %d VFS calls, in the same order with the same files, offsets, lengths, lock levels and sync labels, as the C CLI", c, len(goCalls)))
 	var flags []string
 	for _, call := range goCalls {
 		if call.Method == "xSync" {
@@ -375,12 +375,28 @@ func printCountTable(table map[config]govfs.Counts) {
 
 type outcome struct {
 	stepErr     string
+	stepCode    int
 	where       string
 	closeErr    string
 	userVersion int
 	rowPresent  bool
 	integrity   string
 	match       recipe.Match
+}
+
+func (o outcome) rolledBack() bool {
+	return o.stepCode == int(govfs.CodeIOErr) && o.closeErr == "" && !o.rowPresent && o.integrity == "ok" && o.match.Step == faultStep-1 && o.match.Exact && o.userVersion == faultStep-1
+}
+
+func (o outcome) committed() bool {
+	return o.stepErr == "" && o.closeErr == "" && o.rowPresent && o.match.Step == faultStep && o.match.Exact
+}
+
+func trialHeld(n, total int, fired bool, o outcome) bool {
+	if n <= total {
+		return fired && o.rolledBack()
+	}
+	return !fired && o.committed()
 }
 
 func (o outcome) String() string {
@@ -585,6 +601,7 @@ func partB(ctx context.Context, v *govfs.VFS, dir, journal string) {
 			o := inspect(ctx, r, trial, markerID)
 			if stepErr != nil {
 				o.stepErr, o.where = errorText(stepErr), where
+				o.stepCode, _ = sqlitex.PrimaryErrorCode(stepErr)
 			}
 			if closeErr != nil {
 				o.closeErr = errorText(closeErr)
@@ -594,14 +611,13 @@ func partB(ctx context.Context, v *govfs.VFS, dir, journal string) {
 				target = strings.Replace(report.Call.String(), filepath.Base(trial), dbName, 1)
 			}
 			fmt.Printf("  %s #%d -> %s\n      %s\n", method, n, target, o)
-			if report.Fired {
-				ok := o.stepErr != "" && !o.rowPresent && o.integrity == "ok" && o.match.Step == faultStep-1 && o.userVersion == faultStep-1
-				if !ok {
+			if n <= total {
+				if !trialHeld(n, total, report.Fired, o) {
 					allRolledBack = false
 					summary = append(summary, fmt.Sprintf("%s #%d", method, n))
 				}
 			} else {
-				check(o.stepErr == "" && o.rowPresent && o.match.Step == faultStep, fmt.Sprintf("%s: with %s #%d never reached, the step commits normally", journal, method, n))
+				check(trialHeld(n, total, report.Fired, o), fmt.Sprintf("%s: with %s #%d never reached, the step commits normally", journal, method, n))
 			}
 			if err := recipe.RemoveDatabase(trial); err != nil {
 				fatal("remove", err)
@@ -611,6 +627,6 @@ func partB(ctx context.Context, v *govfs.VFS, dir, journal string) {
 		if !allRolledBack {
 			claim += "; exceptions: " + strings.Join(summary, ", ")
 		}
-		check(allRolledBack, claim)
+		check(allRolledBack && total > 0, claim)
 	}
 }

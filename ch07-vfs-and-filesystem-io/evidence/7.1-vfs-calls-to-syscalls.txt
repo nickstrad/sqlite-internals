@@ -339,7 +339,7 @@ files left in the directory after the CLI exits: t.db
 
 check ok: each of the 12 xWrite calls made exactly one pwrite64 to the same file, offset and length
 check ok: each of the 7 xRead calls made exactly one pread64 of the same file, offset and length
-check ok: every pread64/pwrite64 on the database, journal, WAL and shm files happened inside xRead, xWrite or xShmMap
+check ok: every pread64/pwrite64/read/write/writev on the database, journal, WAL and shm files happened inside xRead, xWrite or xShmMap
 check ok: each of the 8 xSync calls made exactly one fsync/fdatasync of its own file
 check ok: the directory is synced twice, inside the first xSync of the new journal and of the new WAL (unixSync's one-time directory sync)
 check ok: the -wal file is created (O_CREAT) at its first use, by xOpen

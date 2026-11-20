@@ -223,7 +223,6 @@ func child(args []string) {
 type counts struct {
 	writes    int
 	bytes     int64
-	reads     int
 	syncs     map[string]int
 	opens     map[string]int
 	unlinks   map[string]int
@@ -260,7 +259,7 @@ func fileRole(path string) string {
 
 func (c *counts) add(s trace.Syscall) {
 	role := fileRole(s.Path)
-	if role == "" {
+	if role == "" || !s.Succeeded() {
 		return
 	}
 	switch trace.CanonicalName(s.Name) {
@@ -269,8 +268,6 @@ func (c *counts) add(s trace.Syscall) {
 		if s.Result > 0 {
 			c.bytes += s.Result
 		}
-	case "pread64":
-		c.reads++
 	case "sync":
 		c.syncs[role]++
 	case "open":
@@ -289,12 +286,29 @@ type commitShape struct {
 }
 
 type measurement struct {
-	commits   []*counts
 	all       *counts
 	close     *counts
 	shapes    map[commitShape]int
 	shapeList []commitShape
 	sequence  []commitShape
+}
+
+func classifyWALCommits(sequences [][]commitShape, plain, restart, checkpoint string) (ok bool, checkpoints, restarts int) {
+	ok = true
+	for _, sequence := range sequences {
+		for i, s := range sequence {
+			switch {
+			case !s.dbWrites && s.syncs == plain:
+			case s.dbWrites && s.syncs == checkpoint:
+				checkpoints++
+			case !s.dbWrites && s.syncs == restart && i > 0 && sequence[i-1].dbWrites:
+				restarts++
+			default:
+				ok = false
+			}
+		}
+	}
+	return ok && checkpoints > 0 && restarts == checkpoints, checkpoints, restarts
 }
 
 func roleList(m map[string]int) string {
@@ -367,7 +381,6 @@ func measure(ctx context.Context, dir string, c cell) (*measurement, error) {
 		if i == c.commits() {
 			continue
 		}
-		m.commits = append(m.commits, target)
 		dbWrites := false
 		for _, s := range seg {
 			if trace.CanonicalName(s.Name) == "pwrite64" && s.Path == dbName {
@@ -435,22 +448,11 @@ func report(results map[cell]*measurement) {
 	}
 	for _, sync := range []string{sqlitex.SyncNormal, sqlitex.SyncFull} {
 		plain, restart, checkpoint := walShapes(sync)
-		ok := true
-		checkpoints, restarts := 0, 0
+		var sequences [][]commitShape
 		for _, batch := range []int{totalRows, 50, 1} {
-			m := results[cell{sqlitex.JournalWAL, sync, batch}]
-			for i, s := range m.sequence {
-				switch {
-				case !s.dbWrites && s.syncs == plain:
-				case s.dbWrites && s.syncs == checkpoint:
-					checkpoints++
-				case !s.dbWrites && s.syncs == restart && i > 0 && m.sequence[i-1].dbWrites:
-					restarts++
-				default:
-					ok = false
-				}
-			}
+			sequences = append(sequences, results[cell{sqlitex.JournalWAL, sync, batch}].sequence)
 		}
+		ok, checkpoints, restarts := classifyWALCommits(sequences, plain, restart, checkpoint)
 		check(ok, fmt.Sprintf("WAL at %s: a commit makes [%s]; the commit that runs an automatic checkpoint makes [%s] (%d such), and the next commit, which restarts the WAL and writes a new WAL header, makes [%s] (%d such)", sync, plain, checkpoint, checkpoints, restart, restarts))
 	}
 	one := results[cell{sqlitex.JournalDelete, sqlitex.SyncFull, 1}].all.totalSyncs()

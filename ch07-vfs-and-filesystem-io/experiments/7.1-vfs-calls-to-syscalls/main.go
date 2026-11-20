@@ -74,6 +74,8 @@ var unixFunction = map[string]string{
 // calls. fchown is omitted because unixOpen only calls it when running as root.
 var tracedSyscalls = append(append([]string(nil), trace.DefaultSyscalls...), "fstat", "newfstatat", "statx", "stat", "lstat", "access", "faccessat", "faccessat2")
 
+var byteMovingSyscalls = []string{"pread64", "pwrite64", "read", "write", "writev"}
+
 var failures []string
 
 func check(ok bool, claim string) {
@@ -162,30 +164,27 @@ func portable(ctx context.Context, cli sqlitex.CLI, request trace.CLITrace, dir 
 		}
 		fmt.Printf("  %s\n", c.String())
 	}
-	walOpen, walDelete, shmDelete := false, false, false
+	walOpen, walDelete, shmDelete := closeLifecycle(calls)
+	check(walOpen, "the -wal file is opened through xOpen")
+	check(walDelete && shmDelete, "at the last close the -wal is deleted (xDelete) and the -shm is unmapped with delFlag=1")
+}
+
+func closeLifecycle(calls []trace.VFSCall) (walOpen, walDelete, shmDelete bool) {
 	for _, c := range calls {
 		switch {
 		case c.Method == "xOpen" && c.File == dbName+"-wal":
 			walOpen = true
 		case c.Method == "xDelete" && strings.HasSuffix(c.File, dbName+"-wal"):
 			walDelete = true
-		case c.Method == "xShmUnmap" && strings.Contains(c.Raw, "delete=1"):
+		case c.Method == "xShmUnmap" && slices.Contains(c.Args, "delFlag=1"):
 			shmDelete = true
 		}
 	}
-	check(walOpen, "the -wal file is opened through xOpen")
-	check(walDelete && shmDelete, "at the last close the -wal is deleted (xDelete) and the -shm is unmapped with delete=1")
+	return walOpen, walDelete, shmDelete
 }
 
-type stream struct {
-	events []trace.Event
-	keep   []bool
-}
-
-func onDisk(dir string) func(trace.Syscall) bool {
-	return func(s trace.Syscall) bool {
-		return s.Path == "." || s.Path == dbName || strings.HasPrefix(s.Path, dbName+"-")
-	}
+func onDisk(s trace.Syscall) bool {
+	return s.Path == "." || s.Path == dbName || strings.HasPrefix(s.Path, dbName+"-")
 }
 
 func syscallLine(s trace.Syscall) string {
@@ -208,7 +207,7 @@ func eventLine(e trace.Event) string {
 }
 
 func analyze(m *trace.Merged, dir string) {
-	relevant := onDisk(dir)
+	relevant := onDisk
 	var kept []int
 	for i, e := range m.Events {
 		if e.Kind == trace.EventSyscall && !relevant(*e.Syscall) {
@@ -365,7 +364,7 @@ func analyze(m *trace.Merged, dir string) {
 			continue
 		}
 		name := trace.CanonicalName(e.Syscall.Name)
-		if name != "pwrite64" && name != "pread64" {
+		if !slices.Contains(byteMovingSyscalls, name) {
 			continue
 		}
 		if e.Enclosed < 0 {
@@ -439,7 +438,7 @@ func analyze(m *trace.Merged, dir string) {
 	for _, p := range readProblems {
 		fmt.Printf("  %s\n", p)
 	}
-	check(len(outsideIO) == 0, "every pread64/pwrite64 on the database, journal, WAL and shm files happened inside xRead, xWrite or xShmMap")
+	check(len(outsideIO) == 0, "every pread64/pwrite64/read/write/writev on the database, journal, WAL and shm files happened inside xRead, xWrite or xShmMap")
 	for _, p := range outsideIO {
 		fmt.Printf("  %s\n", p)
 	}
