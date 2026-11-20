@@ -103,9 +103,8 @@ func main() {
 	ctx := context.Background()
 	sqlitex.MustPinCheckMemory(ctx)
 	dir := sqlitex.MustWorkDir("7.1")
-	fmt.Printf("INFO: work dir %s\n", dir)
+	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(dir))
 	cli := sqlitex.MustLocateCLI(ctx)
-	fmt.Printf("INFO: CLI %s\n", cli.Path)
 	printStatements()
 	request := trace.CLITrace{Dir: dir, DB: filepath.Join(dir, dbName), SQL: script()}
 

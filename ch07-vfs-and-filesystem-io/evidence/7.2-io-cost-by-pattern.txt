@@ -1,5 +1,5 @@
 sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-INFO: work dir /root/Software/sqlite-internals-work/ch07/_work/7.2
+INFO: work dir _work/7.2
 workload: 1000 rows (id INTEGER PRIMARY KEY, v BLOB of 100 bytes) into an empty table, Go driver, one connection
 settings: page_size 4096, cache_size -2000, wal_autocheckpoint 1000, secure_delete OFF; the table is created before measuring
 

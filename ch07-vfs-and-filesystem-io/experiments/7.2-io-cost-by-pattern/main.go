@@ -79,7 +79,7 @@ func main() {
 	ctx := context.Background()
 	sqlitex.MustPinCheckMemory(ctx)
 	base := sqlitex.MustWorkDir("7.2")
-	fmt.Printf("INFO: work dir %s\n", base)
+	fmt.Printf("INFO: work dir %s\n", sqlitex.DisplayPath(base))
 	fmt.Printf("workload: %d rows (id INTEGER PRIMARY KEY, v BLOB of %d bytes) into an empty table, Go driver, one connection\n", totalRows, valueBytes)
 	fmt.Println("settings: page_size 4096, cache_size -2000, wal_autocheckpoint 1000, secure_delete OFF; the table is created before measuring")
 	if !trace.Supported {
