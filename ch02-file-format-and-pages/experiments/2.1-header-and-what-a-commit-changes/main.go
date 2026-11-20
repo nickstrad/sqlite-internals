@@ -15,6 +15,7 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -280,6 +281,7 @@ func partA(ctx context.Context, dir string, cli *sqlitex.CLI) {
 	fmt.Printf("oracles: PRAGMA through the Go driver; %s\n", cliStatus)
 	fmt.Printf("  %-22s %-12s %-12s %-12s %s\n", "field", "ours", "PRAGMA", ".dbinfo", "match")
 	allMatch := true
+	checked, unchecked := 0, 0
 	for _, row := range rows {
 		cliValue := "-"
 		if row.cliName != "" {
@@ -288,11 +290,23 @@ func partA(ctx context.Context, dir string, cli *sqlitex.CLI) {
 				cliValue = dbinfo[row.cliName]
 			}
 		}
-		match := (row.pragma == "-" || row.pragma == row.ours) && (cliValue == "-" || cliValue == "?" || cliValue == row.ours)
-		allMatch = allMatch && match
-		fmt.Printf("  %-22s %-12s %-12s %-12s %v\n", row.name, row.ours, row.pragma, cliValue, match)
+		hasPragma, hasCLI := row.pragma != "-", cliValue != "-" && cliValue != "?"
+		verdict := "n/a"
+		if hasPragma || hasCLI {
+			match := (!hasPragma || row.pragma == row.ours) && (!hasCLI || cliValue == row.ours)
+			allMatch = allMatch && match
+			verdict = fmt.Sprint(match)
+			checked++
+		} else {
+			unchecked++
+		}
+		fmt.Printf("  %-22s %-12s %-12s %-12s %s\n", row.name, row.ours, row.pragma, cliValue, verdict)
 	}
-	check(allMatch, "every decoded header field equals SQLite's own report of it")
+	oracles := "PRAGMA or .dbinfo"
+	if cli == nil {
+		oracles = "PRAGMA only, no CLI"
+	}
+	check(allMatch && checked > 0, fmt.Sprintf("each of the %d decoded header fields that has an oracle here (%s) equals SQLite's own report of it; %d field(s) have none (n/a)", checked, oracles, unchecked))
 	check(h.SQLiteVersion == pinnedVersionNumber, fmt.Sprintf("bytes 96-99 read %d (the library that last wrote the file)", pinnedVersionNumber))
 	check(h.WALMode(), "bytes 18 and 19 are 2 and 2 in a WAL-mode file")
 	check(h.ChangeCountersAgree() && source == dbfile.PageCountFromHeader, "bytes 24-27 equal 92-95, so the in-header size at 28 is used")
@@ -386,20 +400,27 @@ func partC(ctx context.Context, dir string) {
 	copyFile(base, path)
 	db = must(r.Open(ctx, path))("open")
 	start := logicalHeader(ctx, db)
-	unchanged := true
+	unchanged, eachWroteOneRowAndGrewWAL := true, true
+	previousWAL := walSize(path)
 	for i := 1; i <= 3; i++ {
-		if _, err := db.ExecContext(ctx, "UPDATE accounts SET balance = balance + 1 WHERE id = 1"); err != nil {
+		result, err := db.ExecContext(ctx, "UPDATE accounts SET balance = balance + 1 WHERE id = 1")
+		if err != nil {
 			fatal("update", err)
 		}
+		affected := must(result.RowsAffected())("rows affected")
 		current := logicalHeader(ctx, db)
 		fmt.Printf("  commit %d (%s): ", i, walText(path))
 		printChanges("current vs base: ", start, current)
 		unchanged = unchanged && bytes.Equal(current, start)
+		eachWroteOneRowAndGrewWAL = eachWroteOneRowAndGrewWAL && affected == 1 && walSize(path) > previousWAL
+		previousWAL = walSize(path)
 	}
 	if err := db.Close(); err != nil {
 		fatal("close", err)
 	}
 	afterClose = readHeaderFromChild(path)
+	check(eachWroteOneRowAndGrewWAL, "WAL: each of the three UPDATEs changed one row and appended frames to the -wal")
+	check(must(equal.FileSHA256(path))("hash") != must(equal.FileSHA256(base))("hash base"), "after the checkpoint at close the database file differs from the base")
 	check(unchanged && bytes.Equal(afterClose, baseHeader), "WAL: commits that do not write page 1 leave every header byte unchanged, even the change counter, before and after the checkpoint")
 
 	fmt.Println("C3. steps 28, 29, 30 each on a NEW connection while a second idle connection stays open (so closing a writer does not checkpoint):")
@@ -430,6 +451,31 @@ func partC(ctx context.Context, dir string) {
 		fatal("close holder", err)
 	}
 	check(bytes.Equal(readHeaderFromChild(path), previous) && walSize(path) == -1, "closing the last connection checkpointed page 1 into the file and removed the -wal")
+
+	fmt.Println("C4. steps 28, 29, 30 on ONE connection, with PRAGMA shrink_memory before each step (it drops unused pages, page 1 included, from the connection's cache):")
+	path = filepath.Join(dir, "wal-one-connection-shrink.db")
+	copyFile(base, path)
+	db = must(r.Open(ctx, path))("open")
+	previous = logicalHeader(ctx, db)
+	var shrunk []uint32
+	for step := 28; step <= 30; step++ {
+		if _, err := db.ExecContext(ctx, "PRAGMA shrink_memory"); err != nil {
+			fatal("shrink_memory", err)
+		}
+		if err := r.ApplyStep(ctx, db, step); err != nil {
+			fatal("apply", err)
+		}
+		current := logicalHeader(ctx, db)
+		fmt.Printf("  commit of step %d (%s):\n", step, walText(path))
+		printChanges("    current vs previous commit: ", previous, current)
+		counter, _ := counters(current)
+		shrunk = append(shrunk, counter)
+		previous = current
+	}
+	if err := db.Close(); err != nil {
+		fatal("close", err)
+	}
+	check(shrunk[0] == c0+1 && shrunk[1] == c0+2 && shrunk[2] == c0+3, fmt.Sprintf("WAL, one connection, page 1 dropped from the cache before each commit: the counter advances once per commit (%d, %d, %d), so C1's constant counter comes from page 1 staying cached, not from the connection", c0+1, c0+2, c0+3))
 }
 
 func partD(ctx context.Context, dir string) {
@@ -492,7 +538,7 @@ func partE(ctx context.Context, dir string) {
 		f, err := dbfile.FromBytes(edited)
 		if err == nil {
 			ours = fmt.Sprintf("%d (from %s)", f.PageCount(), f.PageCountSource())
-		} else if strings.Contains(err.Error(), dbfile.ErrCorrupt.Error()) {
+		} else if errors.Is(err, dbfile.ErrCorrupt) {
 			ours = "error: in-header size larger than the file"
 		}
 		db := openReadOnly(path)
@@ -508,7 +554,7 @@ func partE(ctx context.Context, dir string) {
 		case 1:
 			check(theirs == fmt.Sprint(filePages) && f != nil && f.PageCount() == filePages, "disagreeing counters: both ignore bytes 28-31 and use the file size")
 		case 2:
-			check(qerr != nil && strings.Contains(qerr.Error(), "malformed") && err != nil, "an agreeing in-header size larger than the file is corruption to both")
+			check(qerr != nil && strings.Contains(qerr.Error(), "malformed") && errors.Is(err, dbfile.ErrCorrupt), "an agreeing in-header size larger than the file is corruption to both")
 		case 3:
 			check(theirs == fmt.Sprint(filePages) && f != nil && f.PageCount() == filePages, "an in-header size of 0 is ignored by both")
 		}
@@ -534,7 +580,11 @@ func partF(ctx context.Context, dir string) {
 		raw := readHeaderFromChild(path)
 		h := parse(raw)
 		fmt.Printf("  PRAGMA page_size=%-5d bytes 16-17 = %02x %02x (stored %d), decoded %d, SQLite reports %s\n", size, raw[16], raw[17], binary.BigEndian.Uint16(raw[16:18]), h.PageSize, pragma)
-		check(fmt.Sprint(h.PageSize) == pragma, fmt.Sprintf("page size %d decodes to what SQLite reports", size))
+		wantStored := uint16(size)
+		if size == 65536 {
+			wantStored = 1
+		}
+		check(h.PageSize == size && fmt.Sprint(h.PageSize) == pragma && binary.BigEndian.Uint16(raw[16:18]) == wantStored, fmt.Sprintf("page size %d is stored as %d and decodes to the size asked for and to what SQLite reports", size, wantStored))
 	}
 }
 
@@ -546,12 +596,16 @@ func main() {
 	ctx := context.Background()
 	sqlitex.MustPinCheckMemory(ctx)
 	var cli *sqlitex.CLI
-	if located, err := sqlitex.LocateCLI(ctx); err == nil {
+	located, err := sqlitex.LocateCLI(ctx)
+	switch {
+	case err == nil:
 		cli = &located
 		fmt.Println(located.PinLine())
 		fmt.Printf("INFO: CLI found via %s\n", located.Origin)
-	} else {
+	case errors.Is(err, sqlitex.ErrNoCLI):
 		fmt.Printf("NO-CLI: %v; the .dbinfo cross-check is skipped\n", err)
+	default:
+		check(false, fmt.Sprintf("the sqlite3 CLI that was found or named reports the pinned source id: %v", err))
 	}
 	dir := sqlitex.MustWorkDir("2.1")
 	fmt.Printf("INFO: work dir %s\n", displayPath(dir))

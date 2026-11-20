@@ -14,6 +14,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -161,6 +162,7 @@ func partB(ctx context.Context, dir, original, captureDir string) {
 
 type tamper struct {
 	name string
+	want string
 	edit func(entries []string) []string
 	page func(pages []byte, pageSize int)
 }
@@ -171,11 +173,11 @@ func partC(dir, captureDir string) {
 	original := must(os.ReadFile(filepath.Join(captureDir, capture.ManifestFile)))("read manifest")
 	pages := must(os.ReadFile(filepath.Join(captureDir, capture.PagesFile)))("read pages")
 	cases := []tamper{
-		{name: "drop the manifest entry for page 100", edit: func(e []string) []string { return append(e[:99:99], e[100:]...) }},
-		{name: "list page 50 twice (in place of page 51)", edit: func(e []string) []string { e[50] = e[49]; return e }},
-		{name: "swap the entries for pages 120 and 121", edit: func(e []string) []string { e[119], e[120] = e[120], e[119]; return e }},
-		{name: "flip one byte in the image of page 200", page: func(p []byte, size int) { p[199*size+1000] ^= 0x01 }},
-		{name: "swap the images of pages 7 and 8", page: func(p []byte, size int) {
+		{name: "drop the manifest entry for page 100", want: "page 100: missing", edit: func(e []string) []string { return append(e[:99:99], e[100:]...) }},
+		{name: "list page 50 twice (in place of page 51)", want: "page 50: listed twice", edit: func(e []string) []string { e[50] = e[49]; return e }},
+		{name: "swap the entries for pages 120 and 121", want: "page 121: out of order", edit: func(e []string) []string { e[119], e[120] = e[120], e[119]; return e }},
+		{name: "flip one byte in the image of page 200", want: "capture page 200:", page: func(p []byte, size int) { p[199*size+1000] ^= 0x01 }},
+		{name: "swap the images of pages 7 and 8", want: "capture page 7:", page: func(p []byte, size int) {
 			a := append([]byte(nil), p[6*size:7*size]...)
 			copy(p[6*size:7*size], p[7*size:8*size])
 			copy(p[7*size:8*size], a)
@@ -194,7 +196,7 @@ func partC(dir, captureDir string) {
 			lines = append(lines[:3:3], entries...)
 			lines[2] = fmt.Sprintf("pages %d", len(entries))
 			manifestText = strings.Join(lines, "\n") + "\n"
-			if len(entries) < len(lines) {
+			if len(entries)*4096 < len(pageBytes) {
 				pageBytes = pageBytes[:len(entries)*4096]
 			}
 		}
@@ -211,7 +213,7 @@ func partC(dir, captureDir string) {
 		_, err := capture.Rebuild(target, out)
 		_, statErr := os.Stat(out)
 		fmt.Printf("  C%d %s\n    -> %v\n", i+1, c.name, err)
-		check(err != nil && errors.Is(statErr, os.ErrNotExist), fmt.Sprintf("C%d: the rebuild is refused and no output file is written", i+1))
+		check(err != nil && strings.Contains(err.Error(), c.want) && errors.Is(statErr, os.ErrNotExist), fmt.Sprintf("C%d: the rebuild is refused naming %q, and no output file is written", i+1, c.want))
 	}
 }
 
@@ -273,16 +275,19 @@ func copyMainFileOnly(from, to string) {
 }
 
 func queryString(ctx context.Context, path string, readOnly bool, query string) string {
-	uri := must(sqlitex.FileURI(path, nil))("uri")
+	values := url.Values{}
 	if readOnly {
-		uri += "?mode=ro"
+		values.Set("mode", "ro")
 	}
+	uri := must(sqlitex.FileURI(path, values))("uri")
 	db := must(sql.Open("sqlite", uri))("open")
-	defer db.Close()
 	db.SetMaxOpenConns(1)
 	var value string
 	if err := db.QueryRowContext(ctx, query).Scan(&value); err != nil {
-		return "error: " + err.Error()
+		fatal(query, err)
+	}
+	if err := db.Close(); err != nil {
+		fatal("close", err)
 	}
 	return value
 }

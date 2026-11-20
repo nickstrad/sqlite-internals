@@ -314,9 +314,10 @@ check ok: table events: same rows and values, read from the bytes and through SQ
   row 1: blob 4057 bytes, payload 4061 bytes (record header 4 + blob), local 4061, overflow pages 0
   row 2: blob 4058 bytes, payload 4062 bytes (record header 4 + blob), local 489, overflow pages 1
   row 3: blob 8149 bytes, payload 8153 bytes (record header 4 + blob), local 4061, overflow pages 1
-check ok: payload 4061 (= maxLocal) stays entirely on the leaf
-check ok: payload 4062 keeps only minLocal 489 bytes locally and spills 3573 to one overflow page
-check ok: payload 8153 keeps 4061 locally so its overflow exactly fills one page (4092 bytes)
+check ok: limit.db holds the three rows 1, 2 and 3
+check ok: row 1: payload 4061 (= maxLocal) stays entirely on the leaf
+check ok: row 2: payload 4062 keeps only minLocal 489 bytes on the leaf and spills 3573 to one overflow page
+check ok: row 3: payload 8153 keeps 4061 on the leaf so its overflow exactly fills one page (4092 bytes)
 check ok: local limit: census complete, page_count 7 and freelist_count 0 agree, 7 pages match dbstat
 
 == C. a freelist longer than one trunk page
@@ -369,7 +370,7 @@ check ok: F4: our parser returns an error, without panicking
     SQLite: integrity_check: *** in database main *** / Tree 2 page 2 cell 0: Offset 9 out of range 2260..4092 / Page 3: never used / Page 4: never used / (+1 more lines)
 check ok: F5: our parser returns an error, without panicking
   F6 row 1 payload size varint -> 0x7f
-    ours:   error: database file is malformed: page 3: 2 page(s) have no role: [3 4]
+    ours:   error: tree "t" (root 2): database file is malformed: page 2 offset 7: 1699 bytes of the cell content area belong to no cell or freeblock, the header reports 0 fragmented bytes
     SQLite: integrity_check: *** in database main *** / Tree 2 page 2 cell 0: Rowid 21 out of order / Fragmentation of 1699 bytes reported as 0 on page 2 / Page 3: never used / (+2 more lines)
 check ok: F6: our parser returns an error, without panicking
   F7 overflow page 3 points back to itself

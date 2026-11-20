@@ -299,19 +299,19 @@ check ok: the manifest comparison names the first differing page (page 1: the he
 == C. a damaged capture is refused, and the refusal names the page
   C1 drop the manifest entry for page 100
     -> manifest entry 100: page 100: missing (entry 100 lists page 101)
-check ok: C1: the rebuild is refused and no output file is written
+check ok: C1: the rebuild is refused naming "page 100: missing", and no output file is written
   C2 list page 50 twice (in place of page 51)
     -> manifest entry 51: page 50: listed twice (entries 50 and 51)
-check ok: C2: the rebuild is refused and no output file is written
+check ok: C2: the rebuild is refused naming "page 50: listed twice", and no output file is written
   C3 swap the entries for pages 120 and 121
     -> manifest entry 120: page 121: out of order (entry 120 should be page 120)
-check ok: C3: the rebuild is refused and no output file is written
+check ok: C3: the rebuild is refused naming "page 121: out of order", and no output file is written
   C4 flip one byte in the image of page 200
     -> capture page 200: image sha256 does not match the manifest
-check ok: C4: the rebuild is refused and no output file is written
+check ok: C4: the rebuild is refused naming "capture page 200:", and no output file is written
   C5 swap the images of pages 7 and 8
     -> capture page 7: image sha256 does not match the manifest
-check ok: C5: the rebuild is refused and no output file is written
+check ok: C5: the rebuild is refused naming "capture page 7:", and no output file is written
 
 == D. a database that is not at rest is refused, because its file alone is stale or torn
 D1. WAL mode: a child process commits one UPDATE and exits without closing its connection

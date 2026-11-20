@@ -398,8 +398,22 @@ func TestLocateCLIRespectsEnvAndPin(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(CLIEnv, fake)
-	if _, err := LocateCLI(ctx); err == nil {
-		t.Fatal("wrong source id accepted")
+	if _, err := LocateCLI(ctx); err == nil || errors.Is(err, ErrNoCLI) {
+		t.Fatal("wrong source id accepted or reported as no CLI:", err)
+	}
+}
+
+func TestLocateCLIReportsErrNoCLIOnlyWhenNothingIsFound(t *testing.T) {
+	empty := t.TempDir()
+	t.Setenv(CLIEnv, "")
+	t.Setenv(ToolsDirEnv, empty)
+	t.Setenv("PATH", empty)
+	if _, err := LocateCLI(context.Background()); !errors.Is(err, ErrNoCLI) {
+		t.Fatalf("got %v, want ErrNoCLI", err)
+	}
+	t.Setenv(CLIEnv, filepath.Join(empty, "missing"))
+	if _, err := LocateCLI(context.Background()); err == nil || errors.Is(err, ErrNoCLI) {
+		t.Fatalf("a missing $%s gave %v, want an error that is not ErrNoCLI", CLIEnv, err)
 	}
 }
 

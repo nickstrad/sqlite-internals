@@ -50,9 +50,9 @@ oracles: PRAGMA through the Go driver; pinned sqlite3 CLI .dbinfo
   text encoding number   1            -            1            true
   user version           30           30           30           true
   application id         1397836120   1397836120   1397836120   true
-  version-valid-for      32           -            -            true
+  version-valid-for      32           -            -            n/a
   SQLite version number  3053004      -            3053004      true
-check ok: every decoded header field equals SQLite's own report of it
+check ok: each of the 18 decoded header fields that has an oracle here (PRAGMA or .dbinfo) equals SQLite's own report of it; 1 field(s) have none (n/a)
 check ok: bytes 96-99 read 3053004 (the library that last wrote the file)
 check ok: bytes 18 and 19 are 2 and 2 in a WAL-mode file
 check ok: bytes 24-27 equal 92-95, so the in-header size at 28 is used
@@ -126,6 +126,8 @@ C2. three commits on ONE connection that do not touch page 1 (UPDATE one account
   commit 1 (-wal 4152 bytes): current vs base: no header byte changed
   commit 2 (-wal 8272 bytes): current vs base: no header byte changed
   commit 3 (-wal 12392 bytes): current vs base: no header byte changed
+check ok: WAL: each of the three UPDATEs changed one row and appended frames to the -wal
+check ok: after the checkpoint at close the database file differs from the base
 check ok: WAL: commits that do not write page 1 leave every header byte unchanged, even the change counter, before and after the checkpoint
 C3. steps 28, 29, 30 each on a NEW connection while a second idle connection stays open (so closing a writer does not checkpoint):
   step 28 on its own connection (-wal 82432 bytes):
@@ -151,6 +153,28 @@ C3. steps 28, 29, 30 each on a NEW connection while a second idle connection sta
 check ok: WAL: with another connection open, the file's page 1 still equals the base after three commits
 check ok: WAL: each new connection reads page 1 afresh and writes counter + 1, so the counter advances once per connection that writes page 1
 check ok: closing the last connection checkpointed page 1 into the file and removed the -wal
+C4. steps 28, 29, 30 on ONE connection, with PRAGMA shrink_memory before each step (it drops unused pages, page 1 included, from the connection's cache):
+  commit of step 28 (-wal 82432 bytes):
+    current vs previous commit: bytes 24-27 file change counter: 29 -> 30 (changed bytes 27)
+    current vs previous commit: bytes 28-31 database size in pages: 244 -> 251 (changed bytes 31)
+    current vs previous commit: bytes 32-35 first freelist trunk page: 82 -> 131 (changed bytes 35)
+    current vs previous commit: bytes 60-63 user version: 27 -> 28 (changed bytes 63)
+    current vs previous commit: bytes 92-95 version-valid-for: 29 -> 30 (changed bytes 95)
+  commit of step 29 (-wal 156592 bytes):
+    current vs previous commit: bytes 24-27 file change counter: 30 -> 31 (changed bytes 27)
+    current vs previous commit: bytes 28-31 database size in pages: 251 -> 259 (changed bytes 30,31)
+    current vs previous commit: bytes 32-35 first freelist trunk page: 131 -> 0 (changed bytes 35)
+    current vs previous commit: bytes 36-39 freelist page count: 1 -> 0 (changed bytes 39)
+    current vs previous commit: bytes 60-63 user version: 28 -> 29 (changed bytes 63)
+    current vs previous commit: bytes 92-95 version-valid-for: 30 -> 31 (changed bytes 95)
+  commit of step 30 (-wal 280192 bytes):
+    current vs previous commit: bytes 24-27 file change counter: 31 -> 32 (changed bytes 27)
+    current vs previous commit: bytes 28-31 database size in pages: 259 -> 270 (changed bytes 31)
+    current vs previous commit: bytes 32-35 first freelist trunk page: 0 -> 230 (changed bytes 35)
+    current vs previous commit: bytes 36-39 freelist page count: 0 -> 3 (changed bytes 39)
+    current vs previous commit: bytes 60-63 user version: 29 -> 30 (changed bytes 63)
+    current vs previous commit: bytes 92-95 version-valid-for: 31 -> 32 (changed bytes 95)
+check ok: WAL, one connection, page 1 dropped from the cache before each commit: the counter advances once per commit (30, 31, 32), so C1's constant counter comes from page 1 staying cached, not from the connection
 
 == D. bytes 18-19: switching journal mode rewrites the header
 base: rollback-mode recipe built to step 3; bytes 18,19 = 1,1
@@ -188,10 +212,10 @@ check ok: an in-header size of 0 is ignored by both
 
 == F. page size is stored in bytes 16-17; 65536 does not fit in two bytes and is stored as 1
   PRAGMA page_size=512   bytes 16-17 = 02 00 (stored 512), decoded 512, SQLite reports 512
-check ok: page size 512 decodes to what SQLite reports
+check ok: page size 512 is stored as 512 and decodes to the size asked for and to what SQLite reports
   PRAGMA page_size=4096  bytes 16-17 = 10 00 (stored 4096), decoded 4096, SQLite reports 4096
-check ok: page size 4096 decodes to what SQLite reports
+check ok: page size 4096 is stored as 4096 and decodes to the size asked for and to what SQLite reports
   PRAGMA page_size=65536 bytes 16-17 = 00 01 (stored 1), decoded 65536, SQLite reports 65536
-check ok: page size 65536 decodes to what SQLite reports
+check ok: page size 65536 is stored as 1 and decodes to the size asked for and to what SQLite reports
 
 HEADER OK

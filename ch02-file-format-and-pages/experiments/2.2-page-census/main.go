@@ -185,9 +185,20 @@ func printRoleCounts(c *dbfile.Census) int {
 }
 
 func census(path string) (*dbfile.File, *dbfile.Census) {
-	f := must(dbfile.Open(path))("parse " + filepath.Base(path))
+	image := must(os.ReadFile(path))("read " + filepath.Base(path))
+	f := must(dbfile.FromBytes(image))("parse " + filepath.Base(path))
 	c := must(f.Census())("census " + filepath.Base(path))
 	return f, c
+}
+
+func treeNamed(c *dbfile.Census, name string) dbfile.Tree {
+	for _, t := range c.Trees {
+		if t.Name == name {
+			return t
+		}
+	}
+	fatal("tree "+name, errors.New("not in the schema"))
+	return dbfile.Tree{}
 }
 
 func canonicalWrite(h hash.Hash, class string, text string) {
@@ -304,7 +315,6 @@ func partA(ctx context.Context, dir string) {
 		fatal("build", err)
 	}
 	f, c := census(path)
-	defer f.Close()
 	fmt.Printf("  page size %d, usable %d, page count %d (from the %s)\n", c.PageSize, c.UsableSize, c.PageCount, f.PageCountSource())
 	fmt.Println("  schema table (page 1), decoded by our record reader:")
 	for _, e := range c.Schema {
@@ -335,7 +345,7 @@ func partA(ctx context.Context, dir string) {
 	fmt.Println("  overflow chains of the documents table:")
 	var chains, overflowPages, longest int
 	var shown int
-	err := f.WalkTable(c.SortedTrees()[2].RootPage, func(row dbfile.Row) error {
+	err := f.WalkTable(treeNamed(c, "documents").RootPage, func(row dbfile.Row) error {
 		if len(row.OverflowPages) == 0 {
 			return nil
 		}
@@ -414,7 +424,13 @@ func partB(ctx context.Context, dir string) {
 		"INSERT INTO b VALUES(2, zeroblob(4058))",
 		"INSERT INTO b VALUES(3, zeroblob(8149))")
 	f, c := census(path)
-	defer f.Close()
+	type split struct {
+		payload    uint64
+		local      int
+		overflow   int
+		lastFilled int
+	}
+	splits := map[int64]split{}
 	err := f.WalkTable(2, func(row dbfile.Row) error {
 		page := must(f.BTreePage(row.Page))("page")
 		for i := range page.CellCount {
@@ -423,15 +439,22 @@ func partB(ctx context.Context, dir string) {
 				continue
 			}
 			fmt.Printf("  row %d: blob %d bytes, payload %d bytes (record header 4 + blob), local %d, overflow pages %d\n", row.Rowid, len(row.Values[1].Bytes), cell.PayloadSize, cell.LocalSize, len(row.OverflowPages))
+			chain := must(f.OverflowChain(row.Page, cell))("chain")
+			s := split{payload: cell.PayloadSize, local: cell.LocalSize, overflow: len(chain)}
+			if len(chain) > 0 {
+				s.lastFilled = chain[len(chain)-1].Payload
+			}
+			splits[row.Rowid] = s
 		}
 		return nil
 	})
 	if err != nil {
 		fatal("walk", err)
 	}
-	check(dbfile.LocalPayloadSize(4096, dbfile.TableLeaf, 4061) == 4061, "payload 4061 (= maxLocal) stays entirely on the leaf")
-	check(dbfile.LocalPayloadSize(4096, dbfile.TableLeaf, 4062) == minLocal, fmt.Sprintf("payload 4062 keeps only minLocal %d bytes locally and spills 3573 to one overflow page", minLocal))
-	check(dbfile.LocalPayloadSize(4096, dbfile.TableLeaf, 8153) == 4061, "payload 8153 keeps 4061 locally so its overflow exactly fills one page (4092 bytes)")
+	check(len(splits) == 3, "limit.db holds the three rows 1, 2 and 3")
+	check(splits[1] == split{4061, 4061, 0, 0}, "row 1: payload 4061 (= maxLocal) stays entirely on the leaf")
+	check(splits[2] == split{4062, minLocal, 1, 4062 - minLocal}, fmt.Sprintf("row 2: payload 4062 keeps only minLocal %d bytes on the leaf and spills %d to one overflow page", minLocal, 4062-minLocal))
+	check(splits[3] == split{8153, 4061, 1, 4092}, "row 3: payload 8153 keeps 4061 on the leaf so its overflow exactly fills one page (4092 bytes)")
 	checkAgainstSQLite(ctx, path, c, "local limit")
 }
 
@@ -443,8 +466,7 @@ func partC(ctx context.Context, dir string) {
 		"CREATE TABLE big(id INTEGER PRIMARY KEY, v BLOB)",
 		"WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 600) INSERT INTO big SELECT i, zeroblob(1000) FROM n ORDER BY i",
 		"DELETE FROM big")
-	f, c := census(path)
-	defer f.Close()
+	_, c := census(path)
 	fmt.Printf("  page size 1024: a trunk holds at most usable/4-2 = %d leaf numbers\n", c.UsableSize/4-2)
 	for _, trunk := range c.FreelistTrunks {
 		fmt.Printf("  trunk page %d lists %d leaves, next trunk is the next in this list\n", trunk, c.Page(trunk).CellCount)
@@ -463,7 +485,6 @@ func partD(ctx context.Context, dir string) {
 		"CREATE TABLE big(id INTEGER PRIMARY KEY, v BLOB)",
 		"WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 400) INSERT INTO big SELECT i, zeroblob(900) FROM n ORDER BY i")
 	f, c := census(path)
-	defer f.Close()
 	var maps []int
 	for _, p := range c.Pages {
 		if p.Role == dbfile.RolePointerMap {
@@ -522,8 +543,14 @@ func partE(ctx context.Context, dir string) {
 	fmt.Printf("  built by editing a 2-page database (page size 65536): in-header size %d pages, page 3 a freelist trunk listing pages 4..%d except %d; the rest of the file is a hole (sparse)\n", pages, pages, lock)
 	fmt.Printf("  file size %d bytes (1 GiB = 1073741824); lock-byte page = 1073741824/65536 + 1 = %d\n", int64(pages)*pageSize, lock)
 	fmt.Printf("INFO: blocks on disk: %s\n", diskUsage(path))
-	f, c := census(path)
-	defer f.Close()
+	f := must(dbfile.Open(path))("parse " + filepath.Base(path))
+	c, err := f.Census()
+	if closeErr := f.Close(); closeErr != nil {
+		fatal("close parsed file", closeErr)
+	}
+	if err != nil {
+		fatal("census "+filepath.Base(path), err)
+	}
 	printRoleCounts(c)
 	check(c.Page(lock).Role == dbfile.RoleLockByte && c.Complete() == nil, fmt.Sprintf("page %d is counted as the lock-byte page, not as lost", lock))
 	db := openSQLite(path, true)
@@ -559,8 +586,7 @@ func partF(ctx context.Context, dir string) {
 		"INSERT INTO t VALUES(3, zeroblob(10000))",
 		"DELETE FROM t WHERE id = 3")
 	good := must(os.ReadFile(base))("read")
-	f, c := census(base)
-	f.Close()
+	_, c := census(base)
 	fmt.Printf("  base: %d pages; table t root 2; roles: ", c.PageCount)
 	var roles []string
 	for _, p := range c.Pages {
@@ -627,7 +653,9 @@ func parseAll(image []byte) (verdict string) {
 	if err == nil {
 		for _, e := range c.Schema {
 			if e.Type == "table" && e.RootPage > 0 {
-				err = f.WalkTable(e.RootPage, func(dbfile.Row) error { return nil })
+				if err = f.WalkTable(e.RootPage, func(dbfile.Row) error { return nil }); err != nil {
+					break
+				}
 			}
 		}
 	}

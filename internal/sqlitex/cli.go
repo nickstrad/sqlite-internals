@@ -111,8 +111,10 @@ func LocateCLI(ctx context.Context) (CLI, error) {
 		}
 		return cli, nil
 	}
-	return CLI{}, errors.New("no sqlite3 CLI found ($SQLITE3_BIN, $COURSE_TOOLS_DIR/bin or _tools/bin, PATH); run: go run ./cmd/course build-tools")
+	return CLI{}, ErrNoCLI
 }
+
+var ErrNoCLI = errors.New("no sqlite3 CLI found ($SQLITE3_BIN, $COURSE_TOOLS_DIR/bin or _tools/bin, PATH); run: go run ./cmd/course build-tools")
 
 // QuerySourceID runs sqlite3 against :memory: and returns SELECT sqlite_source_id().
 func (c CLI) QuerySourceID(ctx context.Context) (string, error) {
