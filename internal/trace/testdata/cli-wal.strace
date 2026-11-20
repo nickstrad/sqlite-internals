@@ -1,0 +1,27 @@
+4242 openat(AT_FDCWD</w>, "t.db", O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC, 0644) = 3</w/t.db>
+4242 write(1<pipe:[1]>, "trace.xOpen(t.db,flags=0x106)", 29) = 29
+4242 write(1<pipe:[1]>, " -> SQLITE_OK", 13) = 13
+4242 write(1<pipe:[1]>, ", outFlags=0x106\n", 17) = 17
+4242 write(1<pipe:[1]>, "trace.xLock(t.db,SHARED)", 24) = 24
+4242 fcntl(3</w/t.db>, F_SETLK, {l_type=F_RDLCK, l_whence=SEEK_SET, l_start=1073741824, l_len=1}) = 0
+4242 fcntl(3</w/t.db>, F_SETLK, {l_type=F_RDLCK, l_whence=SEEK_SET, l_start=1073741826, l_len=510}) = 0
+4242 fcntl(3</w/t.db>, F_SETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=1073741824, l_len=1}) = 0
+4242 write(1<pipe:[1]>, " -> SQLITE_OK\n", 14) = 14
+4242 write(1<pipe:[1]>, "wal\n", 4) = 4
+4242 openat(AT_FDCWD</w>, "/w/t.db-wal", O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC, 0644) = 4</w/t.db-wal>
+4242 write(1<pipe:[1]>, "trace.xWrite(t.db-wal,n=24,ofst=32)", 35) = 35
+4242 pwrite64(4</w/t.db-wal>, "\0\0\0\2\0\0\0\0"..., 24, 32) = 24
+4242 write(1<pipe:[1]>, " -> SQLITE_OK\n", 14) = 14
+4242 write(1<pipe:[1]>, "trace.xSync(t.db-wal,FULL)", 26) = 26
+4242 fsync(4</w/t.db-wal>)          = 0
+4242 write(1<pipe:[1]>, " -> 0\n", 6) = 6
+4242 write(1<pipe:[1]>, "trace.xShmMap(t.db,iRegion=0,szRegion=32768,isWrite=0,*)", 56) = 56
+4242 openat(AT_FDCWD</w>, "/w/t.db-shm", O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC, 0644) = 5</w/t.db-shm>
+4242 ftruncate(5</w/t.db-shm>, 3) = 0
+4242 mmap(NULL, 32768, PROT_READ|PROT_WRITE, MAP_SHARED, 5</w/t.db-shm>, 0) = 0x7f0000000000
+4242 write(1<pipe:[1]>, " -> SQLITE_OK\n", 14) = 14
+4242 write(1<pipe:[1]>, "trace.xDelete(\"/w/t.db-wal\",0)", 31) = 31
+4242 unlink("/w/t.db-wal")             = 0
+4242 write(1<pipe:[1]>, " -> SQLITE_OK\n", 14) = 14
+4242 close(4</w/t.db-wal>)             = 0
+4242 +++ exited with 0 +++

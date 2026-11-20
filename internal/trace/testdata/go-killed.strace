@@ -1,0 +1,17 @@
+100 openat(AT_FDCWD, "/w/g.db", O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC, 0644) = 7
+101 openat(AT_FDCWD, "/w/other", O_RDONLY) = -1 ENOENT (No such file or directory)
+100 pwrite64(7, "SQLite format 3\0"..., 4096, 0 <unfinished ...>
+101 futex(0x1, FUTEX_WAKE, 1) = 1
+100 <... pwrite64 resumed>) = 4096
+100 fdatasync(7 <unfinished ...>
+101 pread64(7, ""..., 100, 0) = 100
+100 <... fdatasync resumed>) = 0
+100 --- SIGURG {si_signo=SIGURG, si_code=SI_TKILL, si_pid=100, si_uid=0} ---
+100 fcntl(7, F_GETLK, {l_type=F_UNLCK, l_whence=SEEK_SET, l_start=128, l_len=1}) = 0
+100 fcntl(7, F_SETFD, FD_CLOEXEC) = 0
+100 openat(AT_FDCWD, "/w/g.db-wal", O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC, 0644) = 8
+100 unlinkat(AT_FDCWD</w>, "g.db-journal", 0) = 0
+100 close(8) = 0
+100 fsync(7)                           = ?
+101 +++ killed by SIGKILL +++
+100 +++ killed by SIGKILL +++

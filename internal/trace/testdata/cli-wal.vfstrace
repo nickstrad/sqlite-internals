@@ -1,0 +1,15 @@
+trace.enabled_for("unix")
+trace.xFullPathname("t.db") -> SQLITE_OK, out="/w/t.db"
+trace.xOpen(t.db,flags=0x106) -> SQLITE_OK, outFlags=0x106
+trace.xRead(t.db,n=100,ofst=0) -> SQLITE_IOERR_SHORT_READ
+trace.xRandomness(44)
+trace.xFileControl(t.db,PRAGMA,[journal_mode,wal]) -> SQLITE_NOTFOUND
+trace.xLock(t.db,SHARED) -> SQLITE_OK
+trace.xFileSize(t.db) -> SQLITE_OK, size=0
+wal
+trace.xShmLock(t.db,ofst=4(READ1),n=1,LOCK|SHARED) -> SQLITE_OK
+trace.xShmBarrier(t.db)
+trace.xWrite(t.db-wal,n=4096,ofst=56) -> SQLITE_OK
+trace.xSync(t.db-wal,FULL) -> 0
+trace.xTruncate(t.db,8192) -> 0
+trace.xDelete("/w/t.db-wal",0) -> SQLITE_OK
