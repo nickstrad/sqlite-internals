@@ -1,0 +1,118 @@
+sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
+INFO: work dir _work/1.3
+recipe: seed=1 steps=30 journal_mode=wal (index created at step 5, settings: page_size=4096 auto_vacuum=NONE encoding=UTF-8 application_id=1397836120 user_version=0 journal_mode=wal; synchronous=FULL foreign_keys=ON secure_delete=ON cache_size=-2000 wal_autocheckpoint=1000 busy_timeout=5000ms)
+  step 0: schema=3 inserts=0 updates=0 deletes=0 indexes=0
+  step 1: schema=0 inserts=65 updates=6 deletes=0 indexes=0
+  step 2: schema=0 inserts=65 updates=3 deletes=0 indexes=0
+  step 3: schema=0 inserts=53 updates=5 deletes=5 indexes=0
+  step 4: schema=0 inserts=48 updates=6 deletes=1 indexes=0
+  step 5: schema=0 inserts=39 updates=5 deletes=0 indexes=1
+  step 6: schema=0 inserts=52 updates=3 deletes=10 indexes=0
+  step 7: schema=0 inserts=46 updates=4 deletes=0 indexes=0
+  step 8: schema=0 inserts=60 updates=2 deletes=1 indexes=0
+  step 9: schema=0 inserts=53 updates=4 deletes=5 indexes=0
+  step 10: schema=0 inserts=57 updates=5 deletes=0 indexes=0
+  step 11: schema=0 inserts=50 updates=4 deletes=0 indexes=0
+  step 12: schema=0 inserts=42 updates=5 deletes=11 indexes=0
+  step 13: schema=0 inserts=50 updates=5 deletes=0 indexes=0
+  step 14: schema=0 inserts=58 updates=4 deletes=0 indexes=0
+  step 15: schema=0 inserts=49 updates=3 deletes=9 indexes=0
+  step 16: schema=0 inserts=48 updates=5 deletes=1 indexes=0
+  step 17: schema=0 inserts=67 updates=5 deletes=0 indexes=0
+  step 18: schema=0 inserts=44 updates=6 deletes=7 indexes=0
+  step 19: schema=0 inserts=54 updates=3 deletes=0 indexes=0
+  step 20: schema=0 inserts=40 updates=3 deletes=1 indexes=0
+  step 21: schema=0 inserts=45 updates=6 deletes=5 indexes=0
+  step 22: schema=0 inserts=48 updates=5 deletes=0 indexes=0
+  step 23: schema=0 inserts=50 updates=3 deletes=0 indexes=0
+  step 24: schema=0 inserts=39 updates=4 deletes=7 indexes=0
+  step 25: schema=0 inserts=49 updates=5 deletes=0 indexes=0
+  step 26: schema=0 inserts=56 updates=3 deletes=0 indexes=0
+  step 27: schema=0 inserts=39 updates=4 deletes=9 indexes=0
+  step 28: schema=0 inserts=61 updates=5 deletes=1 indexes=0
+  step 29: schema=0 inserts=44 updates=4 deletes=0 indexes=0
+  step 30: schema=0 inserts=67 updates=4 deletes=9 indexes=0
+
+== R0: rebuild the recipe twice ==
+INFO: one build of 30 steps took 896ms
+run 1 (run-1/recipe.db): 270 pages, sha256 365695c2ef73fee65082304bd6a6389161e329c276b0ea0e7001d9850cb4fc89
+run 2 (run-2/elsewhere/another-name.db): 270 pages, sha256 365695c2ef73fee65082304bd6a6389161e329c276b0ea0e7001d9850cb4fc89
+check ok: two builds of the recipe in different directories under different names are byte-identical
+per-step state hashes (sha256 of the closed file after step k):
+  step  0 bc7ece7b7dd702aa4c6bd7f8b6bd8fece69aaa792b098db34c36616f071a70e0
+  step  1 738802a39252d85c8c8c85aa7d61d8cc2a9fc641f3b31bbd8befe4a5dcc97133
+  step  2 8a35d3f789539eb161a525843af00301ff54eaece89be86f99e14b1610cc44a5
+  step  3 0261c8e50c8b065876d6c97e8dba350e01c8268b1ed55bed76991667fbf6177c
+  step  4 8d1353504ba05101e8f40d0e4a157d9fa1dbf7746cdc02e423659f78ff557e2a
+  step  5 9a783bf363d34706d254d16aa3ab6526cde728e50693601ad01551c191cca168
+  step  6 f8d0c5fd4aa4039f50ad5c4e9bac2e579a49069c3dfccb32fefe7da374252507
+  step  7 729d61d9603306fc8e0108f342b07c8da014f85cf0f2e20d5f78d97e97f8f07f
+  step  8 01a3d0b8d408ba9a5e9a5a42e3196ae816442ec83b53dd9e704d6c560b2e23ba
+  step  9 1bcfad324da7c5f65f6585da2efb46a8bfd80527428478bcb321f646060c8f06
+  step 10 2045356ca72a44ed84861aac5205e344daf695db1092cc2ce18c4afd95ca736c
+  step 11 119b08501ea254ff6f19a5eff745e00d31662192543b57773a08784f9c86a47a
+  step 12 6a09c5ce77b7fbdd5bd305d2b577bbdcec31cdde2d9b12c23edb47242dc62e76
+  step 13 1442c94dc8aa874a5fbe924c81db51cfc957097948d7f2654d55ee49ec8537b1
+  step 14 2b1045503ce63b18994ee31adb118d1f44872b31b33fcdf8ab804822506de3e3
+  step 15 1a618335ef3e7f3b60c5bb738ee95ffdaebfaba8cb733538764e2a1b8cf7cb4d
+  step 16 2bf0908354980fc0794c31be6de39234e26433123b7812bd859a463e959e0379
+  step 17 4b6e4713a4093c08fac2efcbc848b8939b3d26e6e1425e76fe917c45952b52fc
+  step 18 a5070333e85a4651119d9f5c010c6aa0fd4a552e7bcbd780a782a3d797b26440
+  step 19 53a2dd7ea67b3bb5fc6d596c7f5d6d539405da617a6803406fb494470a1d5e24
+  step 20 a69b18de710737c329d8dc0e250234bd5da4e89e180bef5c2fb8539b532e157a
+  step 21 b2bd20e0f5701abc16ea89c0dfde8017989cff70acf2e727e1fefe65acdb4560
+  step 22 fd03b1029f252a4f9d385298d8c276b4180d92bfc8ce5487c65fcefe26f84c76
+  step 23 aa0838c676799453d29945ee5dc25803f3273332439892b714f7f3d26d0190dd
+  step 24 a84e66e865ca93951624e5fc1da75e8c9611b147c2d3fcb4825388e1dc6320ec
+  step 25 de90f5e9d7dbde1d14a3c5c7646325e8c1b0c30399cbda8d340cd4e0b9013ed8
+  step 26 d448dbc804b6b2ef9f38523050fbecc5938c8228364bf8ee0bf48dea44bb2f6d
+  step 27 58bc2a0b98f48f9b05afc74238c6b1489f9395c38fd5da142360beb035287a75
+  step 28 6c15e4d39f7014155d63ac3d3b8cdbf3718007417df51c8c91a2d3dbe9669fcc
+  step 29 fc8d112861eeccab0621a85970b1c7fd8697fac775545eff6b124f67ff0e81bd
+  step 30 365695c2ef73fee65082304bd6a6389161e329c276b0ea0e7001d9850cb4fc89
+check ok: the per-step hash lists of the two runs are identical (31 states)
+check ok: every step leaves a different file, so a hash names exactly one step
+check ok: recipe.StepHashes (the cached list later chapters use) equals the list just built
+lookup: a database built to step 12 is step 12 (exact bytes)
+check ok: recipe.MatchStep names the step a database equals
+same recipe in rollback mode (journal_mode=delete): sha256 0b5b4111fb9946325ad7ffa859b68b1394b04f824a274b0d770697bd16b71d57
+check ok: the rollback-mode recipe also rebuilds byte for byte at every step
+WAL build vs rollback build of the same recipe: differ: first differing page 1, 1 page(s) differ [1], page 1 bytes [18 19 27 95]
+
+== broken variants: recipe to step 6, then one extra transaction, each run twice into fresh files ==
+INFO: random sha256 run 1 52403224e037bb2ee8c4cb4847aebff0862e823334368bcd1dc4ab0bffd1cefb, run 2 5258627236df3bcf017dca0bc7c433f072e79e2529ecd29606d3768f9d447bd3
+1. SQL random() in a value: differ: first differing page 59, 1 page(s) differ [59]
+check ok: SQL random() makes two runs differ
+INFO: timestamp sha256 run 1 16dc578cec8994c6d57a0372e66fd8b26b9509363b19ccd4452c26184065fedf, run 2 16dc578cec8994c6d57a0372e66fd8b26b9509363b19ccd4452c26184065fedf, run 3 39a811f446fad2953f8a44be0976cd91f87717d66d37fc3f4e5d3e36b11c2a0b
+2. current_timestamp in a value, two runs inside one wall-clock second: identical
+   current_timestamp in a value, third run one second later: differ: first differing page 59, 1 page(s) differ [59]
+check ok: current_timestamp makes runs differ once the wall clock's second changes (its resolution is one second, so two fast runs can still match)
+INFO: unordered sha256 run 1 0b1cc51179d692e35f77084f33e6392f68af459677f03f61b7aaeda2e0d96273, run 2 0b1cc51179d692e35f77084f33e6392f68af459677f03f61b7aaeda2e0d96273
+3. INSERT ... SELECT without ORDER BY (rowids from scan order), same plan twice: identical
+   the same statement, run 2 with a different scan order (PRAGMA reverse_unordered_selects=ON): differ: first differing page 29, 1 page(s) differ [29]
+   with ORDER BY id, run 2 with reverse_unordered_selects=ON: identical
+check ok: FINDING: an unordered INSERT ... SELECT run twice on the same build with the same plan gives identical files
+check ok: an unordered INSERT ... SELECT changes the file when the scan order changes; ORDER BY removes the dependence
+INFO: batches wal-secure-delete-true sha256 one-per-step 50b1b004498b38967ea38d65657cb7fd39a206735ee24ed80189d73280e2d64e, merged 50b1b004498b38967ea38d65657cb7fd39a206735ee24ed80189d73280e2d64e
+4. steps 0-6 on one connection, steps 2+3 and 4+5 each committed as one transaction instead of two:
+   WAL mode, recipe settings (secure_delete=ON): identical
+INFO: batches wal-secure-delete-false sha256 one-per-step d54533c2ebd389e9ae53009cf3fa8a0f60fbabf3081379d4dd1adf5875b8ef4b, merged e358971c4037b61c6bc8813ca8cd14334670892b821e34776f12b9230e6b279c
+   WAL mode, secure_delete=OFF: differ: first differing page 24, 2 page(s) differ [24 28]
+     page 24: 357 bytes (b-tree page, unallocated space and freeblocks)
+     page 28: 1207 bytes (b-tree page, unallocated space and freeblocks)
+INFO: batches delete-secure-delete-true sha256 one-per-step 575d9182d7fb04693ee2c9b68711b568851d3ebd3617bcd50cb443c8582b0aa8, merged f5f792baf06711182a7cc105ef079f2b1328b0c968bec0cb5df9b475674e0d95
+   rollback mode, secure_delete=ON: differ: first differing page 1, 1 page(s) differ [1], page 1 bytes [27 95]
+check ok: FINDING: in WAL mode on one connection with secure_delete=ON, different transaction batches give identical files
+check ok: with secure_delete=OFF different batches differ, and only in bytes no cell uses (stale content left in unallocated space, freeblocks or freelist pages)
+check ok: in rollback mode different batches differ, and with secure_delete=ON only in the change counter (it counts commits)
+INFO: rowid sha256 run 1 0cbbd58632d00c62d8f4dbcb58c243b130f69be8a667af9d333fb0891aea0d58, run 2 a17ee7bfdd0e18e254e08bfe7b6dd400a076f0cbfecba51be3c26395591f8b8b
+5. an insert without an id after rowid 9223372036854775807 (SQLite picks a random unused rowid): differ: first differing page 29, 1 page(s) differ [29]
+check ok: rowid assignment past the maximum rowid makes two runs differ
+
+== a source of variation the outline did not list: connection sessions ==
+6. WAL mode, steps 0-6 one connection per step vs one connection for all steps: differ: first differing page 1, 1 page(s) differ [1], page 1 bytes [27 95]
+   rollback mode, the same comparison: identical
+check ok: FINDING: in WAL mode the number of connection sessions changes the file, and only the change counter (bytes 24-27 and 92-95)
+check ok: in rollback mode the number of connection sessions does not change the file
+
+RECIPE REBUILD OK
