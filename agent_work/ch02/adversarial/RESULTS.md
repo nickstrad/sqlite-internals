@@ -19,3 +19,10 @@ Run 1 — 2026-11-20, on the Opus build with Neon's comments, `run-all.sh`. Raw 
 | CAP-04 | capture a WAL DB while a live connection holds an open write tx after wal_checkpoint(TRUNCATE) (-wal=0 bytes, -shm=32768 bytes) | capture refuses an unclosed database whose -wal and -shm side files are live (OUTLINE 2.3) | -wal=0 bytes, -shm=32768 bytes, CheckAtRest=<nil>, capture.Pages_err=<nil> |
 | CAP-05 | trigger mid-capture WAL write during capture.Pages (hit on attempt 1) | failed capture.Pages removes partial/stale pages.bin and manifest.txt from target dir | err="database changed during the capture: database is not at rest: _work/adv-ch02/manifest-capture/race-1.db: -wal holds 32 bytes of frames not yet checkpoint |
 | CAP-07 | capture.Pages on a closed, valid SQLite database containing a WITHOUT ROWID table | R1 capture succeeds on any closed valid SQLite database (integrity_check=ok) | sqlite_ic="ok", capture.Pages_err=tree "wr" (root 2): database file is malformed: page 2: root of table "wr" is a index-leaf page |
+
+Run 2 — after the Opus repair round (7690293): 33 HELD, 3 BROKEN (`results-run2.txt`).
+The repair report (`../REPAIR-REPORT.md`) says for each run-1 finding whether it was fixed or answered. Still BROKEN in run 2:
+
+- HDR-03 — WAL mode on ONE connection: 3 page-1 commits separated by PRAGMA shrink_memory or cache_size=2 scan
+- HDR-06 — negative user_version/application_id/default_cache_size (-1,-1,-100) + all 3 encodings x 3 auto_vacuum modes
+- CAP-04 — capture a WAL DB while a live connection holds an open write tx after wal_checkpoint(TRUNCATE) (-wal=0 bytes, -shm=32768 bytes)
