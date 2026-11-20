@@ -8,6 +8,9 @@ import (
 	"syscall"
 )
 
+// diskUsage reports the actual disk blocks allocated for path on Unix systems
+// (blocks are counted in 512-byte units in syscall.Stat_t), demonstrating that
+// the > 1 GiB test file in part E is sparse.
 func diskUsage(path string) string {
 	info, err := os.Stat(path)
 	if err != nil {

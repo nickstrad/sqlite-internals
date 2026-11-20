@@ -1,3 +1,12 @@
+// Experiment 2.3 demonstrates Rebuild Ladder rung R1: capturing every page of
+// the closed R0 database with internal/capture into pages.bin plus a per-page
+// SHA-256 manifest, rebuilding a byte-identical (E1) database from the capture
+// alone, refusing five kinds of tampered captures with the offending page named,
+// and refusing databases that are not at rest (uncheckpointed -wal or hot -journal).
+//
+// Run from the repo root:
+//
+//	go run ./ch02-file-format-and-pages/experiments/2.3-page-manifest
 package main
 
 import (
@@ -221,6 +230,11 @@ func runChild(mode, path string) int {
 	return 0
 }
 
+// childLeave runs in a separate process that leaves the database not at rest
+// and exits with status 3 without closing its SQLite handle. In WAL mode it
+// commits one UPDATE so frames remain in -wal; in rollback mode it sets a tiny
+// cache_size=10 so updating every document spills dirty pages to the database
+// file and syncs a hot -journal header (src/pager.c:1494-1501, 4377) before exit.
 func childLeave(mode, path string) {
 	ctx := context.Background()
 	r := recipe.Default()

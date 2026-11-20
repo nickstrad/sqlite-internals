@@ -16,6 +16,7 @@ func image(pages ...byte) []byte {
 	return out
 }
 
+// TestCompareImages verifies E1Bytes comparison for identical, differing, and differently sized images.
 func TestCompareImages(t *testing.T) {
 	a := image('a', 'b', 'c', 'd')
 	if r := CompareImages(a, image('a', 'b', 'c', 'd'), 512); !r.Equal || r.Level != E1Bytes || r.FirstDifferingPage != 0 {
@@ -34,6 +35,7 @@ func TestCompareImages(t *testing.T) {
 	}
 }
 
+// TestCompareFilesAndHash checks CompareFiles, FileSHA256, and error reporting on missing files.
 func TestCompareFilesAndHash(t *testing.T) {
 	dir := t.TempDir()
 	a, b := filepath.Join(dir, "a"), filepath.Join(dir, "b")
@@ -60,6 +62,7 @@ func manifest(pages ...int) Manifest {
 	return m
 }
 
+// TestManifestRoundTrip verifies manifest serialization, parsing, and rejection of malformed manifest inputs.
 func TestManifestRoundTrip(t *testing.T) {
 	m := manifest(1, 2, 3)
 	parsed, err := ParseManifest(strings.NewReader(m.Text()))
@@ -81,6 +84,7 @@ func TestManifestRoundTrip(t *testing.T) {
 	}
 }
 
+// TestCheckSequenceNamesThePage verifies missing, duplicate, and out-of-order entries report the offending page number.
 func TestCheckSequenceNamesThePage(t *testing.T) {
 	cases := []struct {
 		pages []int
@@ -104,6 +108,7 @@ func TestCheckSequenceNamesThePage(t *testing.T) {
 	}
 }
 
+// TestCompareManifests checks entry-by-entry manifest diffing for image, role, length, and page-size differences.
 func TestCompareManifests(t *testing.T) {
 	a := manifest(1, 2, 3, 4)
 	if d := CompareManifests(a, manifest(1, 2, 3, 4)); !d.Equal {

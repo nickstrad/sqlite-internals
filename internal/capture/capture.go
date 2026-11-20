@@ -1,3 +1,6 @@
+// Package capture implements Rebuild Ladder rung R1: capturing every page of
+// a closed SQLite database into raw page images plus a per-page hash manifest,
+// and rebuilding a verified database file from that capture alone.
 package capture
 
 import (
@@ -12,24 +15,36 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/equal"
 )
 
+// Standard file names written inside a rung R1 capture directory.
 const (
+	// ManifestFile holds the serialized equal.Manifest text listing every page's role and SHA-256.
 	ManifestFile = "manifest.txt"
-	PagesFile    = "pages.bin"
+	// PagesFile holds the raw page images concatenated in 1..N page order.
+	PagesFile = "pages.bin"
 )
 
+// ErrNotAtRest is wrapped by NotAtRestError when a database has uncheckpointed
+// WAL frames or a hot rollback journal.
 var ErrNotAtRest = errors.New("database is not at rest")
 
+// NotAtRestError explains why dbPath cannot safely be captured as a standalone file.
 type NotAtRestError struct {
 	Path   string
 	Reason string
 }
 
+// Error formats the sentinel error, database path, and specific sidecar reason.
 func (e *NotAtRestError) Error() string {
 	return fmt.Sprintf("%s: %s: %s", ErrNotAtRest, e.Path, e.Reason)
 }
 
+// Unwrap returns ErrNotAtRest for errors.Is matching.
 func (e *NotAtRestError) Unwrap() error { return ErrNotAtRest }
 
+// CheckAtRest verifies that dbPath is complete on its own: no non-empty -wal
+// file and no hot -journal file. A zero-byte -wal (after TRUNCATE checkpoint or
+// PERSIST_WAL) and a zero-byte or zero-header -journal (TRUNCATE/PERSIST modes)
+// are accepted as at rest.
 func CheckAtRest(dbPath string) error {
 	if _, err := os.Stat(dbPath); err != nil {
 		return err
@@ -51,6 +66,9 @@ func CheckAtRest(dbPath string) error {
 	return nil
 }
 
+// hotJournal mirrors SQLite's hasHotJournal test (src/pager.c:5180): a rollback
+// journal is hot when it exists, is non-empty, and its first header byte is
+// non-zero (PERSIST mode zeroes the header on commit).
 func hotJournal(path string) (bool, int64, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -74,6 +92,7 @@ func hotJournal(path string) (bool, int64, error) {
 	return first[0] != 0, info.Size(), nil
 }
 
+// BuildManifest runs a complete page census on f and hashes every page 1..N.
 func BuildManifest(f *dbfile.File) (equal.Manifest, error) {
 	census, err := f.Census()
 	if err != nil {
@@ -93,6 +112,10 @@ func BuildManifest(f *dbfile.File) (equal.Manifest, error) {
 	return m, nil
 }
 
+// Pages captures a closed database at dbPath into dir as pages.bin plus
+// manifest.txt. It refuses databases that are not at rest or whose byte size
+// disagrees with PageCount*PageSize, and re-checks at-rest status, size, and
+// mtime afterwards to catch a writer that started mid-capture.
 func Pages(dbPath, dir string) (equal.Manifest, error) {
 	if err := CheckAtRest(dbPath); err != nil {
 		return equal.Manifest{}, err
@@ -163,6 +186,7 @@ func writePages(f *dbfile.File, path string, m equal.Manifest) error {
 	return out.Close()
 }
 
+// ReadManifest opens and parses ManifestFile inside capture directory dir.
 func ReadManifest(dir string) (equal.Manifest, error) {
 	f, err := os.Open(filepath.Join(dir, ManifestFile))
 	if err != nil {
@@ -172,13 +196,20 @@ func ReadManifest(dir string) (equal.Manifest, error) {
 	return equal.ParseManifest(f)
 }
 
+// PageError reports a page image inside pages.bin that failed manifest verification.
 type PageError struct {
 	Page    int
 	Problem string
 }
 
+// Error formats the offending capture page number and verification failure.
 func (e *PageError) Error() string { return fmt.Sprintf("capture page %d: %s", e.Page, e.Problem) }
 
+// Rebuild reconstructs a database file at outPath from a capture directory
+// alone. It validates the manifest sequence, refuses stale sidecar files next
+// to outPath, verifies every page's SHA-256 while streaming into a temporary
+// file, fsyncs, and atomically renames into place; on any failure no output
+// file is left behind.
 func Rebuild(dir, outPath string) (equal.Manifest, error) {
 	m, err := ReadManifest(dir)
 	if err != nil {
@@ -190,6 +221,8 @@ func Rebuild(dir, outPath string) (equal.Manifest, error) {
 	if m.PageSize < dbfile.MinPageSize || m.PageSize > dbfile.MaxPageSize || m.PageSize&(m.PageSize-1) != 0 {
 		return m, fmt.Errorf("manifest page size %d is not a valid page size", m.PageSize)
 	}
+	// Refuse to write beside an existing -wal, -journal, or -shm because SQLite
+	// would replay or roll back that sidecar against the freshly rebuilt file.
 	for _, suffix := range []string{"-wal", "-journal", "-shm"} {
 		if _, err := os.Stat(outPath + suffix); err == nil {
 			return m, fmt.Errorf("%s%s exists; SQLite would apply it to the rebuilt file", outPath, suffix)

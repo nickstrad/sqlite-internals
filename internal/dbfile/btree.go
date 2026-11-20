@@ -2,22 +2,35 @@ package dbfile
 
 import "fmt"
 
+// PageType is the 1-byte flag at offset 0 of a B-tree page header
+// (decodeFlags, src/btree.c:2028-2085).
 type PageType uint8
 
+// Valid B-tree page flag bytes (src/btreeInt.h:129, src/btree.c:2025-2083).
 const (
+	// IndexInterior (0x02) marks an interior index B-tree page (PTF_ZERODATA).
 	IndexInterior PageType = 0x02
+	// TableInterior (0x05) marks an interior table B-tree page (PTF_LEAFDATA|PTF_INTKEY).
 	TableInterior PageType = 0x05
-	IndexLeaf     PageType = 0x0a
-	TableLeaf     PageType = 0x0d
+	// IndexLeaf (0x0a) marks a leaf index B-tree page (PTF_ZERODATA|PTF_LEAF).
+	IndexLeaf PageType = 0x0a
+	// TableLeaf (0x0d) marks a leaf table B-tree page (PTF_LEAFDATA|PTF_INTKEY|PTF_LEAF).
+	TableLeaf PageType = 0x0d
 )
 
+// Valid reports whether t is one of the four legal B-tree page types.
 func (t PageType) Valid() bool {
 	return t == IndexInterior || t == TableInterior || t == IndexLeaf || t == TableLeaf
 }
 
-func (t PageType) IsLeaf() bool  { return t == IndexLeaf || t == TableLeaf }
+// IsLeaf reports whether t is a leaf page (no child pointers).
+func (t PageType) IsLeaf() bool { return t == IndexLeaf || t == TableLeaf }
+
+// IsTable reports whether t belongs to an intkey table B-tree rather than an index B-tree.
 func (t PageType) IsTable() bool { return t == TableInterior || t == TableLeaf }
 
+// HeaderSize returns the byte length of the B-tree page header: 8 for leaves,
+// 12 for interior pages (which append the 4-byte rightmost child pointer).
 func (t PageType) HeaderSize() int {
 	if t.IsLeaf() {
 		return 8
@@ -25,6 +38,7 @@ func (t PageType) HeaderSize() int {
 	return 12
 }
 
+// String returns the canonical role name for a B-tree page type.
 func (t PageType) String() string {
 	switch t {
 	case IndexInterior:
@@ -39,11 +53,15 @@ func (t PageType) String() string {
 	return fmt.Sprintf("invalid(0x%02x)", uint8(t))
 }
 
+// Freeblock describes one linked free region (at least 4 bytes) inside a B-tree
+// page's cell content area (src/btreeInt.h:152-164).
 type Freeblock struct {
 	Offset int
 	Size   int
 }
 
+// BTreePage holds the decoded header, cell pointer array, freeblock chain, and
+// raw bytes of one B-tree page (btreeInitPage, src/btree.c:2218-2265).
 type BTreePage struct {
 	Number           int
 	Type             PageType
@@ -66,10 +84,13 @@ func headerOffsetFor(number int) int {
 	return 0
 }
 
+// ParseBTreePage decodes and validates a B-tree page header, its cell pointer
+// array, and its freeblock chain from raw page bytes.
 func ParseBTreePage(data []byte, number int, usableSize int) (*BTreePage, error) {
 	if usableSize < MinUsableSize || usableSize > len(data) {
 		return nil, corruptPage(number, "usable size %d does not fit a %d-byte page", usableSize, len(data))
 	}
+	// Page 1's B-tree header starts after the 100-byte database file header.
 	offset := headerOffsetFor(number)
 	if offset+8 > usableSize {
 		return nil, corruptAt(number, offset, "page too small for a b-tree page header")
@@ -82,6 +103,7 @@ func ParseBTreePage(data []byte, number int, usableSize int) (*BTreePage, error)
 	p.FirstFreeblock = be16(data[offset+1:])
 	p.CellCount = be16(data[offset+3:])
 	p.CellContentStart = be16(data[offset+5:])
+	// On a 65536-byte page with no cells, 65536 wraps to 0 in the 2-byte field (get2byteNotZero, src/btree.c:2257).
 	if p.CellContentStart == 0 {
 		p.CellContentStart = 65536
 	}
@@ -98,6 +120,7 @@ func ParseBTreePage(data []byte, number int, usableSize int) (*BTreePage, error)
 		return nil, corruptAt(number, offset+5, "cell content area starts at %d, outside %d..%d", p.CellContentStart, pointerEnd, usableSize)
 	}
 	p.CellPointers = make([]int, p.CellCount)
+	// Every cell occupies at least 4 bytes (leaves) or 5 bytes (interior: 4-byte child + 1-byte varint).
 	lastCellStart := usableSize - 4
 	if !p.Type.IsLeaf() {
 		lastCellStart--
@@ -109,6 +132,7 @@ func ParseBTreePage(data []byte, number int, usableSize int) (*BTreePage, error)
 		}
 		p.CellPointers[i] = cellOffset
 	}
+	// Walk the freeblock list verifying ascending non-overlapping offsets and minimum 4-byte size (src/btreeInt.h:152-164).
 	previousEnd := 0
 	for next := p.FirstFreeblock; next != 0; {
 		if len(p.Freeblocks) >= usableSize/4 {
@@ -131,6 +155,7 @@ func ParseBTreePage(data []byte, number int, usableSize int) (*BTreePage, error)
 	return p, nil
 }
 
+// BTreePage reads page n from f and parses it as a B-tree page.
 func (f *File) BTreePage(n int) (*BTreePage, error) {
 	data, err := f.Page(n)
 	if err != nil {
@@ -139,6 +164,7 @@ func (f *File) BTreePage(n int) (*BTreePage, error) {
 	return ParseBTreePage(data, n, f.UsableSize())
 }
 
+// FreeblockBytes returns the sum of the byte sizes of all freeblocks on p.
 func (p *BTreePage) FreeblockBytes() int {
 	total := 0
 	for _, b := range p.Freeblocks {
@@ -147,11 +173,15 @@ func (p *BTreePage) FreeblockBytes() int {
 	return total
 }
 
+// Unused returns the total free bytes on p (unallocated gap + fragmented bytes
+// + freeblocks), matching dbstat's unused column.
 func (p *BTreePage) Unused() int {
 	pointerEnd := p.HeaderOffset + p.Type.HeaderSize() + 2*p.CellCount
 	return p.CellContentStart - pointerEnd + p.FragmentedBytes + p.FreeblockBytes()
 }
 
+// Cell holds one parsed B-tree cell: its optional left-child pointer, payload
+// size, rowid, local payload slice, and optional first overflow page number.
 type Cell struct {
 	Index         int
 	Offset        int
@@ -165,8 +195,11 @@ type Cell struct {
 	Size          int
 }
 
+// Overflows reports whether part of the cell's payload spills onto overflow pages.
 func (c Cell) Overflows() bool { return c.PayloadSize > uint64(c.LocalSize) }
 
+// MaxLocalPayload returns the maximum payload bytes stored locally in one cell
+// before spilling to overflow pages (lockBtree, src/btree.c:3441-3444).
 func MaxLocalPayload(usableSize int, t PageType) int {
 	if t.IsTable() {
 		return usableSize - 35
@@ -174,10 +207,16 @@ func MaxLocalPayload(usableSize int, t PageType) int {
 	return (usableSize-12)*64/255 - 23
 }
 
+// MinLocalPayload returns the minimum payload bytes retained locally when a
+// cell overflows (lockBtree, src/btree.c:3442, 3444).
 func MinLocalPayload(usableSize int) int {
 	return (usableSize-12)*32/255 - 23
 }
 
+// LocalPayloadSize computes how many bytes of a payload of size payloadSize are
+// stored on the B-tree page itself rather than in overflow pages. Matches
+// btreeParseCellAdjustSizeForOverflow (src/btree.c:1178-1207), which maximizes
+// occupancy of the last overflow page.
 func LocalPayloadSize(usableSize int, t PageType, payloadSize uint64) int {
 	maxLocal := MaxLocalPayload(usableSize, t)
 	if payloadSize <= uint64(maxLocal) {
@@ -191,8 +230,12 @@ func LocalPayloadSize(usableSize int, t PageType, payloadSize uint64) int {
 	return minLocal
 }
 
+// MaxPayloadSize is the largest legal cell payload size (2^31 - 1 bytes).
 const MaxPayloadSize = 0x7fffffff
 
+// Cell parses the i-th cell on p according to p.Type, mirroring
+// btreeParseCellPtr, btreeParseCellPtrIndex, and btreeParseCellPtrNoPayload
+// (src/btree.c:1242-1385).
 func (p *BTreePage) Cell(i int) (Cell, error) {
 	if i < 0 || i >= p.CellCount {
 		return Cell{}, fmt.Errorf("page %d has %d cells, no cell %d", p.Number, p.CellCount, i)
@@ -256,12 +299,15 @@ func (p *BTreePage) Cell(i int) (Cell, error) {
 		}
 	}
 	c.Size = end - offset
+	// SQLite enforces a 4-byte minimum cell size so any freed cell can become a
+	// 4-byte freeblock header (src/btree.c:1341, 1380).
 	if c.Size < 4 {
 		c.Size = 4
 	}
 	return c, nil
 }
 
+// Cells parses and returns all cells on p in cell-pointer (key) order.
 func (p *BTreePage) Cells() ([]Cell, error) {
 	cells := make([]Cell, 0, p.CellCount)
 	for i := range p.CellCount {

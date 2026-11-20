@@ -71,6 +71,7 @@ func queryInt(t *testing.T, path, query string) int64 {
 	return v
 }
 
+// TestVarintRoundTrip verifies varint encoding and decoding at 1..9-byte boundaries, on 2,000 random values, and on truncated buffers.
 func TestVarintRoundTrip(t *testing.T) {
 	cases := []struct {
 		value  uint64
@@ -101,6 +102,7 @@ func TestVarintRoundTrip(t *testing.T) {
 	}
 }
 
+// TestHeaderMatchesPragmasAtEveryPageSize checks decoded header fields against SQLite pragmas at page sizes 512, 1024, 4096, and 65536.
 func TestHeaderMatchesPragmasAtEveryPageSize(t *testing.T) {
 	for _, size := range []int{512, 1024, 4096, 65536} {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
@@ -128,6 +130,7 @@ func TestHeaderMatchesPragmasAtEveryPageSize(t *testing.T) {
 	}
 }
 
+// TestUTF16SchemaDecodes verifies non-ASCII table names decode accurately from UTF-16le and UTF-16be databases.
 func TestUTF16SchemaDecodes(t *testing.T) {
 	for _, enc := range []string{"UTF-16le", "UTF-16be"} {
 		path := newDatabase(t, func(o *sqlitex.Options) { o.File.Encoding = enc }, "CREATE TABLE ŝtuff(a INTEGER PRIMARY KEY, b TEXT)")
@@ -171,6 +174,7 @@ func readDBStat(t *testing.T, path string) map[int]dbstatRow {
 	return out
 }
 
+// DBStatType maps a B-tree or overflow Role to the pagetype string returned by SQLite's dbstat virtual table.
 func DBStatType(r Role) string {
 	switch r {
 	case RoleTableInterior, RoleIndexInterior:
@@ -222,6 +226,7 @@ func checkCensusAgainstSQLite(t *testing.T, path string) *Census {
 	return c
 }
 
+// TestCensusMatchesSQLiteOnRecipe compares Census output against dbstat and pragmas on the full recipe in WAL and rollback modes.
 func TestCensusMatchesSQLiteOnRecipe(t *testing.T) {
 	for _, mode := range []string{"wal", "delete"} {
 		path := filepath.Join(t.TempDir(), "r.db")
@@ -237,6 +242,7 @@ func TestCensusMatchesSQLiteOnRecipe(t *testing.T) {
 	}
 }
 
+// TestRowsMatchSQLite checks decoded values across all integer widths, reals, text, blobs, overflow, and negative rowids against SQLite.
 func TestRowsMatchSQLite(t *testing.T) {
 	path := newDatabase(t, nil,
 		"CREATE TABLE v(id INTEGER PRIMARY KEY, a, b, c)",
@@ -309,6 +315,7 @@ func canonical(v Value) string {
 	return fmt.Sprintf("X'%X'", v.Bytes)
 }
 
+// TestLocalPayloadBoundary tests payloads at maxLocal, maxLocal+1, and one exact overflow page against SQLite.
 func TestLocalPayloadBoundary(t *testing.T) {
 	maxLocal := MaxLocalPayload(4096, TableLeaf)
 	if maxLocal != 4061 || MinLocalPayload(4096) != 489 || MaxLocalPayload(4096, IndexLeaf) != 1002 {
@@ -337,6 +344,7 @@ func TestLocalPayloadBoundary(t *testing.T) {
 	checkCensusAgainstSQLite(t, path)
 }
 
+// TestFreelistAcrossTrunks verifies multi-trunk freelist walking on a 1024-byte-page database.
 func TestFreelistAcrossTrunks(t *testing.T) {
 	path := newDatabase(t, func(o *sqlitex.Options) { o.File.PageSize = 1024 },
 		"CREATE TABLE big(id INTEGER PRIMARY KEY, v BLOB)",
@@ -348,6 +356,7 @@ func TestFreelistAcrossTrunks(t *testing.T) {
 	}
 }
 
+// TestAutoVacuumPointerMapPages verifies pointer-map page detection in FULL and INCREMENTAL auto-vacuum modes.
 func TestAutoVacuumPointerMapPages(t *testing.T) {
 	for _, mode := range []string{"FULL", "INCREMENTAL"} {
 		path := newDatabase(t, func(o *sqlitex.Options) { o.File.AutoVacuum = mode; o.File.PageSize = 512 },
@@ -408,6 +417,7 @@ func buildSparseLockByteFile(t *testing.T) (string, int) {
 	return path, lock
 }
 
+// TestLockBytePageInLargeSparseFile verifies the 1 GiB lock-byte page is classified rather than reported lost in a sparse > 1 GiB file.
 func TestLockBytePageInLargeSparseFile(t *testing.T) {
 	path, lock := buildSparseLockByteFile(t)
 	f := openParsed(t, path)
@@ -432,6 +442,7 @@ func TestLockBytePageInLargeSparseFile(t *testing.T) {
 	}
 }
 
+// TestRejectsMalformedFiles verifies every invalid header, truncation, bad page type, and double-claimed page returns the expected error.
 func TestRejectsMalformedFiles(t *testing.T) {
 	path := newDatabase(t, nil, "CREATE TABLE t(a INTEGER PRIMARY KEY, b)", "INSERT INTO t VALUES(1, 'x')")
 	good, err := os.ReadFile(path)
@@ -526,6 +537,7 @@ func parseNeverPanics(t *testing.T, image []byte, label string) (err error) {
 	return censusEverything(f)
 }
 
+// TestFlippedBytesReturnErrorsNotPanics flips 3,000 single bits and tests 8 truncations to verify the parser never panics.
 func TestFlippedBytesReturnErrorsNotPanics(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "r.db")
 	r := recipe.Default().WithSteps(6)
@@ -571,6 +583,7 @@ func TestFlippedBytesReturnErrorsNotPanics(t *testing.T) {
 	t.Logf("%d of %d flipped files rejected", rejected, runs)
 }
 
+// FuzzParse fuzzes single-byte mutations of a real recipe image to verify parsing, census, and record decoding never panic.
 func FuzzParse(f *testing.F) {
 	dir := f.TempDir()
 	path := filepath.Join(dir, "r.db")
@@ -594,6 +607,7 @@ func FuzzParse(f *testing.F) {
 	})
 }
 
+// TestHeaderFieldsCoverEveryByte checks that Header.Fields partitions bytes 0..99 with no gaps or overlaps.
 func TestHeaderFieldsCoverEveryByte(t *testing.T) {
 	covered := make([]int, HeaderSize)
 	for _, field := range (Header{}).Fields() {
@@ -612,6 +626,7 @@ func TestHeaderFieldsCoverEveryByte(t *testing.T) {
 	_ = sha256.Size
 }
 
+// TestDecodeValueEdgeCases verifies NaN-as-NULL, reserved serial types 10 and 11, signed integer widths, and record overrun rejection.
 func TestDecodeValueEdgeCases(t *testing.T) {
 	nan := make([]byte, 8)
 	binary.BigEndian.PutUint64(nan, math.Float64bits(math.NaN()))

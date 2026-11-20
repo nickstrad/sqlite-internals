@@ -5,18 +5,30 @@ import (
 	"fmt"
 )
 
+// File-format constants from src/btreeInt.h:47-84 and lockBtree (src/btree.c:3314-3418).
 const (
-	HeaderSize         = 100
-	MagicString        = "SQLite format 3\x00"
-	LockByteOffset     = 1073741824
-	MinPageSize        = 512
-	MaxPageSize        = 65536
-	MinUsableSize      = 480
-	TextEncodingUTF8   = 1
+	// HeaderSize is the byte length of the database file header at the start of page 1.
+	HeaderSize = 100
+	// MagicString is the 16-byte signature at offset 0 of every valid SQLite 3 file.
+	MagicString = "SQLite format 3\x00"
+	// LockByteOffset is the fixed 1 GiB (0x40000000) byte offset reserved for POSIX locks.
+	LockByteOffset = 1073741824
+	// MinPageSize is the smallest legal database page size in bytes.
+	MinPageSize = 512
+	// MaxPageSize is the largest legal database page size in bytes (stored as 1 at offset 16).
+	MaxPageSize = 65536
+	// MinUsableSize is the minimum allowed usable space per page (page size minus reserved bytes).
+	MinUsableSize = 480
+	// TextEncodingUTF8 is the header code (offset 56) for UTF-8 text.
+	TextEncodingUTF8 = 1
+	// TextEncodingUTF16L is the header code (offset 56) for little-endian UTF-16 text.
 	TextEncodingUTF16L = 2
+	// TextEncodingUTF16B is the header code (offset 56) for big-endian UTF-16 text.
 	TextEncodingUTF16B = 3
 )
 
+// Header holds the decoded fields of the 100-byte database file header at the
+// start of page 1, plus the raw bytes (src/btreeInt.h:57-83).
 type Header struct {
 	Raw                 [HeaderSize]byte
 	PageSize            int
@@ -49,6 +61,9 @@ func be32int(b []byte) int  { return int(binary.BigEndian.Uint32(b)) }
 func be64i(b []byte) int64  { return int64(binary.BigEndian.Uint64(b)) }
 func be64u(b []byte) uint64 { return binary.BigEndian.Uint64(b) }
 
+// DecodePageSize converts the 2-byte big-endian integer at offset 16 into a
+// page size in bytes. Because 65536 does not fit in 16 bits, SQLite encodes it
+// as 1 (newDatabase src/btree.c:3526-3527, lockBtree src/btree.c:3371).
 func DecodePageSize(stored int) int {
 	if stored == 1 {
 		return MaxPageSize
@@ -56,6 +71,8 @@ func DecodePageSize(stored int) int {
 	return stored
 }
 
+// ParseHeader decodes and validates the 100-byte database header from b,
+// mirroring the header checks in lockBtree (src/btree.c:3282-3459).
 func ParseHeader(b []byte) (Header, error) {
 	var h Header
 	if len(b) < HeaderSize {
@@ -96,21 +113,27 @@ func (h Header) validate() error {
 	bad := func(offset int, format string, args ...any) error {
 		return &FormatError{Kind: ErrNotADatabase, Offset: offset, Problem: fmt.Sprintf(format, args...)}
 	}
+	// Page size must be a power of two in 512..65536 (lockBtree, src/btree.c:3374-3379).
 	if h.PageSize < MinPageSize || h.PageSize > MaxPageSize || h.PageSize&(h.PageSize-1) != 0 {
 		return bad(16, "page size %d is not a power of two between %d and %d", h.PageSize, MinPageSize, MaxPageSize)
 	}
+	// Reject unknown format versions (> 2) on both read and write bytes; SQLite
+	// opens write version > 2 read-only (src/btree.c:3326-3331), which a
+	// read-only inspector has no reason to distinguish.
 	if h.ReadVersion != 1 && h.ReadVersion != 2 {
 		return bad(19, "read version %d is not 1 (rollback) or 2 (WAL)", h.ReadVersion)
 	}
 	if h.WriteVersion != 1 && h.WriteVersion != 2 {
 		return bad(18, "write version %d is not 1 (rollback) or 2 (WAL)", h.WriteVersion)
 	}
+	// Payload fractions have been fixed at 64/32/32 since SQLite 3.6.0 (src/btree.c:3360-3367).
 	if h.MaxPayloadFraction != 64 || h.MinPayloadFraction != 32 || h.LeafPayloadFraction != 32 {
 		return bad(21, "payload fractions %d/%d/%d are not 64/32/32", h.MaxPayloadFraction, h.MinPayloadFraction, h.LeafPayloadFraction)
 	}
 	if h.UsableSize() < MinUsableSize {
 		return bad(20, "usable size %d (page size %d minus %d reserved) is below %d", h.UsableSize(), h.PageSize, h.ReservedBytes, MinUsableSize)
 	}
+	// Encoding 0 is permitted for a newly initialized header before the first schema write.
 	if h.TextEncoding > TextEncodingUTF16B {
 		return bad(56, "text encoding %d is not 1, 2 or 3", h.TextEncoding)
 	}
@@ -120,20 +143,32 @@ func (h Header) validate() error {
 	return nil
 }
 
+// UsableSize returns the bytes per page available to B-tree and overflow data
+// (page size minus the reserved suffix at offset 20, src/btree.c:3388).
 func (h Header) UsableSize() int { return h.PageSize - h.ReservedBytes }
 
+// ChangeCountersAgree reports whether the file change counter (bytes 24-27)
+// equals version-valid-for (bytes 92-95).
 func (h Header) ChangeCountersAgree() bool { return h.ChangeCounter == h.VersionValidFor }
 
+// InHeaderSizeValid reports whether SQLite trusts the in-header page count at
+// offset 28: it must be non-zero and bytes 24-27 must equal bytes 92-95
+// (lockBtree, src/btree.c:3298-3302).
 func (h Header) InHeaderSizeValid() bool {
 	return h.DatabaseSize != 0 && h.ChangeCountersAgree()
 }
 
+// WALMode reports whether both format version bytes (18 and 19) are set to 2.
 func (h Header) WALMode() bool { return h.ReadVersion == 2 && h.WriteVersion == 2 }
 
+// AutoVacuum reports whether auto-vacuum (FULL or INCREMENTAL) is enabled,
+// indicated by a non-zero largest-root-page field at offset 52 (src/btree.c:3423).
 func (h Header) AutoVacuum() bool { return h.LargestRootPage != 0 }
 
+// LockBytePage returns the 1-based page number that contains LockByteOffset (1 GiB).
 func (h Header) LockBytePage() int { return LockByteOffset/h.PageSize + 1 }
 
+// EncodingName returns the human-readable name for the text encoding at offset 56.
 func (h Header) EncodingName() string {
 	switch h.TextEncoding {
 	case 0:
@@ -148,6 +183,7 @@ func (h Header) EncodingName() string {
 	return fmt.Sprintf("unknown(%d)", h.TextEncoding)
 }
 
+// AutoVacuumName returns "NONE", "FULL", or "INCREMENTAL" from offsets 52 and 64.
 func (h Header) AutoVacuumName() string {
 	switch {
 	case h.LargestRootPage == 0:
@@ -158,10 +194,14 @@ func (h Header) AutoVacuumName() string {
 	return "FULL"
 }
 
+// FormatSQLiteVersion formats a packed SQLITE_VERSION_NUMBER (X*1000000 + Y*1000 + Z)
+// such as 3053004 into "3.53.4".
 func FormatSQLiteVersion(v uint32) string {
 	return fmt.Sprintf("%d.%d.%d", v/1000000, v/1000%1000, v%1000)
 }
 
+// HeaderField describes one named field in the 100-byte database header for
+// table display and byte-diff attribution.
 type HeaderField struct {
 	Offset int
 	Size   int
@@ -169,6 +209,8 @@ type HeaderField struct {
 	Value  string
 }
 
+// Fields returns all 23 header fields in offset order, partitioning bytes 0..99
+// without gaps or overlaps.
 func (h Header) Fields() []HeaderField {
 	u := func(v uint32) string { return fmt.Sprint(v) }
 	i := func(v int32) string { return fmt.Sprint(v) }
@@ -213,6 +255,7 @@ func reservedText(b []byte) string {
 	return "all zero"
 }
 
+// HeaderFieldAt returns the header field definition covering byte offset (0..99).
 func HeaderFieldAt(offset int) (HeaderField, bool) {
 	for _, f := range (Header{}).Fields() {
 		if offset >= f.Offset && offset < f.Offset+f.Size {

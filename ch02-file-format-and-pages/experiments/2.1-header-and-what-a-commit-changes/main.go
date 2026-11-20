@@ -1,3 +1,12 @@
+// Experiment 2.1 decodes the 100-byte SQLite database header field by field
+// with internal/dbfile, checks every field against SQLite PRAGMAs and the
+// pinned CLI's .dbinfo, and measures which header bytes change on commit in
+// rollback mode versus WAL mode, on journal-mode switches, on edited in-header
+// page counts, and across page sizes 512, 4096, and 65536.
+//
+// Run from the repo root:
+//
+//	go run ./ch02-file-format-and-pages/experiments/2.1-header-and-what-a-commit-changes
 package main
 
 import (
@@ -78,6 +87,10 @@ func queryText(ctx context.Context, q sqlitex.Querier, query string) (string, er
 	return fmt.Sprint(value), nil
 }
 
+// readHeaderFromChild reads the first 100 bytes of the database file in a
+// separate child process so this process never opens and closes a file
+// descriptor on a database while holding a live SQLite connection (closing any
+// fd drops POSIX locks for the whole process).
 func readHeaderFromChild(path string) []byte {
 	command := must(trace.SelfCommand(childReadHeader, path))("self command")
 	out, err := exec.Command(command[0], command[1:]...).Output()
@@ -106,6 +119,8 @@ func childMain(path string) {
 	fmt.Println(hex.EncodeToString(header))
 }
 
+// logicalHeader reads SQLite's current view of page 1 through sqlite_dbpage,
+// which includes uncheckpointed frames from the -wal in WAL mode.
 func logicalHeader(ctx context.Context, q sqlitex.Querier) []byte {
 	var data []byte
 	if err := q.QueryRowContext(ctx, "SELECT data FROM sqlite_dbpage WHERE pgno = 1").Scan(&data); err != nil {
@@ -218,6 +233,8 @@ func partA(ctx context.Context, dir string, cli *sqlitex.CLI) {
 	}
 	fmt.Printf("page count %d, taken from the %s (in-header size valid: %v)\n", pageCount, source, h.InHeaderSizeValid())
 
+	// Open R0 through a normal read-write connection rather than mode=ro: a
+	// read-only connection cannot checkpoint and remove the -wal on close.
 	db := must(r.Open(ctx, path))("open R0")
 	pragma := func(name string) string {
 		return must(queryText(ctx, db, "PRAGMA "+name))("PRAGMA " + name)
@@ -444,6 +461,9 @@ func partD(ctx context.Context, dir string) {
 func partE(ctx context.Context, dir string) {
 	fmt.Println()
 	fmt.Println("== E. the in-header size (bytes 28-31) is used only when bytes 24-27 equal 92-95")
+	// Part E tests lockBtree's in-header size rule (src/btree.c:3298-3302,
+	// 3405-3412) on rollback-mode copies opened read-only so SQLite does not
+	// repair or modify the edited files.
 	base := buildBase(ctx, dir, "size-base.db", "delete", 3)
 	image := must(os.ReadFile(base))("read")
 	filePages := len(image) / 4096

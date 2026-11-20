@@ -1,3 +1,12 @@
+// Experiment 2.2 runs internal/dbfile's complete page census on the closed R0
+// database, validates every B-tree and overflow page against SQLite's dbstat
+// virtual table and every table's rows against SELECT, exercises the local
+// payload boundary, multi-trunk freelists, auto-vacuum pointer-map pages, and
+// the 1 GiB lock-byte page, and tests nine damaged files against integrity_check.
+//
+// Run from the repo root:
+//
+//	go run ./ch02-file-format-and-pages/experiments/2.2-page-census
 package main
 
 import (
@@ -220,6 +229,10 @@ type tableHash struct {
 	sum  string
 }
 
+// ourTableHash walks a table B-tree directly from raw bytes and hashes its
+// canonical rows; column 0 NULL is replaced by the rowid because SQLite stores
+// an INTEGER PRIMARY KEY column as NULL in the record and keeps its value in
+// the cell's rowid varint.
 func ourTableHash(f *dbfile.File, root int) tableHash {
 	h := sha256.New()
 	rows := 0
@@ -467,6 +480,10 @@ func partD(ctx context.Context, dir string) {
 func partE(ctx context.Context, dir string) {
 	fmt.Println()
 	fmt.Println("== E. a file larger than 1 GiB: the page holding byte offset 1073741824 (the lock-byte page) is never used")
+	// Construct a > 1 GiB sparse file at page size 65536 so the 1 GiB
+	// lock-byte page (1073741824/65536 + 1 = 16385) lies inside the database
+	// without allocating 1 GiB of disk blocks; page 3 lists all remaining pages
+	// except 16385 as freelist leaves so SQLite's integrity_check passes.
 	path := filepath.Join(dir, "large.db")
 	newDB(ctx, path, func(o *sqlitex.Options) { o.File.PageSize = 65536; o.File.JournalMode = sqlitex.JournalDelete },
 		"CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT)", "INSERT INTO t VALUES(1, 'x')")
@@ -532,6 +549,8 @@ type corruption struct {
 func partF(ctx context.Context, dir string) {
 	fmt.Println()
 	fmt.Println("== F. what the inspector must reject: one damaged structure per file, our error vs SQLite's integrity_check")
+	// Each case damages one structure in a 6-page rollback-mode copy; rollback
+	// mode and mode=ro keep SQLite from altering the damaged file on open.
 	base := filepath.Join(dir, "reject-base.db")
 	newDB(ctx, base, func(o *sqlitex.Options) { o.File.JournalMode = sqlitex.JournalDelete },
 		"CREATE TABLE t(id INTEGER PRIMARY KEY, v BLOB)",

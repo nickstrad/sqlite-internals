@@ -9,25 +9,32 @@ import (
 	"strings"
 )
 
+// ManifestFormat is the version header line required at line 1 of every page manifest.
 const ManifestFormat = "sqlite-internals page manifest v1"
 
+// ManifestEntry records one page's 1-based number, census role name, and SHA-256
+// hex digest. Role is a plain string so manifests parse without importing dbfile.
 type ManifestEntry struct {
 	Page   int
 	Role   string
 	SHA256 string
 }
 
+// String formats e as one manifest line: "<page> <role> <sha256>".
 func (e ManifestEntry) String() string {
 	return fmt.Sprintf("%d %s %s", e.Page, e.Role, e.SHA256)
 }
 
+// Manifest is an ordered per-page hash inventory of a database file.
 type Manifest struct {
 	PageSize int
 	Entries  []ManifestEntry
 }
 
+// PageCount returns the number of page entries in m.
 func (m Manifest) PageCount() int { return len(m.Entries) }
 
+// Text serializes m into the canonical v1 line-oriented manifest format.
 func (m Manifest) Text() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\npage-size %d\npages %d\n", ManifestFormat, m.PageSize, len(m.Entries))
@@ -38,6 +45,7 @@ func (m Manifest) Text() string {
 	return b.String()
 }
 
+// SHA256 returns the SHA-256 hex digest of m's serialized Text.
 func (m Manifest) SHA256() string { return SHA256Hex([]byte(m.Text())) }
 
 var (
@@ -45,6 +53,8 @@ var (
 	sha256Re = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
+// ParseManifest reads and strictly validates a v1 page manifest from r,
+// verifying the header lines, role/hash syntax, and declared page count.
 func ParseManifest(r io.Reader) (Manifest, error) {
 	var m Manifest
 	scanner := bufio.NewScanner(r)
@@ -106,16 +116,21 @@ func ParseManifest(r io.Reader) (Manifest, error) {
 	return m, nil
 }
 
+// SequenceError reports a missing, duplicate, or out-of-order page entry in a Manifest.
 type SequenceError struct {
 	Line    int
 	Page    int
 	Problem string
 }
 
+// Error formats the entry index, page number, and sequence violation.
 func (e *SequenceError) Error() string {
 	return fmt.Sprintf("manifest entry %d: page %d: %s", e.Line, e.Page, e.Problem)
 }
 
+// CheckSequence verifies that m lists pages 1..N exactly once and in ascending
+// order. Duplicates are checked before gaps so a repeated page number is named
+// directly rather than misreported as a missing neighbor.
 func (m Manifest) CheckSequence() error {
 	seenAt := map[int]int{}
 	for i, e := range m.Entries {
@@ -137,6 +152,7 @@ func (m Manifest) CheckSequence() error {
 	return nil
 }
 
+// ManifestDiff summarizes the entry-by-entry comparison of two Manifest values.
 type ManifestDiff struct {
 	Equal              bool
 	FirstDifferingPage int
@@ -144,6 +160,7 @@ type ManifestDiff struct {
 	Reason             string
 }
 
+// String formats d as a single-line summary naming the first differing page and reason.
 func (d ManifestDiff) String() string {
 	if d.Equal {
 		return "manifests identical"
@@ -154,6 +171,9 @@ func (d ManifestDiff) String() string {
 	return fmt.Sprintf("manifests differ: first differing page %d (%s), %d page(s) differ", d.FirstDifferingPage, d.Reason, d.DifferingPages)
 }
 
+// CompareManifests compares two manifests page by page, reporting the first
+// mismatching page, the reason for the first mismatch, and the count of
+// differing entries.
 func CompareManifests(a, b Manifest) ManifestDiff {
 	if a.PageSize != b.PageSize {
 		return ManifestDiff{Reason: fmt.Sprintf("page size %d vs %d", a.PageSize, b.PageSize)}

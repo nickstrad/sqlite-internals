@@ -37,6 +37,7 @@ func integrity(t *testing.T, path string) string {
 	return result
 }
 
+// TestCaptureAndRebuildAreByteIdentical verifies rung R1 capture and rebuild produce an E1-equal file passing integrity_check with no leftover temp file.
 func TestCaptureAndRebuildAreByteIdentical(t *testing.T) {
 	dir := t.TempDir()
 	path := buildRecipe(t, dir, 8)
@@ -77,6 +78,7 @@ func rewriteManifest(t *testing.T, dir string, edit func([]string) []string) {
 	os.WriteFile(path, []byte(strings.Join(append(head, entries...), "\n")+"\n"), 0o644)
 }
 
+// TestRebuildNamesTheBadPage verifies dropped, duplicated, swapped, corrupted, and truncated captures are refused with the page named and no output written.
 func TestRebuildNamesTheBadPage(t *testing.T) {
 	dir := t.TempDir()
 	path := buildRecipe(t, dir, 4)
@@ -120,6 +122,7 @@ func TestRebuildNamesTheBadPage(t *testing.T) {
 	}
 }
 
+// TestRefusesDatabaseNotAtRest verifies non-empty -wal, hot -journal, and stale output sidecars are refused while empty -wal and zeroed -journal are accepted.
 func TestRefusesDatabaseNotAtRest(t *testing.T) {
 	dir := t.TempDir()
 	path := buildRecipe(t, dir, 2)

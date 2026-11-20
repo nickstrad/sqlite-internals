@@ -7,16 +7,24 @@ import (
 	"unicode/utf16"
 )
 
+// StorageClass identifies the SQLite storage class of a decoded record column.
 type StorageClass int
 
+// SQLite's five on-disk value storage classes.
 const (
+	// Null represents SQL NULL.
 	Null StorageClass = iota
+	// Integer represents a signed 64-bit integer.
 	Integer
+	// Real represents an IEEE 754 64-bit floating-point number.
 	Real
+	// Text represents encoded text bytes (UTF-8 or UTF-16 per header offset 56).
 	Text
+	// Blob represents raw binary bytes.
 	Blob
 )
 
+// String returns the lowercase SQLite typeof() name of s.
 func (s StorageClass) String() string {
 	switch s {
 	case Null:
@@ -33,6 +41,8 @@ func (s StorageClass) String() string {
 	return fmt.Sprintf("class(%d)", int(s))
 }
 
+// Value holds one decoded column from an SQLite binary record
+// (sqlite3VdbeSerialGet, src/vdbeaux.c:4123-4214).
 type Value struct {
 	SerialType uint64
 	Class      StorageClass
@@ -41,6 +51,7 @@ type Value struct {
 	Bytes      []byte
 }
 
+// String formats v for diagnostic output.
 func (v Value) String() string {
 	switch v.Class {
 	case Null:
@@ -55,6 +66,8 @@ func (v Value) String() string {
 	return fmt.Sprintf("x'%x'", v.Bytes)
 }
 
+// SerialTypeLength returns the body byte length encoded by record serial type t
+// (src/vdbeaux.c:4123-4214). Reserved serial types 10 and 11 return an error.
 func SerialTypeLength(t uint64) (int, error) {
 	switch {
 	case t <= 4:
@@ -84,6 +97,8 @@ func signedBigEndian(b []byte) int64 {
 	return value
 }
 
+// DecodeValue decodes one record field of serial type t from the front of body,
+// matching sqlite3VdbeSerialGet (src/vdbeaux.c:4123-4214).
 func DecodeValue(t uint64, body []byte) (Value, error) {
 	length, err := SerialTypeLength(t)
 	if err != nil {
@@ -102,11 +117,13 @@ func DecodeValue(t uint64, body []byte) (Value, error) {
 	case t == 7:
 		v.Class = Real
 		v.Float = math.Float64frombits(binary.BigEndian.Uint64(body[:8]))
+		// SQLite treats IEEE NaN stored with serial type 7 as SQL NULL (serialGet, src/vdbeaux.c:4103).
 		if math.IsNaN(v.Float) {
 			v.Class = Null
 			v.Float = 0
 		}
 	case t == 8 || t == 9:
+		// Schema format 4 encodes integer constants 0 and 1 in zero body bytes (src/vdbeaux.c:4193-4200).
 		v.Class = Integer
 		v.Int = int64(t - 8)
 	case t%2 == 0:
@@ -119,6 +136,8 @@ func DecodeValue(t uint64, body []byte) (Value, error) {
 	return v, nil
 }
 
+// DecodeRecord decodes an SQLite binary record payload (header-size varint,
+// column serial-type varints, then packed column values).
 func DecodeRecord(payload []byte) ([]Value, error) {
 	headerSize, n, err := Varint(payload)
 	if err != nil {
@@ -147,6 +166,8 @@ func DecodeRecord(payload []byte) ([]Value, error) {
 	return values, nil
 }
 
+// DecodeText converts raw text bytes using the database header's encoding code
+// (0 or 1 for UTF-8, 2 for UTF-16le, 3 for UTF-16be).
 func DecodeText(raw []byte, encoding uint32) (string, error) {
 	switch encoding {
 	case 0, TextEncodingUTF8:

@@ -5,23 +5,37 @@ import (
 	"sort"
 )
 
+// Role classifies the sole structural job of one page in an SQLite file.
 type Role int
 
+// Page roles assigned by File.Census.
 const (
+	// RoleUnaccounted marks a page not reached by any tree, overflow chain, freelist, pointer map, or lock byte.
 	RoleUnaccounted Role = iota
+	// RoleTableInterior marks an interior table B-tree page (type 0x05).
 	RoleTableInterior
+	// RoleTableLeaf marks a leaf table B-tree page (type 0x0d).
 	RoleTableLeaf
+	// RoleIndexInterior marks an interior index B-tree page (type 0x02).
 	RoleIndexInterior
+	// RoleIndexLeaf marks a leaf index B-tree page (type 0x0a).
 	RoleIndexLeaf
+	// RoleOverflow marks a cell payload overflow page.
 	RoleOverflow
+	// RoleFreelistTrunk marks a freelist trunk page holding next-trunk and leaf page numbers.
 	RoleFreelistTrunk
+	// RoleFreelistLeaf marks a free page listed by a freelist trunk.
 	RoleFreelistLeaf
+	// RolePointerMap marks an auto-vacuum pointer-map page.
 	RolePointerMap
+	// RoleLockByte marks the reserved page containing byte offset 1 GiB (1073741824).
 	RoleLockByte
 )
 
+// AllRoles lists every Role in the display order used by census summaries.
 var AllRoles = []Role{RoleTableInterior, RoleTableLeaf, RoleIndexInterior, RoleIndexLeaf, RoleOverflow, RoleFreelistTrunk, RoleFreelistLeaf, RolePointerMap, RoleLockByte, RoleUnaccounted}
 
+// String returns the canonical kebab-case name of r.
 func (r Role) String() string {
 	switch r {
 	case RoleUnaccounted:
@@ -48,6 +62,7 @@ func (r Role) String() string {
 	return fmt.Sprintf("role(%d)", int(r))
 }
 
+// ParseRole looks up a Role by its canonical String name.
 func ParseRole(name string) (Role, bool) {
 	for _, r := range AllRoles {
 		if r.String() == name {
@@ -69,6 +84,8 @@ func roleOf(t PageType) Role {
 	return RoleIndexLeaf
 }
 
+// PageInfo records one page's census role, owning tree, parent page, and the
+// per-page statistics comparable to SQLite's dbstat virtual table.
 type PageInfo struct {
 	Number     int
 	Role       Role
@@ -80,6 +97,7 @@ type PageInfo struct {
 	MaxPayload uint64
 }
 
+// Tree summarizes one B-tree discovered during a census.
 type Tree struct {
 	Name     string
 	Type     string
@@ -89,6 +107,7 @@ type Tree struct {
 	Cells    int
 }
 
+// Census holds the complete page-by-page accounting of a database file.
 type Census struct {
 	PageSize       int
 	UsableSize     int
@@ -101,8 +120,10 @@ type Census struct {
 	Unaccounted    []int
 }
 
+// Page returns the PageInfo for 1-based page number n.
 func (c *Census) Page(n int) PageInfo { return c.Pages[n-1] }
 
+// RoleCounts tallies how many pages hold each Role.
 func (c *Census) RoleCounts() map[Role]int {
 	counts := map[Role]int{}
 	for _, p := range c.Pages {
@@ -111,8 +132,11 @@ func (c *Census) RoleCounts() map[Role]int {
 	return counts
 }
 
+// FreelistLength returns the total number of freelist pages (trunks plus leaves).
 func (c *Census) FreelistLength() int { return len(c.FreelistTrunks) + len(c.FreelistLeaves) }
 
+// Complete returns an error naming unaccounted pages if any page was left
+// unclaimed by the census.
 func (c *Census) Complete() error {
 	if len(c.Unaccounted) == 0 {
 		return nil
@@ -149,6 +173,11 @@ func (b *censusBuilder) claim(n int, info PageInfo) error {
 	return nil
 }
 
+// Census walks every structural owner in f—the lock-byte page, auto-vacuum
+// pointer-map pages, sqlite_schema, every table and index B-tree with its
+// overflow chains, and the freelist—and assigns every page at most one role.
+// Any page claimed twice returns ErrCorrupt; pages never reached are listed in
+// Census.Unaccounted.
 func (f *File) Census() (*Census, error) {
 	c := &Census{PageSize: f.PageSize(), UsableSize: f.UsableSize(), PageCount: f.pageCount, Pages: make([]PageInfo, f.pageCount)}
 	for i := range c.Pages {
@@ -222,6 +251,7 @@ func (b *censusBuilder) walkTree(t *Tree) error {
 		perPage := f.UsableSize() - 4
 		for _, o := range chain {
 			t.Overflow++
+			// Overflow unused bytes are (usableSize - 4) - payload, matching dbstat.
 			err := b.claim(o.Number, PageInfo{Role: RoleOverflow, Tree: t.Name, Parent: p.Number, Payload: o.Payload, Unused: perPage - o.Payload})
 			if err != nil {
 				return err
@@ -235,6 +265,9 @@ func (b *censusBuilder) walkTree(t *Tree) error {
 func (b *censusBuilder) walkFreelist() error {
 	f := b.file
 	want := int(f.Header.FreelistCount)
+	// Readers accept up to usableSize/4 - 2 leaf entries per trunk (allocateBtreePage
+	// src/btree.c:6621, freePage2 src/btree.c:6906), even though writers stop at -8
+	// for pre-3.6.0 compatibility (src/btree.c:6910-6928).
 	maxLeaves := f.UsableSize()/4 - 2
 	counted := 0
 	trunk := int(f.Header.FirstFreelistTrunk)
@@ -277,6 +310,7 @@ func (b *censusBuilder) walkFreelist() error {
 	return nil
 }
 
+// SortedTrees returns a copy of c.Trees ordered by RootPage.
 func (c *Census) SortedTrees() []Tree {
 	out := append([]Tree(nil), c.Trees...)
 	sort.SliceStable(out, func(i, j int) bool { return out[i].RootPage < out[j].RootPage })

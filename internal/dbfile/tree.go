@@ -2,14 +2,21 @@ package dbfile
 
 import "fmt"
 
+// MaxTreeDepth matches SQLite's BTCURSOR_MAX_DEPTH (20), bounding B-tree
+// recursion against corrupt deep or cyclic trees.
 const MaxTreeDepth = 20
 
+// TreeWalker traverses one table or index B-tree in key order, invoking OnPage
+// on entry to each page and OnCell for each cell (after descending into that
+// cell's left child on interior pages).
 type TreeWalker struct {
 	File   *File
 	OnPage func(p *BTreePage, parent int, depth int) error
 	OnCell func(p *BTreePage, c Cell) error
 }
 
+// Walk traverses the B-tree rooted at page root, rejecting cycles, depth >=
+// MaxTreeDepth, mixed table/index page types, and invalid child page numbers.
 func (w TreeWalker) Walk(root int) error {
 	rootPage, err := w.File.BTreePage(root)
 	if err != nil {
@@ -58,6 +65,8 @@ func (w TreeWalker) walk(p *BTreePage, table bool, parent, depth int, seen map[i
 }
 
 func (w TreeWalker) descend(p *BTreePage, child int, table bool, depth int, seen map[int]bool) error {
+	// Page 1 can only be sqlite_schema's root, never a child; lock-byte and
+	// pointer-map pages are never B-tree pages.
 	if child < 2 || child > w.File.PageCount() || child == w.File.LockBytePage() || w.File.IsPointerMapPage(child) {
 		return corruptPage(p.Number, "child pointer to page %d, which cannot be a b-tree page", child)
 	}
@@ -75,6 +84,8 @@ func treeKind(table bool) string {
 	return "index"
 }
 
+// Row holds one decoded table row along with its leaf page and any overflow
+// page numbers visited while assembling its payload.
 type Row struct {
 	Rowid         int64
 	Values        []Value
@@ -82,6 +93,8 @@ type Row struct {
 	OverflowPages []int
 }
 
+// WalkTable scans the table B-tree rooted at page root in rowid order, calling
+// visit for each decoded leaf row.
 func (f *File) WalkTable(root int, visit func(Row) error) error {
 	walker := TreeWalker{File: f}
 	walker.OnPage = func(p *BTreePage, parent, depth int) error {
@@ -111,6 +124,7 @@ func (f *File) WalkTable(root int, visit func(Row) error) error {
 	return walker.Walk(root)
 }
 
+// SchemaEntry represents one row of sqlite_schema (rooted at page 1).
 type SchemaEntry struct {
 	Type      string
 	Name      string
@@ -130,6 +144,8 @@ func (f *File) textValue(v Value, what string) (string, error) {
 	return "", fmt.Errorf("schema column %s holds %s, want text", what, v.Class)
 }
 
+// Schema decodes every row of sqlite_schema on page 1 (columns: type, name,
+// tbl_name, rootpage, sql) to discover all table and index B-tree root pages.
 func (f *File) Schema() ([]SchemaEntry, error) {
 	var entries []SchemaEntry
 	err := f.WalkTable(1, func(row Row) error {
@@ -148,6 +164,7 @@ func (f *File) Schema() ([]SchemaEntry, error) {
 		if e.SQL, err = f.textValue(row.Values[4], "sql"); err != nil {
 			return corruptPage(row.Page, "schema row %d: %v", row.Rowid, err)
 		}
+		// Views and triggers have rootpage 0 or NULL; tables and indexes must point inside 1..pageCount.
 		switch root := row.Values[3]; root.Class {
 		case Null:
 		case Integer:

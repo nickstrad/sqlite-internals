@@ -2,6 +2,8 @@ package dbfile
 
 import "fmt"
 
+// OverflowPage represents one page in a cell's singly linked overflow chain
+// (src/btreeInt.h:198-205, getOverflowPage src/btree.c:5007-5062).
 type OverflowPage struct {
 	Number   int
 	Next     uint32
@@ -21,6 +23,9 @@ func (f *File) checkOverflowTarget(from, target int) error {
 	return nil
 }
 
+// OverflowChain follows and validates all overflow pages referenced by cell c
+// on sourcePage. Each overflow page begins with a 4-byte next-page number
+// followed by up to usableSize-4 payload bytes (src/btree.c:5051).
 func (f *File) OverflowChain(sourcePage int, c Cell) ([]OverflowPage, error) {
 	if !c.Overflows() {
 		return nil, nil
@@ -56,6 +61,8 @@ func (f *File) OverflowChain(sourcePage int, c Cell) ([]OverflowPage, error) {
 		remaining -= uint64(take)
 		from = next
 		next = int(page.Next)
+		// Only interior links must be non-zero; the last overflow page's next
+		// field is normally 0 and is not followed past count pages.
 		if i < count-1 && next == 0 {
 			return nil, corruptPage(from, "overflow chain of cell %d ends after %d of %d pages", c.Index, i+1, count)
 		}
@@ -63,7 +70,10 @@ func (f *File) OverflowChain(sourcePage int, c Cell) ([]OverflowPage, error) {
 	return chain, nil
 }
 
+// Payload assembles the complete payload bytes of cell c on sourcePage by
+// concatenating its local slice with its overflow chain.
 func (f *File) Payload(sourcePage int, c Cell) ([]byte, []OverflowPage, error) {
+	// Guard against a corrupt payload-size varint requesting gigabytes of memory.
 	if c.PayloadSize > uint64(f.size) {
 		return nil, nil, corruptPage(sourcePage, "cell %d payload of %d bytes is larger than the file", c.Index, c.PayloadSize)
 	}
