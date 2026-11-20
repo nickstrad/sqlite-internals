@@ -47,7 +47,7 @@ Chunk status (build → Neon prose → Neon review → repair → re-review → 
 | Chunk | State | Review | Adversarial | Landed |
 | --- | --- | --- | --- | --- |
 | 0 foundation | done | Neon FAIL → repair → PASS | 38 held / 0 broken | merged cf58cb8 |
-| 1 chapter 1 | built (563721c); Neon prose, review, adversarial running | review 1: FAIL | – | – |
+| 1 chapter 1 | done | Neon FAIL → one Opus repair → PASS | 48 held / 0 broken after repair (run 1: 11 broken; claims narrowed) | merged 2dcf743 |
 | 2, 3, 4, 5, 7, 6, 8, 9, 10a, 10b, publishing | not started | | | |
 
 In progress: chapter 1, worktree `../sqlite-internals-work/ch01`, branch `chunk/ch01` (based on
