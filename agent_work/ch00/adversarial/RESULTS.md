@@ -13,3 +13,7 @@ Raw output: `results-run1.txt`. 30 attacks HELD, 8 BROKEN:
 | TRC-08 | paths annotated `(deleted)` by strace are dropped by `UnderDir`, hiding writes/syncs to unlinked-while-open files | to repair |
 | TRC-09 | merged stream loses a VFS call whose stdout line is split across two `write(1)` calls | to repair |
 | SET-04 | sub-millisecond `BusyTimeout` passes `Validate()` then fails the post-apply comparison | to repair |
+
+Run 2 — after the repair round (commit 8a66cd7) and again after Neon's comment touch-up:
+38 attacks HELD, 0 BROKEN (`results.txt`). Neon re-review: PASS (`../REVIEW-2.md`), three nits
+left open (strace `interrupted` helper, `moduleVersion`, `applyFileSettings` ordering note).
