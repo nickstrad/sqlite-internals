@@ -10,14 +10,18 @@ import (
 
 var databaseMagic = []byte("SQLite format 3\x00")
 
+// IgnoredFrames summarizes a contiguous range of WAL frames that Replay did not
+// apply, along with the reason they were skipped.
 type IgnoredFrames struct {
 	FirstFrame int
 	LastFrame  int
 	Reason     string
 }
 
+// Count returns the number of frames in g.
 func (g IgnoredFrames) Count() int { return g.LastFrame - g.FirstFrame + 1 }
 
+// String formats g as either a single frame or an inclusive frame range.
 func (g IgnoredFrames) String() string {
 	if g.FirstFrame == g.LastFrame {
 		return fmt.Sprintf("frame %d: %s", g.FirstFrame, g.Reason)
@@ -25,6 +29,8 @@ func (g IgnoredFrames) String() string {
 	return fmt.Sprintf("frames %d-%d (%d): %s", g.FirstFrame, g.LastFrame, g.Count(), g.Reason)
 }
 
+// ReplayReport records every count and ignored-frame group produced by Replay
+// or ReplayFiles.
 type ReplayReport struct {
 	WALIgnoredReason  string
 	PageSize          int
@@ -42,6 +48,7 @@ type ReplayReport struct {
 	Ignored           []IgnoredFrames
 }
 
+// IgnoredFrameCount returns the total number of whole frames not applied.
 func (r ReplayReport) IgnoredFrameCount() int {
 	total := 0
 	for _, g := range r.Ignored {
@@ -50,6 +57,7 @@ func (r ReplayReport) IgnoredFrameCount() int {
 	return total
 }
 
+// Lines formats r into human-readable summary lines suitable for experiment output.
 func (r ReplayReport) Lines() []string {
 	if r.WALIgnoredReason != "" {
 		return []string{
@@ -81,6 +89,7 @@ func basePageSize(base []byte) (int, error) {
 	if len(base) < 100 || !bytes.Equal(base[:16], databaseMagic) {
 		return 0, fmt.Errorf("%w: %d bytes without the \"SQLite format 3\" header", ErrBaseNotDatabase, len(base))
 	}
+	// SQLite stores page size 65,536 as big-endian 1 in database header bytes 16..17.
 	size := int(base[16])<<8 | int(base[17])
 	if size == 1 {
 		size = 65536
@@ -115,6 +124,12 @@ func ignoredGroups(file *File) []IgnoredFrames {
 	return groups
 }
 
+// Replay applies all committed WAL frames onto base in plain Go, mirroring
+// SQLite's checkpoint backfill in walCheckpoint (src/wal.c:2282-2335).
+// Frames are applied in order up to LastCommitFrame so later versions of a page
+// overwrite earlier ones; frames targeting pages past the final commit size are
+// skipped (src/wal.c:2312), and the result is truncated or zero-extended to the
+// final commit size (src/wal.c:2328-2331).
 func Replay(base, wal []byte) ([]byte, ReplayReport, error) {
 	report := ReplayReport{BaseBytes: int64(len(base))}
 	pageSize, err := basePageSize(base)
@@ -149,6 +164,10 @@ func Replay(base, wal []byte) ([]byte, ReplayReport, error) {
 	if len(base)%walPageSize != 0 {
 		return nil, report, fmt.Errorf("%w: %d bytes, page size %d", ErrBaseSize, len(base), walPageSize)
 	}
+	// Reject impossible commit sizes using walCheckpoint's exact bound
+	// (src/wal.c:2288-2293: base + 65536 for a possible pending-byte page +
+	// frames*pageSize). This also prevents a corrupt header from triggering a
+	// huge allocation.
 	finalSize := int64(report.DatabasePages) * int64(walPageSize)
 	if limit := int64(len(base)) + 65536 + int64(file.LastCommitFrame)*int64(walPageSize); finalSize > limit {
 		return nil, report, fmt.Errorf("%w: commit size %d pages needs %d bytes, more than base %d + 65536 + %d frames x %d", ErrCommitSizeTooLarge, report.DatabasePages, finalSize, len(base), file.LastCommitFrame, walPageSize)
@@ -175,6 +194,10 @@ func Replay(base, wal []byte) ([]byte, ReplayReport, error) {
 	return out, report, nil
 }
 
+// ReplayFiles replays walPath onto basePath and atomically writes the rebuilt
+// database to outPath via a synced temporary file and rename. A missing walPath
+// is treated as zero frames. Existing outPath or sibling -wal, -journal, or
+// -shm files are refused so SQLite cannot later apply stale sidecar files.
 func ReplayFiles(basePath, walPath, outPath string) (ReplayReport, error) {
 	for _, path := range []string{outPath, outPath + "-wal", outPath + "-journal", outPath + "-shm"} {
 		if _, err := os.Lstat(path); err == nil {

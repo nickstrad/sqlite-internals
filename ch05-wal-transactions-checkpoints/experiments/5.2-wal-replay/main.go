@@ -1,3 +1,9 @@
+// Experiment 5.2 (wal-replay, rung R3) proves that a base database file plus
+// the committed frames of its WAL equals the complete database state. It
+// replays copies taken at a quiet moment, mid-transaction with spilled pages,
+// and after a rollback in plain Go (no SQLite), and proves E1 byte equality
+// against SQLite's own TRUNCATE checkpoint and recovery (both without -shm and
+// with a stale -shm from another database).
 package main
 
 import (
@@ -84,6 +90,9 @@ func replayCopy(directory string) (string, walfile.ReplayReport) {
 	return output, report
 }
 
+// sqliteRecoveryOfCopy copies the captured base and -wal (and optionally a
+// stale -shm from another database) into a fresh directory, lets SQLite open
+// and recover it, checkpoints with TRUNCATE, and returns the resulting path.
 func sqliteRecoveryOfCopy(ctx context.Context, directory, name, staleIndex string) string {
 	target := mkdir(filepath.Join(directory, name))
 	path := filepath.Join(target, databaseName)
@@ -192,6 +201,8 @@ func partBC(ctx context.Context, dir string) {
 	if err := r.Build(ctx, path, spillBaseStep); err != nil {
 		fatal("build", err)
 	}
+	// Set cache_size=10 so the open transaction runs out of page-cache slots
+	// and spills dirty frames into -wal before COMMIT (src/wal.c:4140-4173).
 	options := r.SQLiteOptions()
 	options.Conn.WALAutocheckpoint = 0
 	options.Conn.CacheSize = spillCacheSize
@@ -223,6 +234,10 @@ func partBC(ctx context.Context, dir string) {
 		"the replayer stops at the last commit frame and reports every spilled frame as ignored")
 	recovered := sqliteRecoveryOfCopy(ctx, captureDir, recoveryDirectory, "")
 	compareAndInspect(ctx, "SQLite's recovery and checkpoint of the same captured files", ours, recovered, spillCommitted)
+	// Pass a -shm taken from part A (different database, different salts,
+	// mxFrame 155). The first connection opening a WAL database takes the
+	// dead-man-switch lock, truncates -shm, and rebuilds it from -wal
+	// (src/os_unix.c:4850-4915, unixLockSharedMemory; src/wal.c:1390-1614).
 	staleIndex := filepath.Join(dir, "a-quiet", "shm-from-a", databaseName+"-shm")
 	staleState := must(walfile.ParseIndexFile(staleIndex))("parse stale -shm")
 	fmt.Printf("the stale -shm: mxFrame %d, nPage %d\n", staleState.Header().MaxFrame, staleState.Header().Pages)
@@ -257,6 +272,7 @@ func partBC(ctx context.Context, dir string) {
 }
 
 func main() {
+	// Re-exec entry point for child-process live copies.
 	if walfile.ServeLiveCopyChild(os.Args) {
 		return
 	}

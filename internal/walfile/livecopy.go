@@ -14,13 +14,18 @@ import (
 	"strings"
 )
 
+// LiveCopyChildMode is the first CLI argument used when CopyLiveFiles re-execs
+// the current binary as a child process to copy open SQLite files safely.
 const LiveCopyChildMode = "walfile-live-copy-child"
 
+// CopyPair names one source path and destination path for CopyLiveFiles.
 type CopyPair struct {
 	From string
 	To   string
 }
 
+// CopyResult reports whether a CopyPair's source existed and how many bytes
+// were copied.
 type CopyResult struct {
 	From    string
 	To      string
@@ -28,6 +33,14 @@ type CopyResult struct {
 	Bytes   int64
 }
 
+// ServeLiveCopyChild handles the child-process file-copy mode and exits the
+// process when args[1] == LiveCopyChildMode. Call it at the start of main or
+// TestMain in any binary that invokes CopyLiveFiles or ReadLiveState.
+//
+// Copying in a child process avoids a POSIX lock hazard: closing any file
+// descriptor to the database or -shm inside the process that holds an SQLite
+// connection releases all POSIX fcntl locks that process holds on that inode
+// (src/os_unix.c:1189-1278, 4703-4750).
 func ServeLiveCopyChild(args []string) bool {
 	if len(args) < 2 || args[1] != LiveCopyChildMode {
 		return false
@@ -42,6 +55,8 @@ func ServeLiveCopyChild(args []string) bool {
 		size, err := copyOne(rest[i], rest[i+1])
 		switch {
 		case isMissingSource(err):
+			// Remove any stale copy at the destination so callers never read
+			// leftover bytes from an earlier sample.
 			if removeErr := os.Remove(rest[i+1]); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 				fmt.Fprintf(os.Stderr, "live copy child: %v\n", removeErr)
 				os.Exit(1)
@@ -78,6 +93,9 @@ func copyOne(from, to string) (int64, error) {
 	return size, err
 }
 
+// CopyLiveFiles spawns the current executable in LiveCopyChildMode to copy each
+// source file to its destination without opening those files in the parent
+// process that holds live SQLite connections.
 func CopyLiveFiles(ctx context.Context, pairs []CopyPair) ([]CopyResult, error) {
 	executable, err := os.Executable()
 	if err != nil {
@@ -118,6 +136,8 @@ func CopyLiveFiles(ctx context.Context, pairs []CopyPair) ([]CopyResult, error) 
 	return results, nil
 }
 
+// DatabaseFileSet returns CopyPairs for a database file and its -wal and -shm
+// sidecar files copied into directory under name.
 func DatabaseFileSet(database, directory, name string) []CopyPair {
 	var pairs []CopyPair
 	for _, suffix := range []string{"", "-wal", "-shm"} {
@@ -137,6 +157,8 @@ func isMissingSource(err error) bool {
 	return errors.As(err, &source) && errors.Is(err, os.ErrNotExist)
 }
 
+// LiveState holds a parsed snapshot of a live database's -wal and -shm files
+// sampled through CopyLiveFiles.
 type LiveState struct {
 	WALPresent   bool
 	WALSize      int64
@@ -146,6 +168,8 @@ type LiveState struct {
 	Index        *Index
 }
 
+// ReadLiveState copies database's -wal and -shm into scratchDirectory via a
+// child process, parses both, and removes the temporary copies before returning.
 func ReadLiveState(ctx context.Context, database, scratchDirectory string) (LiveState, error) {
 	walCopy := filepath.Join(scratchDirectory, "live-state-copy-wal")
 	indexCopy := filepath.Join(scratchDirectory, "live-state-copy-shm")

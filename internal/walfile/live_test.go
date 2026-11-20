@@ -12,6 +12,7 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
 )
 
+// TestMain intercepts LiveCopyChildMode when tests invoke CopyLiveFiles.
 func TestMain(m *testing.M) {
 	ServeLiveCopyChild(os.Args)
 	os.Exit(m.Run())
@@ -39,6 +40,7 @@ func execAll(t *testing.T, db *sqlitex.DB, statements ...string) {
 	}
 }
 
+// TestLiveCopyReportsMissingFiles checks child-process copying, stale-target removal, and write errors.
 func TestLiveCopyReportsMissingFiles(t *testing.T) {
 	dir := t.TempDir()
 	present := filepath.Join(dir, "a")
@@ -64,6 +66,7 @@ func TestLiveCopyReportsMissingFiles(t *testing.T) {
 	}
 }
 
+// TestReplayMatchesSQLiteCheckpoint verifies live WAL/-shm parsing, showwal agreement, and E1 replay against TRUNCATE.
 func TestReplayMatchesSQLiteCheckpoint(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -163,6 +166,7 @@ func TestReplayMatchesSQLiteCheckpoint(t *testing.T) {
 	}
 }
 
+// TestReadLiveState checks ReadLiveState before open, after commits, and after TRUNCATE with temp cleanup.
 func TestReadLiveState(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

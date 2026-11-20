@@ -1,3 +1,8 @@
+// Experiment 5.1 (wal-inspector) parses a live SQLite WAL and its -shm
+// wal-index in plain Go, verifies the running checksum chain and commit frames
+// against PRAGMA wal_checkpoint(NOOP) and SQLite's showwal utility, and proves
+// that repeated runs and different synchronous settings produce the exact same
+// frame sequence, differing only in random salts and dependent checksums.
 package main
 
 import (
@@ -57,6 +62,9 @@ type run struct {
 	databaseDir string
 }
 
+// buildRun creates a step-0 database, applies recipe steps 1..5 on one
+// connection with autocheckpoint disabled, copies the live database, -wal, and
+// -shm from a child process before closing, and parses both sidecar files.
 func buildRun(ctx context.Context, dir, name, synchronous string) run {
 	r := recipe.Default()
 	runDir := filepath.Join(dir, name)
@@ -68,6 +76,8 @@ func buildRun(ctx context.Context, dir, name, synchronous string) run {
 		fatal("build step 0", err)
 	}
 	options := r.SQLiteOptions()
+	// Disable autocheckpoint so every frame of steps 1..5 remains in the WAL
+	// until the child copies it.
 	options.Conn.WALAutocheckpoint = 0
 	options.Conn.Synchronous = synchronous
 	db := must(sqlitex.Open(ctx, path, options))("open")
@@ -82,12 +92,18 @@ func buildRun(ctx context.Context, dir, name, synchronous string) run {
 		}
 		result.pageCounts = append(result.pageCounts, pages)
 	}
+	// Copy while the connection is still open because closing the last
+	// connection triggers a close checkpoint and deletes -wal and -shm
+	// (src/wal.c:2528-2565, sqlite3WalClose). Copying in a child avoids
+	// dropping this process's POSIX locks on -shm (src/os_unix.c:4703-4750).
 	copies := must(walfile.CopyLiveFiles(ctx, walfile.DatabaseFileSet(path, filepath.Join(runDir, "copy"), "r.db")))("live copy")
 	for _, c := range copies {
 		if !c.Present {
 			fatal("live copy", fmt.Errorf("%s was missing while the connection was open", filepath.Base(c.From)))
 		}
 	}
+	// NOOP takes no locks and reports (busy, mxFrame, nBackfill) from the
+	// wal-index (src/wal.c:4341, 4399-4403).
 	result.noop = must(sqlitex.Checkpoint(ctx, db, "", sqlitex.CheckpointNoop))("NOOP checkpoint")
 	if err := db.Close(); err != nil {
 		fatal("close", err)
@@ -212,6 +228,7 @@ func partB(ctx context.Context, dir string, first run) {
 }
 
 func main() {
+	// Re-exec entry point for child-process live copies.
 	if walfile.ServeLiveCopyChild(os.Args) {
 		return
 	}

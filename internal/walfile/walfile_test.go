@@ -114,6 +114,7 @@ func expectedPage(t *testing.T, out []byte, pageSize int, page uint32, fill byte
 	}
 }
 
+// TestChecksumMatchesSQLiteHeader checks ChecksumBytes against a real SQLite WAL header vector and rejects bad lengths.
 func TestChecksumMatchesSQLiteHeader(t *testing.T) {
 	header := []byte{0x37, 0x7f, 0x06, 0x82, 0x00, 0x2d, 0xe2, 0x18, 0x00, 0x00, 0x10, 0x00, 0, 0, 0, 0,
 		0xc1, 0xab, 0x48, 0x9b, 0xb9, 0xfd, 0x0c, 0xf3}
@@ -132,6 +133,7 @@ func TestChecksumMatchesSQLiteHeader(t *testing.T) {
 	}
 }
 
+// TestParseBothByteOrders verifies Parse, commits, page images, and tuples for both checksum orders and 512/4096/65536 pages.
 func TestParseBothByteOrders(t *testing.T) {
 	for _, bigEndian := range []bool{false, true} {
 		for _, pageSize := range []int{512, 4096, 65536} {
@@ -180,6 +182,7 @@ func hexString(b []byte) string {
 	return string(out)
 }
 
+// TestByteOrderMatters checks that flipping the magic byte-order bit breaks the header checksum.
 func TestByteOrderMatters(t *testing.T) {
 	data := threeTransactions(false, 512).build()
 	data[3] = 0x83
@@ -189,6 +192,7 @@ func TestByteOrderMatters(t *testing.T) {
 	}
 }
 
+// TestEmptyAndHeaderOnly checks that 0-byte and 32-byte WALs parse cleanly with zero frames.
 func TestEmptyAndHeaderOnly(t *testing.T) {
 	file, err := Parse(nil)
 	if err != nil || len(file.Frames) != 0 || file.Size != 0 {
@@ -201,6 +205,7 @@ func TestEmptyAndHeaderOnly(t *testing.T) {
 	}
 }
 
+// TestIgnoredHeaders checks every ErrWALIgnored header case and ErrUnsupportedVersion.
 func TestIgnoredHeaders(t *testing.T) {
 	good := threeTransactions(false, 1024).build()
 	cases := map[string]func([]byte) []byte{
@@ -228,6 +233,7 @@ func TestIgnoredHeaders(t *testing.T) {
 	}
 }
 
+// TestStopsAtFirstInvalidFrame checks checksum, salt, page-zero, and trailing partial-frame handling.
 func TestStopsAtFirstInvalidFrame(t *testing.T) {
 	w := threeTransactions(false, 512)
 	frameSize := 512 + FrameHeaderSize
@@ -264,6 +270,7 @@ func TestStopsAtFirstInvalidFrame(t *testing.T) {
 	}
 }
 
+// TestOlderGenerationTail verifies Parse and Replay stop at leftover frames from a prior WAL generation.
 func TestOlderGenerationTail(t *testing.T) {
 	old := threeTransactions(false, 512)
 	old.salt1 = 7
@@ -293,6 +300,7 @@ func TestOlderGenerationTail(t *testing.T) {
 	expectedPage(t, out, 512, 3, 0x01)
 }
 
+// TestReplay checks Replay across multiple commits in both checksum byte orders.
 func TestReplay(t *testing.T) {
 	for _, bigEndian := range []bool{false, true} {
 		w := threeTransactions(bigEndian, 1024)
@@ -314,6 +322,7 @@ func TestReplay(t *testing.T) {
 	}
 }
 
+// TestReplayUncommittedTailAndShrink verifies ignored uncommitted frames and truncation when a commit shrinks the database.
 func TestReplayUncommittedTailAndShrink(t *testing.T) {
 	w := threeTransactions(false, 512)
 	w.frames = append(w.frames, testFrame{page: 1, commitSize: 2, fill: 0xe1}, testFrame{page: 3, fill: 0xf3}, testFrame{page: 5, fill: 0xf5})
@@ -335,6 +344,7 @@ func TestReplayUncommittedTailAndShrink(t *testing.T) {
 	expectedPage(t, out, 512, 2, 0xb2)
 }
 
+// TestReplayWithoutCommitReturnsBase checks that uncommitted, ignored, or empty WALs leave base unchanged.
 func TestReplayWithoutCommitReturnsBase(t *testing.T) {
 	w := testWAL{pageSize: 512, frames: []testFrame{{page: 2, fill: 9}}}
 	base := baseImage(512, 3)
@@ -352,6 +362,7 @@ func TestReplayWithoutCommitReturnsBase(t *testing.T) {
 	}
 }
 
+// TestReplayOntoEmptyBase checks that Replay can materialize a database from an empty base and a WAL.
 func TestReplayOntoEmptyBase(t *testing.T) {
 	out, report, err := Replay(nil, threeTransactions(false, 512).build())
 	if err != nil || len(out) != 4*512 || report.BaseBytes != 0 {
@@ -359,6 +370,7 @@ func TestReplayOntoEmptyBase(t *testing.T) {
 	}
 }
 
+// TestReplayErrors verifies typed errors for page-size mismatch, bad base, bad base size, huge commit size, and version.
 func TestReplayErrors(t *testing.T) {
 	wal := threeTransactions(false, 1024).build()
 	if _, _, err := Replay(baseImage(512, 2), wal); !errors.Is(err, ErrPageSizeMismatch) {
@@ -384,6 +396,7 @@ func TestReplayErrors(t *testing.T) {
 	}
 }
 
+// TestReplayFiles checks atomic file replay, sidecar refusal, missing-WAL handling, and temp-file cleanup.
 func TestReplayFiles(t *testing.T) {
 	dir := t.TempDir()
 	basePath := filepath.Join(dir, "base.db")
@@ -432,6 +445,7 @@ func TestReplayFiles(t *testing.T) {
 	}
 }
 
+// TestCompareBytes checks region classification and salt/checksum-only difference filtering.
 func TestCompareBytes(t *testing.T) {
 	a := threeTransactions(false, 512)
 	b := a
@@ -466,6 +480,7 @@ func TestCompareBytes(t *testing.T) {
 	}
 }
 
+// TestEqualTuples checks tuple-sequence equality and 1-based mismatch index reporting.
 func TestEqualTuples(t *testing.T) {
 	a := []Tuple{{1, "x", 0}, {2, "y", 2}}
 	if ok, _ := EqualTuples(a, a); !ok {
@@ -521,6 +536,7 @@ func (x testIndex) build() []byte {
 	return data
 }
 
+// TestParseIndex checks wal-index decoding in both byte orders, 64 KiB page sizes, block boundaries, and error cases.
 func TestParseIndex(t *testing.T) {
 	for _, bigEndian := range []bool{false, true} {
 		pages := make([]uint32, FramesInFirstIndexBlock+3)
@@ -600,6 +616,7 @@ func TestParseIndex(t *testing.T) {
 	}
 }
 
+// TestParseShowwal checks parsing of showwal output including checksum mismatch annotations.
 func TestParseShowwal(t *testing.T) {
 	text := `Pagesize: 4096
 Available pages: 1..3
@@ -632,6 +649,7 @@ Frame    3:      2      2 0xc1ab489b,b9fd0cf3 0x73371a28,d2bdc887 should be 0x00
 	}
 }
 
+// TestCompareWithShowwal checks agreement and discrepancy reporting against a ShowwalListing.
 func TestCompareWithShowwal(t *testing.T) {
 	file, err := Parse(threeTransactions(false, 512).build())
 	if err != nil {
@@ -651,6 +669,7 @@ func TestCompareWithShowwal(t *testing.T) {
 	}
 }
 
+// TestMalformedInputNeverPanics runs 3,000 mutated and 200 random inputs through every parser and Replay.
 func TestMalformedInputNeverPanics(t *testing.T) {
 	rng := rand.New(rand.NewPCG(5, 5))
 	seeds := [][]byte{threeTransactions(false, 512).build(), threeTransactions(true, 512).build()}
@@ -685,6 +704,7 @@ func TestMalformedInputNeverPanics(t *testing.T) {
 	}
 }
 
+// FuzzParseAndReplay fuzzes Parse, Replay, and ParseIndex against arbitrary byte slices.
 func FuzzParseAndReplay(f *testing.F) {
 	f.Add(threeTransactions(false, 512).build())
 	f.Add(threeTransactions(true, 512).build())

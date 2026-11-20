@@ -1,3 +1,9 @@
+// Experiment 5.4 (checkpoint-modes) runs PASSIVE, FULL, RESTART, and TRUNCATE
+// checkpoints against three reader states (no reader, reader behind, reader
+// current), records (busy, log, checkpointed), busy-timeout waits, WAL size,
+// and salt changes right after the checkpoint and after the next write, and
+// contrasts TRUNCATE run by a third connection against TRUNCATE run by the
+// writer itself (src/wal.c:2199-2395, 3875-3915, 4088-4098, 4301-4432).
 package main
 
 import (
@@ -129,6 +135,10 @@ func beginReader(ctx context.Context, path string) (*sqlitex.DB, *sql.Tx) {
 	return db, tx
 }
 
+// runCase executes one (mode, readerPosition) cell on a fresh copy of the
+// step-5 template: writer commits steps 6 and 7, a third connection with a
+// 300 ms busy_timeout runs the checkpoint, then the reader closes and writer
+// commits step 8 to reveal whether the WAL restarted and how its salts changed.
 func runCase(ctx context.Context, template, dir, mode string, reader readerPosition) outcome {
 	name := strings.ToLower(mode) + "-" + strings.ReplaceAll(reader.String(), " ", "-")
 	root := filepath.Join(dir, name)
@@ -214,6 +224,7 @@ func saltDelta(before, after sample) string {
 }
 
 func main() {
+	// Re-exec entry point for child-process live copies.
 	if walfile.ServeLiveCopyChild(os.Args) {
 		return
 	}
@@ -316,6 +327,12 @@ func main() {
 		}
 	}
 	check(writerRestartOK, "when the writer itself restarts the WAL at its next write, the new header has salt-1 + 1 and checkpoint sequence + 1")
+	// Check whether the writer's next commit restarted the WAL: walFrames calls
+	// walRestartLog (src/wal.c:3879-3896), which resets mxFrame to 0 whenever
+	// nBackfill == mxFrame and no reader holds locks 1..4. When another
+	// connection already ran TRUNCATE, the writer's own pWal->nCkpt is still 0,
+	// so walFrames generates fresh random salts instead of salt-1 + 1
+	// (src/wal.c:4095-4096).
 	check(truncated.next.walSalt1 != truncated.before.walSalt1 && truncated.next.walSalt1 != truncated.before.walSalt1+1 && truncated.next.walSequence == truncated.before.walSequence,
 		"after another connection's TRUNCATE, the writer's next WAL header has new random salts and the writer's own checkpoint sequence (0): the sequence is per connection")
 	ownTruncate(ctx, template, dir)
@@ -330,6 +347,10 @@ func main() {
 	fmt.Println("CHECKPOINT MODES OK")
 }
 
+// ownTruncate repeats TRUNCATE/no-reader on the writer connection itself: its
+// walRestartHdr call increments pWal->nCkpt to 1 (src/wal.c:2156), so its next
+// commit preserves salt-1 + 1 and writes checkpoint sequence 1 instead of
+// re-randomizing salts.
 func ownTruncate(ctx context.Context, template, dir string) {
 	fmt.Println()
 	fmt.Printf("== the writer runs TRUNCATE itself (no reader), then commits step %d\n", nextWrite)

@@ -1,3 +1,9 @@
+// Experiment 5.3 (reader-pins-the-wal) demonstrates both ways an open read
+// transaction stops checkpoints and forces unbounded WAL growth: part A holds
+// a read mark in slot 1..4 so nBackfill stops at the reader's mark and the WAL
+// cannot restart; part B begins on a fully checkpointed WAL so the reader holds
+// read lock 0 (WAL_READ_LOCK(0)), letting the WAL restart once while blocking
+// all subsequent backfill (nBackfill stays 0).
 package main
 
 import (
@@ -111,6 +117,9 @@ func openWriter(ctx context.Context, path string) *sqlitex.DB {
 	return must(sqlitex.Open(ctx, path, options))("open writer")
 }
 
+// openReader starts a deferred read-only transaction and executes countQuery so
+// SQLite actually calls walTryBeginRead (src/wal.c:3020-3272) and acquires a
+// read lock; BEGIN DEFERRED alone takes no lock until the first statement.
 func openReader(ctx context.Context, path string) (*sqlitex.DB, *sql.Tx, int) {
 	options := recipe.Default().SQLiteOptions()
 	options.ImmediateTx = false
@@ -192,6 +201,9 @@ func partA(ctx context.Context, dir string) {
 	check(marksHeld && backfillBounded && firstAutocheckpointed > 0 && last.backfill == snapshot,
 		"checkpoints ran (autocheckpoint) but nBackfill stopped at the reader's mark and stayed there")
 
+	// Ending the read transaction releases its shared lock on WAL_READ_LOCK(1)
+	// but leaves its mark number written in aReadMark[1] until a checkpoint or
+	// later reader updates that slot (src/wal.c:2241-2242, 3196).
 	if err := tx.Rollback(); err != nil {
 		fatal("end read", err)
 	}
@@ -234,6 +246,11 @@ func partB(ctx context.Context, dir string) {
 	header("moment")
 	before := take(ctx, path, scratch)
 	row("checkpointed", before, -1, count(ctx, writer))
+	// With nBackfill == mxFrame, walTryBeginRead takes WAL_READ_LOCK(0) shared
+	// instead of setting a mark in slots 1..4 (src/wal.c:3134-3163). The writer
+	// can restart the WAL because walRestartLog only locks slots 1..4
+	// (src/wal.c:3885), but walCheckpoint cannot backfill a single page because
+	// it must take WAL_READ_LOCK(0) exclusively first (src/wal.c:2260).
 	reader, tx, readerRows := openReader(ctx, path)
 	began := take(ctx, path, scratch)
 	row("reader began", began, readerRows, count(ctx, writer))
@@ -274,6 +291,7 @@ func partB(ctx context.Context, dir string) {
 }
 
 func main() {
+	// Re-exec entry point for child-process live copies.
 	if walfile.ServeLiveCopyChild(os.Args) {
 		return
 	}

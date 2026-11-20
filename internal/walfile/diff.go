@@ -5,8 +5,11 @@ import (
 	"strings"
 )
 
+// Region classifies a byte offset inside a WAL file into its structural field
+// (WAL header field, frame header field, page image, or trailing length delta).
 type Region int
 
+// Structural regions of a WAL file (src/wal.c:34-57).
 const (
 	RegionHeaderMagic Region = iota
 	RegionHeaderVersion
@@ -23,6 +26,7 @@ const (
 	regionCount
 )
 
+// String returns a human-readable label for r.
 func (r Region) String() string {
 	switch r {
 	case RegionHeaderMagic:
@@ -53,6 +57,7 @@ func (r Region) String() string {
 	return fmt.Sprintf("Region(%d)", int(r))
 }
 
+// RegionAt maps a byte offset in a WAL with the given pageSize to its Region.
 func RegionAt(offset int64, pageSize int) Region {
 	if offset < HeaderSize {
 		switch {
@@ -86,6 +91,8 @@ func RegionAt(offset int64, pageSize int) Region {
 	return RegionPageData
 }
 
+// ByteComparison summarizes every byte difference between two WAL files broken
+// down by Region.
 type ByteComparison struct {
 	SizeA          int64
 	SizeB          int64
@@ -93,10 +100,15 @@ type ByteComparison struct {
 	ByRegion       [regionCount]int64
 }
 
+// Identical reports whether the two WAL byte slices have equal length and zero
+// differing bytes.
 func (c ByteComparison) Identical() bool {
 	return c.SizeA == c.SizeB && c.DifferingBytes == 0
 }
 
+// OnlyIn reports whether the two WAL files have the same size and every
+// differing byte falls within the listed regions (used to verify that two
+// deterministic runs differ only in random salts and dependent checksums).
 func (c ByteComparison) OnlyIn(regions ...Region) bool {
 	allowed := map[Region]bool{}
 	for _, r := range regions {
@@ -110,6 +122,7 @@ func (c ByteComparison) OnlyIn(regions ...Region) bool {
 	return c.SizeA == c.SizeB
 }
 
+// String formats the comparison summary with per-region differing byte counts.
 func (c ByteComparison) String() string {
 	if c.Identical() {
 		return fmt.Sprintf("byte-identical (%d bytes)", c.SizeA)
@@ -130,6 +143,8 @@ func (c ByteComparison) String() string {
 	return text
 }
 
+// CompareBytes compares two raw WAL byte slices byte by byte and attributes
+// each difference to its WAL Region.
 func CompareBytes(a, b []byte, pageSize int) ByteComparison {
 	result := ByteComparison{SizeA: int64(len(a)), SizeB: int64(len(b))}
 	shorter := min(len(a), len(b))

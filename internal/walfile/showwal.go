@@ -6,6 +6,8 @@ import (
 	"strings"
 )
 
+// ShowwalFrame holds one frame line decoded from SQLite's in-tree showwal tool
+// (tool/showwal.c:236).
 type ShowwalFrame struct {
 	Number           int
 	Page             uint32
@@ -17,12 +19,17 @@ type ShowwalFrame struct {
 	ExpectedChecksum Checksum
 }
 
+// ShowwalListing holds the parsed header summary and frame lines printed by
+// running `showwal <file>`.
 type ShowwalListing struct {
 	PageSize        int
 	AvailableFrames int
 	Frames          []ShowwalFrame
 }
 
+// ParseShowwal parses stdout from SQLite's pinned showwal utility.
+// showwal checks the running checksum chain and prints " should be ..." on
+// mismatches, but does not validate salts (tool/showwal.c:236, 567).
 func ParseShowwal(text string) (ShowwalListing, error) {
 	var listing ShowwalListing
 	scanner := bufio.NewScanner(strings.NewReader(text))
@@ -73,6 +80,9 @@ func parseShowwalFrame(line string) (ShowwalFrame, error) {
 	return frame, nil
 }
 
+// CompareWithShowwal cross-checks f against a ShowwalListing from SQLite's
+// in-tree showwal tool, returning one description per discrepancy. Every frame
+// that walfile considers valid must also have a matching checksum in showwal.
 func (f *File) CompareWithShowwal(listing ShowwalListing) []string {
 	var problems []string
 	if listing.PageSize != f.PageSize() {
