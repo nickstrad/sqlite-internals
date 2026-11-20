@@ -75,7 +75,14 @@ func rewriteManifest(t *testing.T, dir string, edit func([]string) []string) {
 	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
 	head, entries := lines[:3], edit(append([]string(nil), lines[3:]...))
 	head[2] = "pages " + strconv.Itoa(len(entries))
-	os.WriteFile(path, []byte(strings.Join(append(head, entries...), "\n")+"\n"), 0o644)
+	must(t, os.WriteFile(path, []byte(strings.Join(append(head, entries...), "\n")+"\n"), 0o644))
+}
+
+func must(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 // TestRebuildNamesTheBadPage verifies dropped, duplicated, swapped, corrupted, and truncated captures are refused with the page named and no output written.
@@ -97,12 +104,14 @@ func TestRebuildNamesTheBadPage(t *testing.T) {
 			rewriteManifest(t, c, func(e []string) []string { e[5], e[6] = e[6], e[5]; return e })
 		}, "page 7: out of order"},
 		{"corrupt image of page 2", func(c string) {
-			f, _ := os.OpenFile(filepath.Join(c, PagesFile), os.O_WRONLY, 0)
-			f.WriteAt([]byte{0xff}, 4096+100)
-			f.Close()
+			f, err := os.OpenFile(filepath.Join(c, PagesFile), os.O_WRONLY, 0)
+			must(t, err)
+			_, err = f.WriteAt([]byte{0xff}, 4096+100)
+			must(t, err)
+			must(t, f.Close())
 		}, "capture page 2: image sha256"},
 		{"short pages file", func(c string) {
-			os.Truncate(filepath.Join(c, PagesFile), 4096*3)
+			must(t, os.Truncate(filepath.Join(c, PagesFile), 4096*3))
 		}, "holds 12288 bytes"},
 	}
 	for _, c := range cases {
@@ -126,24 +135,24 @@ func TestRebuildNamesTheBadPage(t *testing.T) {
 func TestRefusesDatabaseNotAtRest(t *testing.T) {
 	dir := t.TempDir()
 	path := buildRecipe(t, dir, 2)
-	os.WriteFile(path+"-wal", []byte("frames"), 0o644)
+	must(t, os.WriteFile(path+"-wal", []byte("frames"), 0o644))
 	if _, err := Pages(path, filepath.Join(dir, "a")); !errors.Is(err, ErrNotAtRest) || !strings.Contains(err.Error(), "-wal holds 6 bytes") {
 		t.Fatal(err)
 	}
-	os.WriteFile(path+"-wal", nil, 0o644)
+	must(t, os.WriteFile(path+"-wal", nil, 0o644))
 	if err := CheckAtRest(path); err != nil {
 		t.Fatal("empty -wal should be at rest:", err)
 	}
-	os.Remove(path + "-wal")
-	os.WriteFile(path+"-journal", []byte{0xd9, 0xd5, 0x05, 0xf9}, 0o644)
+	must(t, os.Remove(path+"-wal"))
+	must(t, os.WriteFile(path+"-journal", []byte{0xd9, 0xd5, 0x05, 0xf9}, 0o644))
 	if _, err := Pages(path, filepath.Join(dir, "b")); !errors.Is(err, ErrNotAtRest) || !strings.Contains(err.Error(), "hot -journal") {
 		t.Fatal(err)
 	}
-	os.WriteFile(path+"-journal", make([]byte, 512), 0o644)
+	must(t, os.WriteFile(path+"-journal", make([]byte, 512), 0o644))
 	if err := CheckAtRest(path); err != nil {
 		t.Fatal("zeroed journal header should be at rest:", err)
 	}
-	os.Remove(path + "-journal")
+	must(t, os.Remove(path+"-journal"))
 	if _, err := os.Stat(filepath.Join(dir, "a", ManifestFile)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("manifest written for a refused capture")
 	}
@@ -151,8 +160,91 @@ func TestRefusesDatabaseNotAtRest(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := filepath.Join(dir, "x.db")
-	os.WriteFile(out+"-wal", []byte("stale"), 0o644)
+	must(t, os.WriteFile(out+"-wal", []byte("stale"), 0o644))
 	if _, err := Rebuild(filepath.Join(dir, "c"), out); err == nil || !strings.Contains(err.Error(), "-wal exists") {
 		t.Fatal(err)
+	}
+}
+
+func TestRebuildRefusesACaptureTheCensusContradicts(t *testing.T) {
+	dir := t.TempDir()
+	path := buildRecipe(t, dir, 4)
+	original := filepath.Join(dir, "original")
+	m, err := Pages(path, original)
+	must(t, err)
+	pages, err := os.ReadFile(filepath.Join(original, PagesFile))
+	must(t, err)
+	last := m.PageCount()
+	cases := []struct {
+		name string
+		edit func(capDir string)
+		want string
+	}{
+		{"last page dropped from manifest and pages", func(c string) {
+			rewriteManifest(t, c, func(e []string) []string { return e[:len(e)-1] })
+			must(t, os.WriteFile(filepath.Join(c, PagesFile), pages[:(last-1)*m.PageSize], 0o644))
+		}, "not a database the page census accepts"},
+		{"unknown role for page 1", func(c string) {
+			rewriteManifest(t, c, func(e []string) []string {
+				f := strings.Fields(e[0])
+				e[0] = strings.Join([]string{f[0], "bogus-role", f[2]}, " ")
+				return e
+			})
+		}, "capture page 1: the manifest disagrees with the rebuilt file's census: role bogus-role vs table-leaf"},
+		{"wrong role for page 1", func(c string) {
+			rewriteManifest(t, c, func(e []string) []string {
+				f := strings.Fields(e[0])
+				e[0] = strings.Join([]string{f[0], "overflow", f[2]}, " ")
+				return e
+			})
+		}, "capture page 1: the manifest disagrees with the rebuilt file's census: role overflow vs"},
+		{"no pages", func(c string) {
+			must(t, os.WriteFile(filepath.Join(c, ManifestFile), []byte(equal.ManifestFormat+"\npage-size 4096\npages 0\n"), 0o644))
+			must(t, os.WriteFile(filepath.Join(c, PagesFile), nil, 0o644))
+		}, "lists no pages"},
+	}
+	for _, c := range cases {
+		capDir := filepath.Join(dir, strings.ReplaceAll(c.name, " ", "-"))
+		_, err := Pages(path, capDir)
+		must(t, err)
+		c.edit(capDir)
+		out := filepath.Join(dir, "out-"+filepath.Base(capDir)+".db")
+		_, err = Rebuild(capDir, out)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v", c.name, err)
+		}
+		for _, p := range []string{out, out + ".rebuild-tmp"} {
+			if _, statErr := os.Stat(p); !errors.Is(statErr, os.ErrNotExist) {
+				t.Errorf("%s: %s left behind", c.name, p)
+			}
+		}
+	}
+}
+
+func TestFailedCaptureLeavesNoCapture(t *testing.T) {
+	dir := t.TempDir()
+	path := buildRecipe(t, dir, 3)
+	capDir := filepath.Join(dir, "cap")
+	_, err := Pages(path, capDir)
+	must(t, err)
+	afterCaptureWritten = func(dbPath string) {
+		must(t, os.WriteFile(dbPath+"-wal", []byte("a writer started"), 0o644))
+	}
+	t.Cleanup(func() { afterCaptureWritten = func(string) {} })
+	_, err = Pages(path, capDir)
+	if !errors.Is(err, ErrNotAtRest) || !strings.Contains(err.Error(), "changed during the capture") {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(capDir)
+	must(t, err)
+	if len(entries) != 0 {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("failed capture left %v", names)
+	}
+	if _, err := Rebuild(capDir, filepath.Join(dir, "out.db")); err == nil {
+		t.Fatal("Rebuild accepted the directory of a failed capture")
 	}
 }

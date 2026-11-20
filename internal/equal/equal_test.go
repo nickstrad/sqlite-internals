@@ -39,8 +39,11 @@ func TestCompareImages(t *testing.T) {
 func TestCompareFilesAndHash(t *testing.T) {
 	dir := t.TempDir()
 	a, b := filepath.Join(dir, "a"), filepath.Join(dir, "b")
-	os.WriteFile(a, image('a', 'b'), 0o644)
-	os.WriteFile(b, image('a', 'b'), 0o644)
+	for _, path := range []string{a, b} {
+		if err := os.WriteFile(path, image('a', 'b'), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	r, err := CompareFiles(a, b, 512)
 	if err != nil || !r.Equal {
 		t.Fatal(r, err)

@@ -139,23 +139,56 @@ func Pages(dbPath, dir string) (equal.Manifest, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return equal.Manifest{}, err
 	}
-	if err := writePages(f, filepath.Join(dir, PagesFile), m); err != nil {
+	pagesPath, manifestPath := filepath.Join(dir, PagesFile), filepath.Join(dir, ManifestFile)
+	pagesTmp, manifestTmp := pagesPath+captureTmpSuffix, manifestPath+captureTmpSuffix
+	removeAll := func(paths ...string) {
+		for _, p := range paths {
+			os.Remove(p)
+		}
+	}
+	for _, p := range []string{manifestPath, pagesPath} {
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return equal.Manifest{}, err
+		}
+	}
+	if err := writeCapture(f, dbPath, before, m, pagesTmp, manifestTmp); err != nil {
+		removeAll(pagesTmp, manifestTmp)
 		return equal.Manifest{}, err
 	}
-	if err := os.WriteFile(filepath.Join(dir, ManifestFile), []byte(m.Text()), 0o644); err != nil {
+	if err := os.Rename(pagesTmp, pagesPath); err != nil {
+		removeAll(pagesTmp, manifestTmp)
 		return equal.Manifest{}, err
 	}
+	if err := os.Rename(manifestTmp, manifestPath); err != nil {
+		removeAll(pagesPath, manifestTmp)
+		return equal.Manifest{}, err
+	}
+	return m, nil
+}
+
+const captureTmpSuffix = ".capture-tmp"
+
+var afterCaptureWritten = func(dbPath string) {}
+
+func writeCapture(f *dbfile.File, dbPath string, before os.FileInfo, m equal.Manifest, pagesPath, manifestPath string) error {
+	if err := writePages(f, pagesPath, m); err != nil {
+		return err
+	}
+	if err := os.WriteFile(manifestPath, []byte(m.Text()), 0o644); err != nil {
+		return err
+	}
+	afterCaptureWritten(dbPath)
 	if err := CheckAtRest(dbPath); err != nil {
-		return equal.Manifest{}, fmt.Errorf("database changed during the capture: %w", err)
+		return fmt.Errorf("database changed during the capture: %w", err)
 	}
 	after, err := os.Stat(dbPath)
 	if err != nil {
-		return equal.Manifest{}, err
+		return err
 	}
 	if after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
-		return equal.Manifest{}, fmt.Errorf("%s: database changed during the capture", dbPath)
+		return fmt.Errorf("%s: database changed during the capture", dbPath)
 	}
-	return m, nil
+	return nil
 }
 
 func writePages(f *dbfile.File, path string, m equal.Manifest) error {
@@ -218,6 +251,9 @@ func Rebuild(dir, outPath string) (equal.Manifest, error) {
 	if err := m.CheckSequence(); err != nil {
 		return m, err
 	}
+	if m.PageCount() == 0 {
+		return m, errors.New("the manifest lists no pages; a database has at least one")
+	}
 	if m.PageSize < dbfile.MinPageSize || m.PageSize > dbfile.MaxPageSize || m.PageSize&(m.PageSize-1) != 0 {
 		return m, fmt.Errorf("manifest page size %d is not a valid page size", m.PageSize)
 	}
@@ -226,6 +262,8 @@ func Rebuild(dir, outPath string) (equal.Manifest, error) {
 	for _, suffix := range []string{"-wal", "-journal", "-shm"} {
 		if _, err := os.Stat(outPath + suffix); err == nil {
 			return m, fmt.Errorf("%s%s exists; SQLite would apply it to the rebuilt file", outPath, suffix)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return m, err
 		}
 	}
 	in, err := os.Open(filepath.Join(dir, PagesFile))
@@ -271,5 +309,35 @@ func Rebuild(dir, outPath string) (equal.Manifest, error) {
 		os.Remove(tmp)
 		return m, err
 	}
-	return m, os.Rename(tmp, outPath)
+	if err := checkRebuilt(tmp, m); err != nil {
+		os.Remove(tmp)
+		return m, err
+	}
+	if err := os.Rename(tmp, outPath); err != nil {
+		os.Remove(tmp)
+		return m, err
+	}
+	return m, nil
+}
+
+func checkRebuilt(path string, m equal.Manifest) error {
+	f, err := dbfile.Open(path)
+	if err != nil {
+		return fmt.Errorf("the rebuilt file is not a database the page census accepts: %w", err)
+	}
+	defer f.Close()
+	if int64(f.PageCount())*int64(f.PageSize()) != f.FileSize() {
+		return fmt.Errorf("the rebuilt file holds %d bytes but its header describes %d pages of %d bytes", f.FileSize(), f.PageCount(), f.PageSize())
+	}
+	got, err := BuildManifest(f)
+	if err != nil {
+		return fmt.Errorf("the rebuilt file is not a database the page census accepts: %w", err)
+	}
+	if diff := equal.CompareManifests(m, got); !diff.Equal {
+		if diff.FirstDifferingPage == 0 {
+			return fmt.Errorf("the rebuilt file's census disagrees with the manifest: %s", diff.Reason)
+		}
+		return &PageError{Page: diff.FirstDifferingPage, Problem: "the manifest disagrees with the rebuilt file's census: " + diff.Reason}
+	}
+	return nil
 }
