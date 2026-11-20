@@ -1,0 +1,15 @@
+# Chapter 7 — adversarial results (orchestrator's record)
+
+Run 1 — 2026-11-20, on the Opus build with Neon's comments, `run-all.sh`. Raw output: `results-run1.txt`.
+26 HELD, 8 BROKEN. Every BROKEN line went to the repair round to be fixed or answered:
+
+| Attack | What was tried | Expected | Got |
+| --- | --- | --- | --- |
+| MAP-04 | full table scan (100x600B rows) in CLI -vfstrace+strace with PRAGMA mmap_size=268435456 | each xRead maps to 1 pread64 and DB page reads go through xRead->pread64 (7.1 claim without mmap caveat) | scan="100|60000" xRead=3 xReadWith0Pread=1 pread64=2 xFetch=18 (mmap reads bypass pread64 via xFetch and mapped unixRead) |
+| MAP-08 | replay 7.1 portable() macOS check (strings.Contains(c.Raw, "delete=1")) on real CLI -vfstrace | 7.1 portable() matches xShmUnmap close line so 7.1 passes on macOS | matched_delete=1:false matched_delFlag=1:true raw="trace.xShmUnmap(t.db,delFlag=1) -> SQLITE_OK" |
+| COST-05 | 20x50 commits in delete/EXTRA, persist/NORMAL, and truncate/FULL under strace | delete/EXTRA makes 5 syncs/commit (2 dir); persist/NORMAL and truncate/FULL eliminate dir syncs and unlinks after journal creation | delete/EXTRA:100(db:20 dir:40 journal:40); persist/NORMAL:80(db:20 dir:20 journal:40) unlinks=-; truncate/FULL:100(db:20 dir:20 journal:60) unlinks=- |
+| GOVFS-06 | query SQLITE_FCNTL_VFSNAME on a connection opened via govfs (comparing against vfstrace.c:711-716 shim contract) | VFS stack string starts with "adv-govfs-main/" (e.g. "adv-govfs-main/unix") | SQLITE_FCNTL_VFSNAME returned "unix" (govfs forwards op=12 without prepending its own name) |
+| SNAP-03 | repeat 18-page events full scan on same immutable=1 connection with PRAGMA cache_size=4 | 0 remote requests on repeat (7.4's repeat claim without a working-set-fits-in-cache caveat) | digestMatch=true first=(18 requests (0 stat, 18 range), 73728 bytes) repeat=(17 requests (0 stat, 17 range), 69632 bytes) (eviction forces re-reads despite immutable=1) |
+| SNAP-04 | overwrite served object in place (step 29 -> step 30) while an immutable=1 connection stays open | connection stays consistent at step 29 (proving whether immutable=1 tolerates in-place object overwrites) | before(uv=29 ev=1130) after(uv=29 docs=0 docErr=database disk image is malformed (11) ic="*** in database main ***; Tree 3 page 3 cell 0: invalid page number 269; Tree 3 page 3 cell 67: invalid page n |
+| SNAP-06 | hostile S3 endpoint returns 200 OK with full object (ignoring Range: bytes=4096-8191) to rangefs.S3Source.ReadRange | S3Source rejects non-206 / missing Content-Range response instead of silently returning offset 0 bytes | err=<nil> n=4096 firstByte=0xaa (want error or 0xbb, offset 0 is 0xaa) |
+| SNAP-07 | rangefs edge cases: 0-byte ReadAt, failed ReadRange BytesRead accounting, Seek/Stat after Close, New(nil, HTTPSource) | 0-byte ReadAt logs 0 requests, failed ReadRange adds 0 BytesRead, Seek/Stat after Close return ErrClosed, nil ctx does not panic | zeroReadClean=false(logged="range a.db bytes 0--1 (0 bytes)") failBytes=4096(want 0) seekAfterClose=<nil> statAfterClose=<nil> nilCtxPanicked=false |
