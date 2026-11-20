@@ -1,0 +1,27 @@
+create bucket: OK
+create bucket again: BucketAlreadyOwnedByYou
+put+get: body="version-1" put_etag="e8444fc50e000a592c6f49872490349e" get_etag="e8444fc50e000a592c6f49872490349e" same=true
+read-after-overwrite: 100 put-then-get rounds, stale reads=0
+list-after-write: 50 put-then-list rounds, list missing the new key=0
+list order (page size 3, 4 pages): ["k/1" "k/10" "k/2" "k/A" "k/_" "k/a" "k/a/x" "k/a-" "k/b" "k/é"]
+list order equals byte-wise sort: false
+overwrite: body="version-2" etag_changed=true
+If-None-Match:* on existing key: PreconditionFailed; body after="version-2"
+If-None-Match:* on absent key: OK
+If-Match with stale etag: PreconditionFailed; body after="version-2"
+If-Match with current etag: OK; body after="version-3" etag_changed=true
+If-Match on absent key: PreconditionFailed
+concurrent If-None-Match:* (2 writers x 50 rounds): exactly one winner in 50 rounds; winner's body stored in 50
+   round 0: map[OK:1 PreconditionFailed:1]
+concurrent If-None-Match:* (8 writers x 20 rounds): exactly one winner in 20 rounds; winner's body stored in 20
+   round 0: map[OK:1 PreconditionFailed:7]
+concurrent If-Match on one etag (2 writers x 50 rounds): exactly one winner in 50 rounds; winner's body stored in 50
+   round 0: map[OK:1 PreconditionFailed:1]
+concurrent If-Match on one etag (8 writers x 20 rounds): exactly one winner in 20 rounds; winner's body stored in 20
+   round 0: map[OK:1 PreconditionFailed:7]
+multipart before complete: get=NoSuchKey listed_keys=[] in_progress_uploads=1
+multipart complete: OK; get=OK size=5242884 listed_keys=["mp/object"]
+multipart abort: OK; get after abort=NoSuchKey
+multipart complete with If-None-Match:* over an existing key: PreconditionFailed; size after=5242884
+delete: OK; get after delete: NoSuchKey
+If-None-Match:* after delete: OK
