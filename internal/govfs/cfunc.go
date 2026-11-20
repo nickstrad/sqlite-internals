@@ -32,6 +32,3 @@ func at[T any](address uintptr) *T {
 func codeAddress(funcAddress uintptr) uintptr {
 	return *at[uintptr](funcAddress)
 }
-
-// pointerSize is the byte width of a C pointer on the target architecture.
-const pointerSize = unsafe.Sizeof(uintptr(0))

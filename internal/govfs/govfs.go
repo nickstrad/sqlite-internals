@@ -88,13 +88,11 @@ var registry = struct {
 	byName    map[string]*VFS
 	files     map[uintptr]*openFile
 	tables    map[[2]uintptr]methodTable
-	checked   map[uintptr]error
 }{
 	byAddress: map[uintptr]*VFS{},
 	byName:    map[string]*VFS{},
 	files:     map[uintptr]*openFile{},
 	tables:    map[[2]uintptr]methodTable{},
-	checked:   map[uintptr]error{},
 }
 
 // ErrAlreadyRegistered is returned by Register when SQLite already has a VFS
@@ -131,6 +129,17 @@ func Register(name string, options Options) (*VFS, error) {
 	if err != nil {
 		return nil, err
 	}
+	var address uintptr
+	registered := false
+	defer func() {
+		if registered {
+			return
+		}
+		libc.Xfree(tls, cname)
+		if address != 0 {
+			sqlite3.Xsqlite3_free(tls, address)
+		}
+	}()
 	if sqlite3.Xsqlite3_vfs_find(tls, cname) != 0 {
 		return nil, fmt.Errorf("govfs: %q: %w", name, ErrAlreadyRegistered)
 	}
@@ -148,7 +157,7 @@ func Register(name string, options Options) (*VFS, error) {
 		registry.realVFS = real
 	}
 	real := at[sqlite3.Tsqlite3_vfs](registry.realVFS)
-	address := sqlite3.Xsqlite3_malloc64(tls, uint64(unsafe.Sizeof(sqlite3.Tsqlite3_vfs{})))
+	address = sqlite3.Xsqlite3_malloc64(tls, uint64(unsafe.Sizeof(sqlite3.Tsqlite3_vfs{})))
 	if address == 0 {
 		return nil, errors.New("govfs: out of memory")
 	}
@@ -173,6 +182,7 @@ func Register(name string, options Options) (*VFS, error) {
 		delete(registry.byName, name)
 		return nil, fmt.Errorf("govfs: sqlite3_vfs_register: %d", rc)
 	}
+	registered = true
 	return v, nil
 }
 
@@ -286,28 +296,24 @@ func (v *VFS) setError(err error) {
 	v.mu.Unlock()
 }
 
-func (v *VFS) injected(c Call, code int32) int32 {
-	c.Result = code
-	c.Injected = true
-	v.record(c)
-	return code
-}
-
-func (v *VFS) inject(method string, kind FileKind) (int32, bool) {
+func (v *VFS) injectFault(c Call) (int32, bool) {
 	if v == nil {
 		return 0, false
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	f := v.fault
-	if f == nil || v.fired != nil || f.Method != method || (f.Kind != KindNone && f.Kind != kind) {
+	if f == nil || v.fired != nil || f.Method != c.Method || (f.Kind != KindNone && f.Kind != c.Kind) {
 		return 0, false
 	}
 	v.faultSeen++
 	if v.faultSeen != f.Nth {
 		return 0, false
 	}
-	v.fired = &Call{}
+	c.Result = f.Code
+	c.Injected = true
+	v.appendLocked(&c)
+	v.fired = &c
 	return f.Code, true
 }
 
@@ -317,21 +323,16 @@ func (v *VFS) record(c Call) {
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if c.Injected && v.fired != nil {
-		v.seq++
-		c.Seq = v.seq
-		*v.fired = c
-		if v.recording {
-			v.calls = append(v.calls, c)
-		}
-		return
-	}
+	v.appendLocked(&c)
+}
+
+func (v *VFS) appendLocked(c *Call) {
 	if !v.recording {
 		return
 	}
 	v.seq++
 	c.Seq = v.seq
-	v.calls = append(v.calls, c)
+	v.calls = append(v.calls, *c)
 }
 
 func vfsFor(pVfs uintptr) *VFS {
@@ -401,6 +402,7 @@ func methodTableFor(v *VFS, real uintptr) (uintptr, error) {
 	registry.Lock()
 	defer registry.Unlock()
 	if existing, ok := registry.tables[key]; ok {
+		sqlite3.Xsqlite3_free(tls, address)
 		return existing.address, nil
 	}
 	registry.tables[key] = methodTable{address: address, version: version}

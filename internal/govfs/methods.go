@@ -1,6 +1,8 @@
 package govfs
 
 import (
+	"unsafe"
+
 	"modernc.org/libc"
 	sqlite3 "modernc.org/sqlite/lib"
 )
@@ -56,7 +58,11 @@ func vfsDelete(tls *libc.TLS, pVfs uintptr, zName uintptr, syncDir int32) int32 
 
 func vfsAccess(tls *libc.TLS, pVfs uintptr, zName uintptr, flags int32, pResOut uintptr) int32 {
 	rc := funcAt[vfsAccessFunc](realVFS().FxAccess)(tls, registry.realVFS, zName, flags, pResOut)
-	vfsFor(pVfs).record(Call{Method: "xAccess", File: displayName(goString(zName)), Flags: int64(flags), Out: int64(*at[int32](pResOut)), Result: rc})
+	call := Call{Method: "xAccess", File: displayName(goString(zName)), Flags: int64(flags), Result: rc}
+	if rc == 0 && pResOut != 0 {
+		call.Out = int64(*at[int32](pResOut))
+	}
+	vfsFor(pVfs).record(call)
 	return rc
 }
 
@@ -84,10 +90,10 @@ func vfsCurrentTime(tls *libc.TLS, pVfs uintptr, pOut uintptr) int32 {
 	return rc
 }
 
-// vfsGetLastError forwards without recording, matching vfstrace.c, because
-// SQLite calls it only while formatting a prior error.
 func vfsGetLastError(tls *libc.TLS, pVfs uintptr, nByte int32, zOut uintptr) int32 {
-	return funcAt[vfsGetLastErrorFunc](realVFS().FxGetLastError)(tls, registry.realVFS, nByte, zOut)
+	rc := funcAt[vfsGetLastErrorFunc](realVFS().FxGetLastError)(tls, registry.realVFS, nByte, zOut)
+	vfsFor(pVfs).record(Call{Method: "xGetLastError", Amount: int64(nByte), Result: rc})
+	return rc
 }
 
 func vfsCurrentTimeInt64(tls *libc.TLS, pVfs uintptr, pOut uintptr) int32 {
@@ -115,8 +121,8 @@ func ioRead(tls *libc.TLS, pFile uintptr, buf uintptr, amount int32, offset int6
 	f := fileFor(pFile)
 	call := f.call("xRead")
 	call.Amount, call.Offset = int64(amount), offset
-	if code, ok := f.vfs.inject("xRead", f.kind); ok {
-		return f.vfs.injected(call, code)
+	if code, ok := f.vfs.injectFault(call); ok {
+		return code
 	}
 	call.Result = funcAt[ioReadFunc](realMethods(f).FxRead)(tls, inner(pFile), buf, amount, offset)
 	f.vfs.record(call)
@@ -127,8 +133,8 @@ func ioWrite(tls *libc.TLS, pFile uintptr, buf uintptr, amount int32, offset int
 	f := fileFor(pFile)
 	call := f.call("xWrite")
 	call.Amount, call.Offset = int64(amount), offset
-	if code, ok := f.vfs.inject("xWrite", f.kind); ok {
-		return f.vfs.injected(call, code)
+	if code, ok := f.vfs.injectFault(call); ok {
+		return code
 	}
 	call.Result = funcAt[ioWriteFunc](realMethods(f).FxWrite)(tls, inner(pFile), buf, amount, offset)
 	f.vfs.record(call)
@@ -139,8 +145,8 @@ func ioTruncate(tls *libc.TLS, pFile uintptr, size int64) int32 {
 	f := fileFor(pFile)
 	call := f.call("xTruncate")
 	call.Amount = size
-	if code, ok := f.vfs.inject("xTruncate", f.kind); ok {
-		return f.vfs.injected(call, code)
+	if code, ok := f.vfs.injectFault(call); ok {
+		return code
 	}
 	call.Result = funcAt[ioTruncateFunc](realMethods(f).FxTruncate)(tls, inner(pFile), size)
 	f.vfs.record(call)
@@ -151,8 +157,8 @@ func ioSync(tls *libc.TLS, pFile uintptr, flags int32) int32 {
 	f := fileFor(pFile)
 	call := f.call("xSync")
 	call.Flags = int64(flags)
-	if code, ok := f.vfs.inject("xSync", f.kind); ok {
-		return f.vfs.injected(call, code)
+	if code, ok := f.vfs.injectFault(call); ok {
+		return code
 	}
 	call.Result = funcAt[ioSyncFunc](realMethods(f).FxSync)(tls, inner(pFile), flags)
 	f.vfs.record(call)
@@ -163,7 +169,9 @@ func ioFileSize(tls *libc.TLS, pFile uintptr, pSize uintptr) int32 {
 	f := fileFor(pFile)
 	call := f.call("xFileSize")
 	call.Result = funcAt[ioFileSizeFunc](realMethods(f).FxFileSize)(tls, inner(pFile), pSize)
-	call.Out = *at[int64](pSize)
+	if call.Result == 0 && pSize != 0 {
+		call.Out = *at[int64](pSize)
+	}
 	f.vfs.record(call)
 	return call.Result
 }
@@ -190,7 +198,9 @@ func ioCheckReservedLock(tls *libc.TLS, pFile uintptr, pResOut uintptr) int32 {
 	f := fileFor(pFile)
 	call := f.call("xCheckReservedLock")
 	call.Result = funcAt[ioCheckReservedLockFunc](realMethods(f).FxCheckReservedLock)(tls, inner(pFile), pResOut)
-	call.Out = int64(*at[int32](pResOut))
+	if call.Result == 0 && pResOut != 0 {
+		call.Out = int64(*at[int32](pResOut))
+	}
 	f.vfs.record(call)
 	return call.Result
 }
@@ -200,6 +210,9 @@ func ioFileControl(tls *libc.TLS, pFile uintptr, op int32, pArg uintptr) int32 {
 	call := f.call("xFileControl")
 	call.Flags = int64(op)
 	call.Result = funcAt[ioFileControlFunc](realMethods(f).FxFileControl)(tls, inner(pFile), op, pArg)
+	if op == sqlite3.SQLITE_FCNTL_VFSNAME && call.Result == CodeOK && pArg != 0 {
+		call.Result = prependVFSName(tls, f.vfs.name, pArg)
+	}
 	f.vfs.record(call)
 	return call.Result
 }
@@ -269,4 +282,20 @@ func ioUnfetch(tls *libc.TLS, pFile uintptr, offset int64, p uintptr) int32 {
 	call.Result = funcAt[ioUnfetchFunc](realMethods(f).FxUnfetch)(tls, inner(pFile), offset, p)
 	f.vfs.record(call)
 	return call.Result
+}
+
+func prependVFSName(tls *libc.TLS, shimName string, pArg uintptr) int32 {
+	slot := at[uintptr](pArg)
+	stack := shimName
+	if *slot != 0 {
+		stack += "/" + libc.GoString(*slot)
+	}
+	buffer := sqlite3.Xsqlite3_malloc64(tls, uint64(len(stack)+1))
+	if buffer == 0 {
+		return sqlite3.SQLITE_NOMEM
+	}
+	copy(unsafe.Slice(at[byte](buffer), len(stack)+1), stack+"\x00")
+	sqlite3.Xsqlite3_free(tls, *slot)
+	*slot = buffer
+	return CodeOK
 }
