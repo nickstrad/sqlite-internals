@@ -12,8 +12,11 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
+// DBStatusOp selects a per-connection counter read by sqlite3_db_status
+// (status.c in the pinned tree).
 type DBStatusOp = sqlite.DBStatusOp
 
+// Per-connection status counters exposed through ReadDBStatus.
 const (
 	DBStatusLookasideUsed = sqlite.DBStatusLookasideUsed
 	DBStatusCacheUsed     = sqlite.DBStatusCacheUsed
@@ -25,6 +28,7 @@ const (
 	DBStatusCacheSpill    = sqlite.DBStatusCacheSpill
 )
 
+// Primary SQLite lock-contention result codes checked by experiments.
 const (
 	CodeBusy   = sqlite3.SQLITE_BUSY
 	CodeLocked = sqlite3.SQLITE_LOCKED
@@ -40,11 +44,14 @@ func withRawConn[T any](ctx context.Context, conn *sql.Conn, capability string, 
 	})
 }
 
+// DBStatus holds the current value and high-water mark returned by sqlite3_db_status.
 type DBStatus struct {
 	Current   int
 	Highwater int
 }
 
+// ReadDBStatus calls sqlite3_db_status on conn for op. When reset is true,
+// SQLite resets the high-water mark to the current value.
 func ReadDBStatus(ctx context.Context, conn *sql.Conn, op DBStatusOp, reset bool) (DBStatus, error) {
 	var status DBStatus
 	err := withRawConn(ctx, conn, "sqlite3_db_status", func(c interface {
@@ -57,6 +64,8 @@ func ReadDBStatus(ctx context.Context, conn *sql.Conn, op DBStatusOp, reset bool
 	return status, err
 }
 
+// Serialize calls sqlite3_serialize on conn and returns a byte slice holding
+// the entire "main" database image.
 func Serialize(ctx context.Context, conn *sql.Conn) ([]byte, error) {
 	var image []byte
 	err := withRawConn(ctx, conn, "sqlite3_serialize", func(c interface{ Serialize() ([]byte, error) }) error {
@@ -67,12 +76,18 @@ func Serialize(ctx context.Context, conn *sql.Conn) ([]byte, error) {
 	return image, err
 }
 
+// Deserialize calls sqlite3_deserialize to load image into conn as an in-memory
+// database. A serialized WAL-mode image has header bytes 18 and 19 set to 2 and
+// fails on query (SQLITE_CANTOPEN, code 14) unless those two bytes are rewritten
+// to 1 on a fresh connection first.
 func Deserialize(ctx context.Context, conn *sql.Conn, image []byte) error {
 	return withRawConn(ctx, conn, "sqlite3_deserialize", func(c interface{ Deserialize([]byte) error }) error {
 		return c.Deserialize(image)
 	})
 }
 
+// DataVersion queries SQLITE_FCNTL_DATA_VERSION on schema. SQLite increments
+// this counter whenever another connection modifies the database file.
 func DataVersion(ctx context.Context, conn *sql.Conn, schema string) (uint32, error) {
 	var version uint32
 	err := withRawConn(ctx, conn, "SQLITE_FCNTL_DATA_VERSION", func(c interface {
@@ -85,6 +100,9 @@ func DataVersion(ctx context.Context, conn *sql.Conn, schema string) (uint32, er
 	return version, err
 }
 
+// PersistWAL calls SQLITE_FCNTL_PERSIST_WAL on schema. Pass mode -1 to query
+// the current flag, 1 to keep the -wal file on last close, or 0 to restore
+// normal removal on last close.
 func PersistWAL(ctx context.Context, conn *sql.Conn, schema string, mode int) (int, error) {
 	var result int
 	err := withRawConn(ctx, conn, "SQLITE_FCNTL_PERSIST_WAL", func(c interface {
@@ -97,6 +115,7 @@ func PersistWAL(ctx context.Context, conn *sql.Conn, schema string, mode int) (i
 	return result, err
 }
 
+// BackupStep records the progress returned after one sqlite3_backup_step call.
 type BackupStep struct {
 	Step      int
 	More      bool
@@ -108,6 +127,11 @@ func backupDestinationURI(path string) (string, error) {
 	return FileURI(path, url.Values{})
 }
 
+// Backup copies the database open on source to destinationPath using SQLite's
+// online backup API (sqlite3_backup_init/step/finish, backup.c). Pass
+// pagesPerStep = -1 to copy every page in one step; afterStep runs after each
+// step so experiments can observe restarts or interleave writes. Backup checks
+// ctx.Err() before each step and finishes the handle before returning on cancellation.
 func Backup(ctx context.Context, source *sql.Conn, destinationPath string, pagesPerStep int, afterStep func(BackupStep) error) ([]BackupStep, error) {
 	if pagesPerStep == 0 {
 		return nil, errors.New("pagesPerStep must be non-zero; use -1 for all pages in one step")
@@ -125,6 +149,10 @@ func Backup(ctx context.Context, source *sql.Conn, destinationPath string, pages
 			return err
 		}
 		for {
+			if err := ctx.Err(); err != nil {
+				backup.Finish()
+				return err
+			}
 			more, stepErr := backup.Step(int32(pagesPerStep))
 			if stepErr != nil {
 				backup.Finish()
@@ -146,6 +174,8 @@ func Backup(ctx context.Context, source *sql.Conn, destinationPath string, pages
 	return steps, err
 }
 
+// Restore copies the database at sourcePath into destination in a single
+// sqlite3_backup_step(-1) call.
 func Restore(ctx context.Context, destination *sql.Conn, sourcePath string) error {
 	source, err := backupDestinationURI(sourcePath)
 	if err != nil {
@@ -166,6 +196,8 @@ func Restore(ctx context.Context, destination *sql.Conn, sourcePath string) erro
 	})
 }
 
+// WAL checkpoint modes accepted by PRAGMA wal_checkpoint(<mode>).
+// NOOP was added in SQLite 3.51.0 and reports log/checkpointed counts without copying frames.
 const (
 	CheckpointNoop     = "NOOP"
 	CheckpointPassive  = "PASSIVE"
@@ -174,12 +206,16 @@ const (
 	CheckpointTruncate = "TRUNCATE"
 )
 
+// CheckpointResult holds the three columns returned by PRAGMA wal_checkpoint:
+// whether a lock blocked full progress (Busy), total frames in the WAL (LogFrames),
+// and frames copied back into the database file (Checkpointed).
 type CheckpointResult struct {
 	Busy         bool
 	LogFrames    int
 	Checkpointed int
 }
 
+// String formats CheckpointResult as "busy=B log=L checkpointed=C".
 func (r CheckpointResult) String() string {
 	busy := 0
 	if r.Busy {
@@ -188,6 +224,8 @@ func (r CheckpointResult) String() string {
 	return fmt.Sprintf("busy=%d log=%d checkpointed=%d", busy, r.LogFrames, r.Checkpointed)
 }
 
+// Checkpoint runs PRAGMA <schema>.wal_checkpoint(<mode>) on q, defaulting to
+// schema "main" when schema is empty.
 func Checkpoint(ctx context.Context, q Querier, schema, mode string) (CheckpointResult, error) {
 	mode = strings.ToUpper(mode)
 	switch mode {
@@ -209,6 +247,8 @@ func Checkpoint(ctx context.Context, q Querier, schema, mode string) (Checkpoint
 	return CheckpointResult{Busy: busy != 0, LogFrames: logFrames, Checkpointed: checkpointed}, nil
 }
 
+// ErrorCode extracts the extended SQLite result code from err if it wraps a
+// *sqlite.Error.
 func ErrorCode(err error) (int, bool) {
 	var sqliteErr *sqlite.Error
 	if errors.As(err, &sqliteErr) {
@@ -217,11 +257,14 @@ func ErrorCode(err error) (int, bool) {
 	return 0, false
 }
 
+// PrimaryErrorCode returns the low 8 bits of SQLite's result code, stripping
+// any extended error detail (such as SQLITE_BUSY_SNAPSHOT -> SQLITE_BUSY).
 func PrimaryErrorCode(err error) (int, bool) {
 	code, ok := ErrorCode(err)
 	return code & 0xff, ok
 }
 
+// IsBusy reports whether err carries primary SQLite result code SQLITE_BUSY.
 func IsBusy(err error) bool {
 	code, ok := PrimaryErrorCode(err)
 	return ok && code == CodeBusy

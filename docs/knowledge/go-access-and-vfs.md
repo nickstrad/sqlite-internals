@@ -89,7 +89,7 @@ route=first-party-cgo  matches_pin=true  DEFAULT_SYNCHRONOUS=2 DEFAULT_WAL_SYNCH
 Commands (`gen-amalgamation.sh`):
 
 ```bash
-cp -a /root/Software/sqlite-src/3.53.4 /tmp/sqlite-research-go-access-vfs/tree
+cp -a "$SQLITE_SRC" /tmp/sqlite-research-go-access-vfs/tree
 cd /tmp/sqlite-research-go-access-vfs/tree && ./configure && make sqlite3.c   # 23 s wall
 sha256sum sqlite3.c sqlite3.h
 b1dd5d74ec7f29055a6684fa06fb3c2f6821c87dd38f9a458dfd2e8a1db28189  sqlite3.c   (9,515,341 bytes)

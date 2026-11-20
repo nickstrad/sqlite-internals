@@ -11,6 +11,8 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/repocheck"
 )
 
+// report collects PASS/FAIL output across one or more repository checks so
+// "check all" runs every check before exiting 1 on failure.
 type report struct {
 	failed bool
 }
@@ -39,6 +41,7 @@ func (r *report) exit() error {
 	return nil
 }
 
+// runInline implements "course inline [-check] <chapter.md>...".
 func runInline(root string, args []string) error {
 	flags := flag.NewFlagSet("inline", flag.ContinueOnError)
 	check := flags.Bool("check", false, "fail if any block differs from its file instead of rewriting")
@@ -50,16 +53,16 @@ func runInline(root string, args []string) error {
 	}
 	var r report
 	for _, name := range flags.Args() {
-		inlineOne(&r, name, *check)
+		inlineOne(&r, name, name, *check)
 	}
 	return r.exit()
 }
 
-func inlineOne(r *report, name string, check bool) {
+func inlineOne(r *report, name, display string, check bool) {
 	result, err := repocheck.InlineFile(name, check)
-	label := "inline " + name
+	label := "inline " + display
 	if check {
-		label = "inline -check " + name
+		label = "inline -check " + display
 	}
 	if err != nil {
 		r.err(label, err)
@@ -72,6 +75,8 @@ func inlineOne(r *report, name string, check bool) {
 	r.result(label, result.Problems, summary)
 }
 
+// chapterArg consumes a leading positional chapter selector (such as "ch01")
+// before flag parsing so flags may appear after it.
 func chapterArg(args []string) (string, []string) {
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		return args[0], args[1:]
@@ -79,6 +84,7 @@ func chapterArg(args []string) (string, []string) {
 	return "", args
 }
 
+// runCheck dispatches every "course check <subcommand>" check.
 func runCheck(ctx context.Context, root string, args []string) error {
 	if len(args) == 0 {
 		return usageError("check needs a subcommand")
@@ -129,6 +135,9 @@ func runCheck(ctx context.Context, root string, args []string) error {
 		if err := flags.Parse(extra); err != nil {
 			return exitError{2}
 		}
+		if *runs < 1 {
+			return usageError("check evidence -runs must be at least 1, got %d", *runs)
+		}
 		if only == "" && flags.NArg() == 1 {
 			only = flags.Arg(0)
 		}
@@ -154,6 +163,9 @@ func runCheck(ctx context.Context, root string, args []string) error {
 		if err := flags.Parse(rest); err != nil {
 			return exitError{2}
 		}
+		if *runs < 1 {
+			return usageError("check all -runs must be at least 1, got %d", *runs)
+		}
 		checkTree(&r, root, "sources", "")
 		checkTree(&r, root, "spans", "")
 		chapters, err := repocheck.Chapters(root, "")
@@ -162,7 +174,7 @@ func runCheck(ctx context.Context, root string, args []string) error {
 		}
 		for _, chapter := range chapters {
 			if _, err := os.Stat(chapter.Markdown()); err == nil {
-				inlineOne(&r, relative(root, chapter.Markdown()), true)
+				inlineOne(&r, chapter.Markdown(), relative(root, chapter.Markdown()), true)
 			}
 		}
 		if !*skipEvidence {
@@ -179,9 +191,13 @@ func runCheck(ctx context.Context, root string, args []string) error {
 	return r.exit()
 }
 
+// stringList implements flag.Value for repeatable flags such as -exclude.
 type stringList []string
 
-func (s *stringList) String() string     { return strings.Join(*s, ",") }
+// String formats the collected values as a comma-separated list for flag.Value.
+func (s *stringList) String() string { return strings.Join(*s, ",") }
+
+// Set appends one flag value to the list for flag.Value.
 func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
 func relative(root, name string) string {
@@ -191,6 +207,8 @@ func relative(root, name string) string {
 	return name
 }
 
+// checkTree runs either CheckSources or CheckSpans against the pinned tree
+// ($SQLITE_SRC or _src/sqlite-3.53.4) for matching chapter directories.
 func checkTree(r *report, root, kind, only string) {
 	label := "check " + kind
 	chapters, err := repocheck.Chapters(root, only)

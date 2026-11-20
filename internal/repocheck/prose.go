@@ -10,8 +10,12 @@ import (
 	"strings"
 )
 
+// ProseAuthorPrefix is the required git author name prefix for every prose line
+// (chapter markdown and Go comments) added in Phase 2.
 const ProseAuthorPrefix = "Gemini 4 Neon"
 
+// BlameLine holds the commit hash, author, boundary flag, and content of one
+// line parsed from "git blame --porcelain".
 type BlameLine struct {
 	Line     int
 	Commit   string
@@ -20,6 +24,8 @@ type BlameLine struct {
 	Text     string
 }
 
+// ParseBlamePorcelain parses the porcelain output of git blame, carrying each
+// commit's author and boundary status across repeated lines from the same commit.
 func ParseBlamePorcelain(text string) ([]BlameLine, error) {
 	authors := map[string]string{}
 	boundaries := map[string]bool{}
@@ -74,6 +80,8 @@ func isHexString(s string) bool {
 
 var proseMarkdownPattern = regexp.MustCompile(`^ch\d\d-[^/]+/(ch\d\d-[^/]+\.md|answers\.md)$`)
 
+// IsChapterProse reports whether path is a chapter markdown file or answers.md
+// subject to prose authorship verification.
 func IsChapterProse(path string) bool {
 	return proseMarkdownPattern.MatchString(path)
 }
@@ -100,6 +108,8 @@ func goCommentLines(filename string, src []byte) (map[int]bool, error) {
 	return lines, nil
 }
 
+// markdownProseLines excludes fenced include blocks so refreshing inlined Go
+// code does not flag code lines as non-Neon prose.
 func markdownProseLines(path string, src []byte) map[int]bool {
 	exempt := map[int]bool{}
 	for _, include := range FindIncludeBlocks(string(src)) {
@@ -117,11 +127,15 @@ func markdownProseLines(path string, src []byte) map[int]bool {
 	return lines
 }
 
+// ProseOptions configures excluded path prefixes and the required author prefix
+// (defaulting to ProseAuthorPrefix) for CheckProse.
 type ProseOptions struct {
 	Exclude      []string
 	AuthorPrefix string
 }
 
+// ParseRange splits a two-dot git revision range "<base>..<head>", rejecting
+// missing bounds or three-dot symmetric ranges.
 func ParseRange(spec string) (string, string, error) {
 	base, head, found := strings.Cut(spec, "..")
 	if !found || base == "" || head == "" || strings.HasPrefix(head, ".") {
@@ -130,11 +144,17 @@ func ParseRange(spec string) (string, string, error) {
 	return base, head, nil
 }
 
+// ProseCounts tallies how many prose lines were last changed inside base..head
+// versus before base (git blame boundary lines).
 type ProseCounts struct {
 	InRange     int
 	BeforeRange int
 }
 
+// CheckProse blames every non-directive Go comment line and every non-blank
+// chapter markdown line (outside include blocks) across base..head, reporting
+// any line introduced in that range whose git author does not start with
+// AuthorPrefix.
 func CheckProse(root, base, head string, options ProseOptions) ([]Problem, ProseCounts, error) {
 	prefix := options.AuthorPrefix
 	if prefix == "" {

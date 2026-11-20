@@ -16,8 +16,10 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
 )
 
+// Supported is true on Linux, where strace tracing is available.
 const Supported = true
 
+// StracePath locates the strace binary on PATH.
 func StracePath() (string, error) {
 	path, err := exec.LookPath("strace")
 	if err != nil {
@@ -35,6 +37,7 @@ func straceArgs(options Options, output string) ([]string, error) {
 	if limit <= 0 {
 		limit = 512
 	}
+	// -f traces all threads/children, -y prints fd paths, -q hides attach/detach noise.
 	args := []string{"-f", "-y", "-q", "-s", strconv.Itoa(limit), "-o", output, "-e", "trace=" + strings.Join(syscalls, ",")}
 	if options.KillAt != nil {
 		if options.KillAt.When < 1 || len(options.KillAt.Syscalls) == 0 {
@@ -45,6 +48,10 @@ func straceArgs(options Options, output string) ([]string, error) {
 	return append(append(args, "--"), options.Command...), nil
 }
 
+// Run executes options.Command under strace, parses the trace file, and returns
+// the result. A non-zero exit or injected SIGKILL of the traced process is
+// recorded in Result rather than returned as an error; a ptrace permission
+// failure returns an error wrapping ErrPtraceDenied.
 func Run(ctx context.Context, options Options) (*Result, error) {
 	if len(options.Command) == 0 {
 		return nil, errors.New("trace.Run: empty command")
@@ -93,11 +100,13 @@ func Run(ctx context.Context, options Options) (*Result, error) {
 	result.Killed = result.Log.KilledBy()
 	permissionProblem := strings.Contains(result.Stderr, "ptrace") || strings.Contains(result.Stderr, "Operation not permitted")
 	if len(result.Log.Calls) == 0 && permissionProblem {
-		return result, fmt.Errorf("strace could not trace (needs ptrace; in Docker add cap SYS_PTRACE): %s", strings.TrimSpace(result.Stderr))
+		return result, fmt.Errorf("%w: %s", ErrPtraceDenied, strings.TrimSpace(result.Stderr))
 	}
 	return result, nil
 }
 
+// RunCLIMerged runs the pinned sqlite3 CLI with -vfstrace under strace and
+// merges its stdout VFS trace with the underlying syscalls in one ordered stream.
 func RunCLIMerged(ctx context.Context, cli sqlitex.CLI, request CLITrace, options Options) (*Merged, *Result, error) {
 	options.Command = cli.Command(ctx, sqlitex.CLIRun{Args: request.args()}).Args
 	options.Command[0] = cli.Path
@@ -106,11 +115,13 @@ func RunCLIMerged(ctx context.Context, cli sqlitex.CLI, request CLITrace, option
 	if len(options.Syscalls) == 0 {
 		options.Syscalls = DefaultSyscalls
 	}
+	// Always trace write and writev so MergeStdoutVFS receives every fd-1 fragment.
 	for _, needed := range []string{"write", "writev"} {
 		if !containsString(options.Syscalls, needed) {
 			options.Syscalls = append(append([]string(nil), options.Syscalls...), needed)
 		}
 	}
+	// Raise the default string limit so long -vfstrace lines on stdout are not truncated.
 	if options.StringLimit <= 0 {
 		options.StringLimit = 4096
 	}

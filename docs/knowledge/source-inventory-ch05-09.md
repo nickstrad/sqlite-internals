@@ -2,7 +2,7 @@
 
 Research for the course outline. Not chapter text.
 
-- **Pin:** `/root/Software/sqlite-src/3.53.4`, tag `version-3.53.4`, git `b09c88c1…`, Fossil
+- **Pin:** the pinned tree (`$SQLITE_SRC` or `_src/sqlite-3.53.4`), tag `version-3.53.4`, git `b09c88c1…`, Fossil
   `bf7c7f30…`. All paths below are relative to that tree. Line numbers come from
   `agent_work/probes/source-inventory-b/locate.py` (it finds the column-0 definition header and
   the next column-0 `}`) or from `grep -n`. A "start–end" range covers the whole definition,

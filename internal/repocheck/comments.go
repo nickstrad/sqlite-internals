@@ -5,10 +5,15 @@ import (
 	"go/parser"
 	"go/scanner"
 	"go/token"
+	"regexp"
 	"sort"
 	"strings"
 )
 
+// IsDirective reports whether a Go comment is a recognized compiler or linter
+// directive (// +build, //line, //export, //extern, known //go:<verb> forms,
+// or //nolint:<list>). Directives count as code, not prose comments, while
+// arbitrary //word:... prose is rejected.
 func IsDirective(comment string) bool {
 	if strings.HasPrefix(comment, "// +build") {
 		return true
@@ -21,17 +26,31 @@ func IsDirective(comment string) bool {
 		return true
 	}
 	name, rest, found := strings.Cut(body, ":")
-	if !found || name == "" || rest == "" || !(rest[0] >= 'a' && rest[0] <= 'z' || rest[0] >= '0' && rest[0] <= '9') {
+	if !found || rest == "" {
 		return false
 	}
-	for _, c := range name {
-		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9') {
-			return false
-		}
+	switch name {
+	case "go":
+		verb, _, _ := strings.Cut(rest, " ")
+		return goDirectives[verb]
+	case "nolint":
+		return nolintList.MatchString(rest)
 	}
-	return true
+	return false
 }
 
+var goDirectives = map[string]bool{
+	"build": true, "embed": true, "generate": true, "debug": true, "fix": true,
+	"noinline": true, "nosplit": true, "noescape": true, "norace": true, "nocheckptr": true,
+	"linkname": true, "uintptrescapes": true, "wasmimport": true, "wasmexport": true,
+}
+
+var nolintList = regexp.MustCompile(`^[a-z0-9_-]+(?:,[a-z0-9_-]+)*$`)
+
+// CodeTokens parses src to confirm valid Go syntax and scans it into a flat
+// stream of non-comment tokens plus any compiler directives. Comparing token
+// streams rather than go/printer output avoids false diffs from blank lines
+// left behind when comments are added or removed.
 func CodeTokens(filename string, src []byte) ([]string, error) {
 	fset := token.NewFileSet()
 	if _, err := parser.ParseFile(fset, filename, src, parser.ParseComments|parser.SkipObjectResolution); err != nil {
@@ -81,6 +100,9 @@ func collapseSemicolons(tokens []string) []string {
 	return out
 }
 
+// SameCode reports whether before and after have identical Go token streams
+// once non-directive comments are stripped and consecutive semicolons collapsed.
+// When they differ, it returns a description of the first mismatching token.
 func SameCode(filename string, before, after []byte) (bool, string, error) {
 	a, err := CodeTokens(filename, before)
 	if err != nil {
@@ -102,6 +124,8 @@ func SameCode(filename string, before, after []byte) (bool, string, error) {
 	return true, "", nil
 }
 
+// CommentsOptions configures path prefixes excluded from CheckComments (kb/ is
+// always excluded).
 type CommentsOptions struct {
 	Exclude []string
 }
@@ -120,6 +144,8 @@ func goFilesAt(root, revision string, exclude []string) (map[string]bool, error)
 	return set, nil
 }
 
+// CheckComments verifies that between oldRev and newRev no non-excluded .go
+// file was added, removed, or modified outside its non-directive comments.
 func CheckComments(root, oldRev, newRev string, options CommentsOptions) ([]Problem, int, error) {
 	exclude := append([]string{"kb"}, options.Exclude...)
 	oldFiles, err := goFilesAt(root, oldRev, exclude)

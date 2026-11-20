@@ -15,23 +15,30 @@ import (
 	"modernc.org/sqlite"
 )
 
+// Querier is satisfied by *sql.DB, *sql.Conn, and *sql.Tx so helpers that read
+// pragmas or run checkpoints work on any of them.
 type Querier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
+// DB wraps *sql.DB with the filesystem path and Options used to open it.
 type DB struct {
 	*sql.DB
 	Path    string
 	Options Options
 }
 
+// configuredConnector intercepts every physical connection database/sql opens
+// so per-connection pragmas are applied uniformly across the pool.
 type configuredConnector struct {
 	base    driver.Connector
 	options Options
 }
 
+// Driver returns the underlying modernc.org/sqlite driver.
 func (c *configuredConnector) Driver() driver.Driver { return c.base.Driver() }
 
+// Connect opens a raw connection and applies file and per-connection pragmas before returning it to the pool.
 func (c *configuredConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	conn, err := c.base.Connect(ctx)
 	if err != nil {
@@ -44,19 +51,38 @@ func (c *configuredConnector) Connect(ctx context.Context) (driver.Conn, error) 
 	return conn, nil
 }
 
+// FileURI converts a filesystem path and query parameters into an SQLite file
+// URI with percent-escaped special characters (such as spaces, '?', and '#').
+// It rejects empty paths and MemoryPath so in-memory opens never create a file on disk.
 func FileURI(path string, query url.Values) (string, error) {
+	if path == "" || path == MemoryPath {
+		return "", fmt.Errorf("FileURI needs a filesystem path, got %q; use OpenMemory for an in-memory database", path)
+	}
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
 	}
+	// Go formats an empty-host file URL as "file:///path"; SQLite expects "file:/path".
 	uri := url.URL{Scheme: "file", Path: filepath.ToSlash(absolute), RawQuery: query.Encode()}
 	return strings.Replace(uri.String(), "file://", "file:", 1), nil
 }
 
+// DSN builds the modernc.org/sqlite data source name for path and options,
+// encoding _txlock=immediate and mode=ro when requested. MemoryPath becomes
+// "file::memory:" (with ?_txlock=immediate if set) and rejects ReadOnly.
 func DSN(path string, options Options) (string, error) {
 	query := url.Values{}
 	if options.ImmediateTx {
 		query.Set("_txlock", "immediate")
+	}
+	if path == MemoryPath {
+		if options.ReadOnly {
+			return "", errors.New("an in-memory database cannot be opened read-only")
+		}
+		if len(query) == 0 {
+			return "file::memory:", nil
+		}
+		return "file::memory:?" + query.Encode(), nil
 	}
 	if options.ReadOnly {
 		query.Set("mode", "ro")
@@ -64,12 +90,24 @@ func DSN(path string, options Options) (string, error) {
 	return FileURI(path, query)
 }
 
+// Open validates options, opens path through modernc.org/sqlite, applies file
+// and per-connection pragmas on every physical connection, and verifies that an
+// existing database matches the requested file settings without converting it
+// into or out of WAL mode. For MemoryPath it requires SingleConnection and
+// JournalMemory or JournalOff. On a new or unstamped empty database, file
+// settings run in layout -> journal_mode -> identity order, retrying on
+// SQLITE_BUSY up to Conn.BusyTimeout.
 func Open(ctx context.Context, path string, options Options) (*DB, error) {
 	if err := options.File.Validate(); err != nil {
 		return nil, err
 	}
 	if err := options.Conn.Validate(); err != nil {
 		return nil, err
+	}
+	if path == MemoryPath {
+		if err := validateMemoryOptions(options); err != nil {
+			return nil, err
+		}
 	}
 	dsn, err := DSN(path, options)
 	if err != nil {
@@ -104,8 +142,37 @@ func Open(ctx context.Context, path string, options Options) (*DB, error) {
 	return &DB{DB: db, Path: path, Options: options}, nil
 }
 
+// OpenDefault opens path with DefaultOptions.
 func OpenDefault(ctx context.Context, path string) (*DB, error) {
 	return Open(ctx, path, DefaultOptions())
+}
+
+// MemoryPath is the special path accepted by Open and DSN for an in-memory database.
+const MemoryPath = ":memory:"
+
+// MemoryOptions returns Options suited to an in-memory database: DefaultOptions
+// with JournalMemory and SingleConnection enabled so every query shares one database.
+func MemoryOptions() Options {
+	options := DefaultOptions()
+	options.File.JournalMode = JournalMemory
+	options.SingleConnection = true
+	return options
+}
+
+// OpenMemory opens a single-connection in-memory database configured with MemoryOptions.
+func OpenMemory(ctx context.Context) (*DB, error) {
+	return Open(ctx, MemoryPath, MemoryOptions())
+}
+
+func validateMemoryOptions(options Options) error {
+	if !options.SingleConnection {
+		return errors.New("an in-memory database needs SingleConnection: every pooled connection to file::memory: gets its own private database")
+	}
+	switch strings.ToLower(options.File.JournalMode) {
+	case JournalMemory, JournalOff:
+		return nil
+	}
+	return fmt.Errorf("an in-memory database supports journal_mode %s or %s, not %s", JournalMemory, JournalOff, options.File.JournalMode)
 }
 
 func configureConnection(ctx context.Context, conn driver.Conn, options Options) error {
@@ -123,28 +190,27 @@ func configureConnection(ctx context.Context, conn driver.Conn, options Options)
 		}
 		return nil
 	}
+	// Apply busy_timeout first so the remaining pragmas wait for locks instead of failing immediately.
 	pragmas := options.Conn.pragmas()
 	if err := run(pragmas[0]); err != nil {
 		return err
 	}
 	if !options.ReadOnly {
-		pageCount, err := driverQueryInt(ctx, queryer, "PRAGMA page_count")
-		if err != nil {
-			return err
-		}
-		if pageCount == 0 {
-			for _, statement := range options.File.creationPragmas() {
-				if err := run(statement); err != nil {
-					return err
-				}
+		// Retry file setup on SQLITE_BUSY so concurrent openers of a brand-new file settle cleanly.
+		deadline := time.Now().Add(options.Conn.BusyTimeout)
+		for {
+			err := applyFileSettings(ctx, run, queryer, options.File)
+			if err == nil {
+				break
 			}
-		}
-		mode, err := driverQueryString(ctx, queryer, options.File.journalPragma())
-		if err != nil {
-			return err
-		}
-		if !strings.EqualFold(mode, options.File.JournalMode) {
-			return fmt.Errorf("journal_mode: asked for %s, SQLite reports %s", options.File.JournalMode, mode)
+			if !IsBusy(err) || time.Now().After(deadline) {
+				return err
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(10 * time.Millisecond):
+			}
 		}
 	}
 	for _, statement := range pragmas[1:] {
@@ -159,6 +225,61 @@ func configureConnection(ctx context.Context, conn driver.Conn, options Options)
 		return err
 	}
 	return compareConnSettings(options.Conn, actual)
+}
+
+// applyFileSettings configures an empty file in layout -> journal_mode -> identity
+// order, refuses to convert an existing database into or out of WAL mode, and
+// stamps an empty database whose application_id and schema_version are still 0.
+func applyFileSettings(ctx context.Context, run func(string) error, queryer driver.QueryerContext, file FileSettings) error {
+	pageCount, err := driverQueryInt(ctx, queryer, "PRAGMA page_count")
+	if err != nil {
+		return err
+	}
+	if pageCount == 0 {
+		for _, statement := range file.layoutPragmas() {
+			if err := run(statement); err != nil {
+				return err
+			}
+		}
+	} else {
+		current, err := driverQueryString(ctx, queryer, "PRAGMA journal_mode")
+		if err != nil {
+			return err
+		}
+		currentIsWAL := strings.EqualFold(current, JournalWAL)
+		wantWAL := strings.EqualFold(file.JournalMode, JournalWAL)
+		if currentIsWAL != wantWAL {
+			return fmt.Errorf("existing database does not match the requested file settings: journal_mode want %s got %s (Open does not convert an existing database into or out of WAL)",
+				strings.ToLower(file.JournalMode), strings.ToLower(current))
+		}
+	}
+	mode, err := driverQueryString(ctx, queryer, file.journalPragma())
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(mode, file.JournalMode) {
+		return fmt.Errorf("journal_mode: asked for %s, SQLite reports %s", file.JournalMode, mode)
+	}
+	unstamped := pageCount == 0
+	if !unstamped {
+		applicationID, err := driverQueryInt(ctx, queryer, "PRAGMA application_id")
+		if err != nil {
+			return err
+		}
+		schemaVersion, err := driverQueryInt(ctx, queryer, "PRAGMA schema_version")
+		if err != nil {
+			return err
+		}
+		unstamped = applicationID == 0 && schemaVersion == 0
+	}
+	if unstamped {
+		for _, statement := range file.identityPragmas() {
+			if err := run(statement); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func driverQueryValue(ctx context.Context, queryer driver.QueryerContext, query string) (driver.Value, error) {
@@ -208,20 +329,24 @@ func driverQueryString(ctx context.Context, queryer driver.QueryerContext, query
 
 func readConnSettings(ctx context.Context, queryInt func(string) (int64, error)) (ConnSettings, error) {
 	var settings ConnSettings
-	values := map[string]*int64{}
 	var synchronous, foreignKeys, secureDelete, cacheSize, autocheckpoint, busyTimeout int64
-	values["PRAGMA synchronous"] = &synchronous
-	values["PRAGMA foreign_keys"] = &foreignKeys
-	values["PRAGMA secure_delete"] = &secureDelete
-	values["PRAGMA cache_size"] = &cacheSize
-	values["PRAGMA wal_autocheckpoint"] = &autocheckpoint
-	values["PRAGMA busy_timeout"] = &busyTimeout
-	for query, target := range values {
-		value, err := queryInt(query)
+	queries := []struct {
+		query  string
+		target *int64
+	}{
+		{"PRAGMA synchronous", &synchronous},
+		{"PRAGMA foreign_keys", &foreignKeys},
+		{"PRAGMA secure_delete", &secureDelete},
+		{"PRAGMA cache_size", &cacheSize},
+		{"PRAGMA wal_autocheckpoint", &autocheckpoint},
+		{"PRAGMA busy_timeout", &busyTimeout},
+	}
+	for _, q := range queries {
+		value, err := queryInt(q.query)
 		if err != nil {
 			return settings, err
 		}
-		*target = value
+		*q.target = value
 	}
 	settings.Synchronous = synchronousName(synchronous)
 	settings.ForeignKeys = foreignKeys == 1
@@ -232,6 +357,7 @@ func readConnSettings(ctx context.Context, queryInt func(string) (int64, error))
 	return settings, nil
 }
 
+// ReadConnSettings queries SQLite for the live per-connection pragma values on q.
 func ReadConnSettings(ctx context.Context, q Querier) (ConnSettings, error) {
 	return readConnSettings(ctx, func(query string) (int64, error) {
 		var value int64
@@ -240,6 +366,8 @@ func ReadConnSettings(ctx context.Context, q Querier) (ConnSettings, error) {
 	})
 }
 
+// ReadFileSettings queries SQLite for the persistent header settings of the
+// database attached to q.
 func ReadFileSettings(ctx context.Context, q Querier) (FileSettings, error) {
 	var settings FileSettings
 	var pageSize, autoVacuum int64
@@ -272,6 +400,8 @@ func compareConnSettings(want, got ConnSettings) error {
 	return nil
 }
 
+// compareFileSettings skips user_version because workload recipes advance it
+// as a step counter on existing files.
 func compareFileSettings(want, got FileSettings) error {
 	var differences []string
 	if want.PageSize != got.PageSize {

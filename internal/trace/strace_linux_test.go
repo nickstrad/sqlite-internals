@@ -4,6 +4,7 @@ package trace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 
 const helperEnv = "TRACE_TEST_HELPER_DB"
 
+// TestMain dispatches into helperWriter when re-invoked as a traced child process.
 func TestMain(m *testing.M) {
 	if path := os.Getenv(helperEnv); path != "" {
 		runtime.LockOSThread()
@@ -55,6 +57,7 @@ func requireStrace(t *testing.T) {
 	}
 }
 
+// TestRunGoProcessUnderStrace traces the Go helper child and checks for WAL pwrite64 and sync syscalls.
 func TestRunGoProcessUnderStrace(t *testing.T) {
 	requireStrace(t)
 	dir := t.TempDir()
@@ -67,7 +70,7 @@ func TestRunGoProcessUnderStrace(t *testing.T) {
 		Env:     append(os.Environ(), helperEnv+"="+filepath.Join(dir, "g.db")),
 	})
 	if err != nil {
-		t.Skipf("strace unusable here: %v", err)
+		skipIfPtraceDenied(t, err)
 	}
 	if result.ExitCode != 0 || result.Killed != "" {
 		t.Fatalf("exit %d killed %q stderr %s", result.ExitCode, result.Killed, result.Stderr)
@@ -90,6 +93,7 @@ func TestRunGoProcessUnderStrace(t *testing.T) {
 	}
 }
 
+// TestKillAtFirstSync verifies that strace SIGKILL injection stops the writer on entry to its first sync.
 func TestKillAtFirstSync(t *testing.T) {
 	requireStrace(t)
 	dir := t.TempDir()
@@ -101,7 +105,7 @@ func TestKillAtFirstSync(t *testing.T) {
 		KillAt:   &KillAt{Syscalls: []string{"fsync", "fdatasync"}, When: 1},
 	})
 	if err != nil {
-		t.Skipf("strace unusable here: %v", err)
+		skipIfPtraceDenied(t, err)
 	}
 	if result.Killed != "SIGKILL" || result.ExitCode != -1 {
 		t.Fatalf("killed %q exit %d", result.Killed, result.ExitCode)
@@ -115,6 +119,7 @@ func TestKillAtFirstSync(t *testing.T) {
 	}
 }
 
+// TestKillAtRejectsBadPoint ensures Run rejects a KillAt with When < 1 or no syscalls.
 func TestKillAtRejectsBadPoint(t *testing.T) {
 	requireStrace(t)
 	_, err := Run(context.Background(), Options{Command: []string{"true"}, KillAt: &KillAt{When: 0}})
@@ -123,6 +128,7 @@ func TestKillAtRejectsBadPoint(t *testing.T) {
 	}
 }
 
+// TestRunCLIMergedLive runs the pinned CLI under strace and verifies that WAL xSync encloses fsync or fdatasync.
 func TestRunCLIMergedLive(t *testing.T) {
 	requireStrace(t)
 	ctx := context.Background()
@@ -133,7 +139,7 @@ func TestRunCLIMergedLive(t *testing.T) {
 	dir := t.TempDir()
 	merged, _, err := RunCLIMerged(ctx, cli, CLITrace{Dir: dir, DB: "m.db", SQL: "PRAGMA journal_mode=wal; CREATE TABLE t(x); INSERT INTO t VALUES(1);"}, Options{})
 	if err != nil {
-		t.Skipf("strace unusable here: %v", err)
+		skipIfPtraceDenied(t, err)
 	}
 	foundSync := false
 	for i, event := range merged.Events {
@@ -148,4 +154,12 @@ func TestRunCLIMergedLive(t *testing.T) {
 	if !foundSync {
 		t.Fatal("no xSync of the WAL in the merged stream")
 	}
+}
+
+func skipIfPtraceDenied(t *testing.T, err error) {
+	t.Helper()
+	if errors.Is(err, ErrPtraceDenied) {
+		t.Skipf("strace unusable here: %v", err)
+	}
+	t.Fatal(err)
 }

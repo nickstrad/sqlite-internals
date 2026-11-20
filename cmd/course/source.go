@@ -28,6 +28,8 @@ func runCommand(ctx context.Context, dir string, log io.Writer, name string, arg
 	return nil
 }
 
+// verifyGitCheckout checks both manifest.uuid (Fossil check-in) and, when a
+// .git directory exists, the git HEAD commit against sqlite/PIN.
 func verifyGitCheckout(ctx context.Context, dir string) error {
 	pin := sqlite.Current()
 	if err := repocheck.VerifyTree(dir); err != nil {
@@ -46,6 +48,9 @@ func verifyGitCheckout(ctx context.Context, dir string) error {
 	return nil
 }
 
+// runFetchSource clones the pinned SQLite tag into a staging directory,
+// verifies manifest.uuid and git HEAD, and renames it into place so an
+// interrupted clone never leaves a partial _src/sqlite-3.53.4 tree.
 func runFetchSource(ctx context.Context, root string, args []string) error {
 	pin := sqlite.Current()
 	flags := flag.NewFlagSet("fetch-source", flag.ContinueOnError)
@@ -89,6 +94,8 @@ func runFetchSource(ctx context.Context, root string, args []string) error {
 
 var builtTools = []string{"sqlite3", "showwal", "dbhash"}
 
+// copyTree duplicates the pinned source tree without .git so build artifacts
+// never dirty the reference checkout ($SQLITE_SRC or _src/sqlite-3.53.4).
 func copyTree(source, destination string) error {
 	return filepath.WalkDir(source, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -131,6 +138,7 @@ func copyFile(source, destination string, mode fs.FileMode) error {
 		return err
 	}
 	defer in.Close()
+	// Add owner-write permission (0o200) so configure/make can write into copies from read-only source trees.
 	out, err := os.OpenFile(destination, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode|0o200)
 	if err != nil {
 		return err
@@ -142,6 +150,11 @@ func copyFile(source, destination string, mode fs.FileMode) error {
 	return out.Close()
 }
 
+// runBuildTools copies the pinned tree into <tools>/build/, runs ./configure
+// and make for sqlite3, showwal, and dbhash, copies the binaries into
+// <tools>/bin/, and verifies the built CLI reports the pinned source ID and
+// emits -vfstrace lines on stdout. On Linux a default ./configure build syncs
+// with fdatasync rather than fsync.
 func runBuildTools(ctx context.Context, root string, args []string) error {
 	flags := flag.NewFlagSet("build-tools", flag.ContinueOnError)
 	reuse := flags.Bool("reuse", false, "reuse an already configured build copy")

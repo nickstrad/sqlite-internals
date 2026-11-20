@@ -12,6 +12,8 @@ import (
 	"strings"
 )
 
+// SourceEntry represents one line of a chapter's SOURCES.sha256 manifest,
+// pairing a SHA-256 hex digest with a path inside the pinned SQLite tree.
 type SourceEntry struct {
 	SHA256 string
 	Path   string
@@ -20,6 +22,8 @@ type SourceEntry struct {
 
 var sourceLine = regexp.MustCompile(`^([0-9a-f]{64}) [ *]?(\S+)$`)
 
+// ParseSources parses a SOURCES.sha256 manifest, flagging malformed lines and
+// distinct tree paths that collide on the same base filename at the chapter root.
 func ParseSources(text string) ([]SourceEntry, []Problem) {
 	var entries []SourceEntry
 	var problems []Problem
@@ -55,12 +59,17 @@ func fileSHA256(name string) (string, error) {
 
 var chapterRootAllowed = map[string]bool{"SOURCES.sha256": true, "SPANS.txt": true, "answers.md": true}
 
+// CheckSources verifies every entry in chapter/SOURCES.sha256 against both the
+// pinned SQLite tree and the unmodified copy at the chapter root, reporting a
+// missing SOURCES.sha256, unlisted files, or stray .go files at the chapter root.
 func CheckSources(chapter Chapter, tree string) ([]Problem, int, error) {
 	var problems []Problem
 	sourcesFile := filepath.Join(chapter.Path, "SOURCES.sha256")
 	listed := map[string]bool{}
 	data, err := os.ReadFile(sourcesFile)
-	if err != nil && !os.IsNotExist(err) {
+	if os.IsNotExist(err) {
+		problems = append(problems, Problem{chapter.Dir + "/SOURCES.sha256", "missing SOURCES.sha256 (every chapter lists its copied SQLite files, even when there are none)"})
+	} else if err != nil {
 		return nil, 0, err
 	}
 	entries, parseProblems := ParseSources(string(data))
@@ -98,6 +107,7 @@ func CheckSources(chapter Chapter, tree string) ([]Problem, int, error) {
 		if entry.IsDir() || listed[name] || chapterRootAllowed[name] || name == chapter.Dir+".md" {
 			continue
 		}
+		// Any .go file beside copied SQLite .c files makes the Go toolchain treat the directory as a cgo package.
 		if strings.HasSuffix(name, ".go") {
 			problems = append(problems, Problem{chapter.Dir + "/" + name, "a chapter root holds no Go files (it would make the copied C a Go package)"})
 			continue
@@ -107,10 +117,12 @@ func CheckSources(chapter Chapter, tree string) ([]Problem, int, error) {
 	return problems, len(entries), nil
 }
 
+// SourcesLine formats one sha256sum-compatible line for SOURCES.sha256.
 func SourcesLine(sha, treePath string) string {
 	return sha + "  " + treePath
 }
 
+// ReadLines reads a text file into a slice of lines without trailing newlines.
 func ReadLines(name string) ([]string, error) {
 	file, err := os.Open(name)
 	if err != nil {

@@ -26,6 +26,7 @@ func sha(content string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// TestCheckSources verifies SOURCES.sha256 matching and reporting of drift, missing files, stray files, and root .go files.
 func TestCheckSources(t *testing.T) {
 	tree := t.TempDir()
 	root := t.TempDir()
@@ -67,6 +68,7 @@ func joinProblems(problems []Problem) string {
 	return strings.Join(lines, "\n")
 }
 
+// TestCheckSpans checks SPANS.txt symbol matching on word boundaries, out-of-range lines, and missing files.
 func TestCheckSpans(t *testing.T) {
 	tree := t.TempDir()
 	root := t.TempDir()
@@ -113,6 +115,7 @@ func TestCheckSpans(t *testing.T) {
 	}
 }
 
+// TestInline exercises include-block checking, rewriting, line slices, dynamic backtick fences, and error cases.
 func TestInline(t *testing.T) {
 	dir := t.TempDir()
 	code := "package main\n\nfunc main() {}\n"
@@ -202,6 +205,7 @@ func TestInline(t *testing.T) {
 	}
 }
 
+// TestIsDirective confirms Go compiler/tool directives are distinguished from ordinary comments.
 func TestIsDirective(t *testing.T) {
 	for comment, want := range map[string]bool{
 		"//go:build linux":     true,
@@ -218,6 +222,13 @@ func TestIsDirective(t *testing.T) {
 		"// TODO: something":   false,
 		"//":                   false,
 		"//http://example.com": false,
+		"//note:unauthorized prose disguised with a colon": false,
+		"//todo:fix this later":                            false,
+		"//go:this is prose":                               false,
+		"//go:noinline":                                    true,
+		"//go:linkname local remote":                       true,
+		"//nolint:errcheck,gosec":                          true,
+		"//nolint:errcheck because the error is ignored":   false,
 	} {
 		if got := IsDirective(comment); got != want {
 			t.Errorf("IsDirective(%q) = %v, want %v", comment, got, want)
@@ -265,6 +276,7 @@ func Add(a, b int) int {
 }
 `
 
+// TestSameCode verifies that comment-only edits pass while operator, literal, directive, or syntax changes fail.
 func TestSameCode(t *testing.T) {
 	same, detail, err := SameCode("demo.go", []byte(codeOnly), []byte(codeCommented))
 	if err != nil || !same {
@@ -332,6 +344,7 @@ func (r *gitRepo) commit(author, message string, files map[string]string) string
 	return r.git("", "rev-parse", "HEAD")
 }
 
+// TestCheckComments runs CheckComments across commits to catch code changes, added files, and removed files.
 func TestCheckComments(t *testing.T) {
 	repo := newGitRepo(t)
 	base := repo.commit("Opus", "code", map[string]string{"pkg/demo.go": codeOnly, "kb/vendored.go": "package kb\n", "README.md": "x\n"})
@@ -356,6 +369,7 @@ func TestCheckComments(t *testing.T) {
 	}
 }
 
+// TestCheckProse verifies git-blame authorship checks on Go comments and chapter markdown while exempting include blocks.
 func TestCheckProse(t *testing.T) {
 	repo := newGitRepo(t)
 	repo.commit("Research Agent", "old", map[string]string{"agent_work/probe.go": "// old research comment\npackage probe\n"})
@@ -414,6 +428,7 @@ func TestCheckProse(t *testing.T) {
 	}
 }
 
+// TestGofmtAndPathSweeps checks CheckGofmt and CheckPaths exclusions on a temporary git repository.
 func TestGofmtAndPathSweeps(t *testing.T) {
 	repo := newGitRepo(t)
 	repo.commit("Opus", "files", map[string]string{
@@ -437,6 +452,7 @@ func TestGofmtAndPathSweeps(t *testing.T) {
 	}
 }
 
+// TestChapters checks chapter directory discovery, sorting, filtering, and missing-chapter errors.
 func TestChapters(t *testing.T) {
 	root := t.TempDir()
 	for _, dir := range []string{"ch02-file-format", "ch01-architecture", "chapter-notes", "ch1-bad"} {
@@ -455,6 +471,7 @@ func TestChapters(t *testing.T) {
 	}
 }
 
+// TestCheckEvidence builds and runs synthetic experiments covering PASS, DIFF, MISSING, FAIL, and numeric ordering.
 func TestCheckEvidence(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go not on PATH")
@@ -494,6 +511,7 @@ func TestCheckEvidence(t *testing.T) {
 	}
 }
 
+// TestParseBlamePorcelain checks parsing of repeated commit headers, author names, and boundary markers.
 func TestParseBlamePorcelain(t *testing.T) {
 	text := strings.Join([]string{
 		"1111111111111111111111111111111111111111 1 1 2",

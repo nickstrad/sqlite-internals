@@ -9,8 +9,14 @@ import (
 	"strings"
 )
 
+// SpanHeaderWindow is the number of lines starting at Span.Start within which
+// Span.Symbol must appear. Allowing 12 lines covers C functions whose cited
+// span starts on a leading comment block before the function signature.
 const SpanHeaderWindow = 12
 
+// Span records one cited source location from a chapter's SPANS.txt file:
+// a path in the pinned SQLite tree, a 1-based inclusive line range, and the
+// expected symbol name.
 type Span struct {
 	File   string
 	Start  int
@@ -19,6 +25,8 @@ type Span struct {
 	Line   int
 }
 
+// ParseSpans parses lines of the form "file start end symbol", skipping blank
+// lines and '#' comments.
 func ParseSpans(text string) ([]Span, []Problem) {
 	var spans []Span
 	var problems []Problem
@@ -46,6 +54,9 @@ func ParseSpans(text string) ([]Span, []Problem) {
 
 var identifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// symbolMatcher requires word boundaries for plain C identifiers so a symbol
+// like unixLock does not falsely match unixLockHelper; non-identifier tokens
+// (such as "balance(") match as substrings.
 func symbolMatcher(symbol string) func(string) bool {
 	if identifierPattern.MatchString(symbol) {
 		pattern := regexp.MustCompile(`(^|[^A-Za-z0-9_])` + regexp.QuoteMeta(symbol) + `($|[^A-Za-z0-9_])`)
@@ -54,6 +65,10 @@ func symbolMatcher(symbol string) func(string) bool {
 	return func(line string) bool { return strings.Contains(line, symbol) }
 }
 
+// CheckSpan checks that span fits inside lines and that span.Symbol appears
+// within lines[span.Start-1 : min(span.Start+SpanHeaderWindow-1, span.End)].
+// It returns an empty string on success or a diagnostic naming the first other
+// line where the symbol appears.
 func CheckSpan(tree string, span Span, lines []string) string {
 	if span.End > len(lines) {
 		return fmt.Sprintf("%s has %d lines, span ends at %d", span.File, len(lines), span.End)
@@ -73,6 +88,8 @@ func CheckSpan(tree string, span Span, lines []string) string {
 	return fmt.Sprintf("%s not found in lines %d-%d of %s (not in the file at all)", span.Symbol, span.Start, last, span.File)
 }
 
+// CheckSpans verifies every entry in chapter/SPANS.txt against the pinned tree.
+// A chapter with no SPANS.txt returns zero problems and zero spans checked.
 func CheckSpans(chapter Chapter, tree string) ([]Problem, int, error) {
 	data, err := os.ReadFile(filepath.Join(chapter.Path, "SPANS.txt"))
 	if os.IsNotExist(err) {

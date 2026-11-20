@@ -409,3 +409,48 @@ On non-Linux the strace steps are replaced by one `LINUX-ONLY:` line and the CLI
 | `docker compose build lab`; `docker compose up -d seaweedfs` | OK |
 | `docker compose run --rm lab go test ./internal/... ./sqlite/` | pass (live strace tests included) |
 | smoke on host x2, in container x2 | identical, `SMOKE OK` |
+
+## Repair round 1 addendum (facts that changed; details in REPAIR-REPORT.md)
+
+- `OpenScript(path, sql)` = `.open --normal "<path>"` with `\`→`\\`, `"`→`\"`, LF→`\n`, CR→`\r`.
+  The 3.53.4 dot-command parser does not support `''` doubling inside single quotes
+  (`shell.c.in:8985-8998`); double-quoted arguments go through `resolve_backslashes` (`:4778`).
+- In-memory: `sqlitex.OpenMemory(ctx)` = `Open(ctx, ":memory:", MemoryOptions())`, where
+  MemoryOptions = DefaultOptions with journal_mode `memory` and SingleConnection. Every pooled
+  connection to `file::memory:` would get its own private database, and an in-memory database
+  reports journal_mode `memory` even when asked for `wal`, so WAL is refused there. It still gets
+  page_size 4096 and application_id SQIX.
+- Existing databases: `Open` refuses to switch an existing file into or out of WAL. Error:
+  `existing database does not match the requested file settings: journal_mode want delete got wal (…)`.
+  Switching between rollback modes (delete/truncate/persist/memory/off) on an existing rollback
+  file still works and stays per connection. Experiments about rollback mode must create their
+  own file in that mode; they cannot reopen a WAL platform database as rollback.
+- Creation order on an empty file: page_size, auto_vacuum, encoding → `journal_mode=<mode>`
+  (switching to WAL writes page 1 with bytes 18-19 = 2) → application_id, user_version. An empty
+  database that has not been stamped yet (application_id 0, schema_version 0) gets stamped by
+  whichever connection opens it. While two connections race to switch a new file into WAL,
+  SQLite returns SQLITE_BUSY at once without calling the busy handler; Open retries this step
+  every 10 ms until BusyTimeout. Measured: 1000/1000 concurrent-open runs pass, worst case 0.40 s.
+- BusyTimeout must be a whole number of milliseconds (`PRAGMA busy_timeout` takes ms).
+- Pin check: `CheckPin`/`WritePinCheck`/`MustPinCheck*` also compare the linked
+  `modernc.org/sqlite` and `modernc.org/libc` versions (runtime/debug build info) against
+  `driver_version`/`libc_version`. Driver v1.58.0 wraps the same SQLite 3.53.4 (same
+  source_id), so before this change it passed. `go test` binaries record no dependency list, so
+  there the check is skipped (and `TestPinMatchesGoMod`'s build-info comparison never runs).
+- strace parser: `= ? ERESTARTSYS (…)` → Errno ERESTARTSYS, Result -1, not Unfinished (the
+  call was interrupted and restarted, and strace prints the restart as a new call).
+  `fd</path>(deleted)` is accepted. Seen live: modernc unlinks `-shm` before closing it on last
+  close (`unlink smoke.db-shm` then `close(6</…smoke.db-shm>(deleted))`), so the smoke
+  baseline now lists 34 calls including `close smoke.db-shm = 0`. Without `-y`, one fd table
+  is shared across all pids/tids. writev/readv Length = sum of iov_len. An `<unfinished ...>`
+  split after a comma no longer doubles the comma.
+- vfstrace lines: arguments end at the first `) -> `. Results may contain parentheses
+  (`9999 (0x270f)` from `vfstrace_print_errcode`, `ext/misc/vfstrace.c:345`).
+- Merge: failed writes to fd 1 are ignored, and a short write counts only its returned bytes. A
+  VFS line is recognised as soon as its first 7 bytes `trace.x` have arrived, even if they
+  arrive in two writes.
+- `trace.ErrPtraceDenied`: `Run` wraps it when strace cannot ptrace. Live tests skip only on it.
+- repocheck: a chapter without `SOURCES.sha256` fails `check sources` (an empty file is fine).
+  `-runs` < 1 is a usage error (exit 2). `check all` works from any directory. Include markers
+  inside other ``` / ~~~ fences are ignored. Directives are only `//go:<known verb>`,
+  `//nolint:<a,b>`, `//line`, `//export`, `//extern`, `// +build`, so `//note:…` counts as prose.
