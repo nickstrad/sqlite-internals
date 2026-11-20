@@ -142,8 +142,11 @@ func portable(ctx context.Context, cli sqlitex.CLI, request trace.CLITrace, dir 
 		fatal("vfstrace", err)
 	}
 	calls := trace.RelativeVFS(dir, vt.Calls)
-	fmt.Printf("VFS calls (CLI -vfstrace only, %d):\n", len(calls))
+	fmt.Printf("VFS calls (CLI -vfstrace only, %d, xRandomness left out):\n", len(calls))
 	for _, c := range calls {
+		if c.Method == "xRandomness" {
+			continue
+		}
 		fmt.Printf("  %s\n", c.String())
 	}
 	walOpen, walDelete, shmDelete := false, false, false
@@ -214,9 +217,17 @@ func analyze(m *trace.Merged, dir string) {
 	fmt.Println("(VFS = a line of the CLI's -vfstrace; indented SYS = a syscall made while that VFS call ran;")
 	fmt.Println(" unindented SYS = a syscall outside any printed VFS call; OUT = CLI output;")
 	fmt.Println(" names normalized: open = open/openat, sync = fsync/fdatasync, stat = stat family, unlink = unlink/unlinkat)")
-	for _, i := range kept {
-		fmt.Println(eventLine(m.Events[i]))
+	randomness := 0
+	for position, i := range kept {
+		e := m.Events[i]
+		if e.Kind == trace.EventVFS && e.VFS.Method == "xRandomness" {
+			randomness++
+			fmt.Printf("INFO: xRandomness at stream line %d: %s\n", position+1, e.VFS.String())
+			continue
+		}
+		fmt.Println(eventLine(e))
 	}
+	fmt.Printf("(xRandomness: %d call(s), left out of the stream because where SQLite first asks the VFS for random bytes differs between CLI builds; seen: an installed CLI right after opening the database, a ./configure build of the pin right before the first journal header, whose checksum nonce is random)\n", randomness)
 
 	within := func(i int) []trace.Syscall {
 		var out []trace.Syscall

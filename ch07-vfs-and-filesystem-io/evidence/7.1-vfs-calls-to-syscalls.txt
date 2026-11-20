@@ -31,7 +31,7 @@ VFS xRead(t.db,n=100,ofst=0) -> SQLITE_IOERR_SHORT_READ
 VFS xFileControl(t.db,BUSYHANDLER) -> SQLITE_NOTFOUND
 VFS xFileControl(t.db,MMAP_SIZE,0) -> SQLITE_OK, 0
 VFS xFileControl(t.db,PDB) -> SQLITE_NOTFOUND
-VFS xRandomness(44)
+INFO: xRandomness at stream line 19: xRandomness(44)
 OUT STEP 1 set WAL mode
 VFS xFileControl(t.db,PRAGMA,[journal_mode,WAL]) -> SQLITE_NOTFOUND
 VFS xLock(t.db,SHARED) -> SQLITE_OK
@@ -303,6 +303,7 @@ VFS xClose(t.db) -> SQLITE_OK
     SYS stat t.db = 0
     SYS stat t.db = 0
     SYS close t.db = 0
+(xRandomness: 1 call(s), left out of the stream because where SQLite first asks the VFS for random bytes differs between CLI builds; seen: an installed CLI right after opening the database, a ./configure build of the pin right before the first journal header, whose checksum nonce is random)
 
 == each VFS method, the os_unix.c function behind it, and the syscalls seen while it ran ==
 (xOpen: syscalls just before its line, because vfstrace prints xOpen after the real open returns)
