@@ -21,7 +21,12 @@ Rulings applied (details: OUTLINE.md section 8):
 - Go for all code and scripts; working scripts in `agent_work/` (Go or bash), indexed.
 - Driver modernc.org/sqlite v1.60.1, no cgo/C. Rollback experiment 4.1 at full depth.
 - WAL is the platform default; per-chapter evaluation recorded here: (none yet).
-- VFS viability verdict: PENDING (probe in chunk 0, `agent_work/probes/vfs-viability`).
+- VFS viability verdict: **VIABLE** (probe `agent_work/probes/vfs-viability/RESULT.md`, chunk 0): a
+  writable Go forwarding VFS registers with modernc in pure Go; read-only `fs.FS` VFS also works.
+  Chapter 7 gains experiments 7.3 (Go VFS shim: call counts + fault injection) and 7.4
+  (read-only snapshot VFS over S3 range reads). Risk noted: relies on ccgo's function-pointer
+  convention; that package needs `go vet -unsafeptr=false`.
+- S3 client for the capstone: aws-sdk-go-v2 (probe `agent_work/probes/seaweedfs-s3/RESULT.md`).
 - Seats: Opus code; Neon all prose + code review + adversarial scripts; Fable orchestrates,
   runs the adversarial tests, accepts. Astra not used.
 - Open questions 7, 12, 13: outline recommendations applied (real source copies checked against

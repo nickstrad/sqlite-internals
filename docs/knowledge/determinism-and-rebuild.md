@@ -3,7 +3,7 @@
 Research for the course outline (topic `determinism-rebuild`), 2026-11-20. Every result below was
 observed on the pin: SQLite 3.53.4 (git `b09c88c1…`, Fossil `bf7c7f30…`), the installed
 `/usr/local/bin/sqlite3` CLI and `/usr/local/lib/libsqlite3`. Source references are
-`file:line` in `/root/Software/sqlite-src/3.53.4`. Anything not verified is marked **UNVERIFIED**.
+`file:line` in the pinned tree (`$SQLITE_SRC` or `_src/sqlite-3.53.4`). Anything not verified is marked **UNVERIFIED**.
 
 Probes: `agent_work/probes/determinism-rebuild/` (README there has the exact commands;
 `GOPROXY=off ./run_all.sh` reruns everything). Hashes shown are the first 16 hex digits of sha256.

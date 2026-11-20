@@ -5,7 +5,7 @@ SQLite source to chapters 1–4 so the outline can cite real files, functions an
 
 **Pin.** Tag `version-3.53.4`, git `b09c88c14082339b66c7b7158d609a771e64ca69`, Fossil check-in
 `bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc`. Tree:
-`/root/Software/sqlite-src/3.53.4`. All paths below are relative to that tree, and all line numbers
+the pinned tree (`$SQLITE_SRC` or `_src/sqlite-3.53.4`). All paths below are relative to that tree, and all line numbers
 come from that revision.
 
 **How things were verified** (the "how" column in each table):
