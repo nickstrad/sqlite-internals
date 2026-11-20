@@ -125,8 +125,10 @@ func (r Recipe) CachePath() (string, error) {
 }
 
 // StepHashes returns the per-step hashes for steps 0..r.Steps, reusing the
-// cached file on disk when it already holds at least r.Steps+1 valid entries
-// and rebuilding it atomically otherwise.
+// cached file on disk only when it has at least r.Steps+1 entries, its trailing
+// SHA-256 checksum matches r's key, SQLite options, plan, and hashes, and a
+// fresh step-0 rebuild matches entry 0. Otherwise it rebuilds and replaces the
+// cache atomically.
 func (r Recipe) StepHashes(ctx context.Context) ([]FileHashes, error) {
 	if err := r.Validate(); err != nil {
 		return nil, err
@@ -211,7 +213,8 @@ func MatchHashes(hashes []FileHashes, h FileHashes) Match {
 }
 
 // MatchStep checks that path is at rest, hashes it, and reports which step of
-// r it equals.
+// r it equals. A masked-only match is accepted only when the two header change
+// counters agree (ChangeCountersAgree).
 func (r Recipe) MatchStep(ctx context.Context, path string) (Match, error) {
 	if err := CheckAtRest(path); err != nil {
 		return Match{Step: -1}, err
@@ -245,6 +248,10 @@ func fileCountersAgree(path string) (bool, error) {
 	return ChangeCountersAgree(image), nil
 }
 
+// ChangeCountersAgree reports whether image is at least 96 bytes long and its
+// file change counter (bytes 24..27) equals its version-valid-for number
+// (bytes 92..95), which SQLite always updates together in
+// pager_write_changecounter (src/pager.c:3130-3143).
 func ChangeCountersAgree(image []byte) bool {
 	first, second := ChangeCounterRanges[0], ChangeCounterRanges[1]
 	if len(image) < second[1] {
@@ -260,6 +267,8 @@ func isSHA256Hex(text string) bool {
 
 const cacheChecksumPrefix = "checksum "
 
+// readHashCache parses a v2 step-hash cache file ("k exact masked" lines
+// followed by a final "checksum <sha256>" line) without verifying the digest.
 func readHashCache(path string) ([]FileHashes, string, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -306,6 +315,9 @@ func readHashCache(path string) ([]FileHashes, string, error) {
 	return hashes, checksum, nil
 }
 
+// cacheChecksum hashes the cache key, SQLite options, every planned statement
+// and bound argument, and all cached step hashes so any drift invalidates the
+// on-disk cache.
 func (r Recipe) cacheChecksum(hashes []FileHashes) (string, error) {
 	if len(hashes) == 0 {
 		return "", errors.New("recipe cache: no hashes")
@@ -327,6 +339,9 @@ func (r Recipe) cacheChecksum(hashes []FileHashes) (string, error) {
 	return hex.EncodeToString(sum.Sum(nil)), nil
 }
 
+// readVerifiedCache parses path, checks its checksum against r, and rebuilds
+// step 0 in a temporary directory to confirm entry 0 matches the live SQLite
+// build and sqlitex open path.
 func (r Recipe) readVerifiedCache(ctx context.Context, path string) ([]FileHashes, error) {
 	hashes, checksum, err := readHashCache(path)
 	if err != nil {
@@ -349,6 +364,8 @@ func (r Recipe) readVerifiedCache(ctx context.Context, path string) ([]FileHashe
 	return hashes, nil
 }
 
+// freshStepZeroHash builds step 0 in an isolated temporary directory under dir
+// and returns its exact and masked hashes.
 func (r Recipe) freshStepZeroHash(ctx context.Context, dir string) (FileHashes, error) {
 	buildDir, err := os.MkdirTemp(dir, "verify-")
 	if err != nil {

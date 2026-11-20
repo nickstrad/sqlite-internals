@@ -1,6 +1,7 @@
 // Experiment 1.3 proves Rebuild Ladder rung R0: running the seeded recipe
 // twice in different directories under different names produces byte-identical
-// database files at every step. It then tests six sources of variation to show
+// database files at every step. It then tests seven sources of variation (plus
+// secure_delete=FAST vs ON and WAL commits that never touch page 1) to show
 // which determinism rules are required and where SQLite's behavior differs
 // between WAL and rollback modes.
 //
@@ -99,6 +100,9 @@ func pageSlice(data []byte, p int) []byte {
 	return data[start:min((p+1)*pageSize, len(data))]
 }
 
+// diffImages compares two in-memory database images page by page (rounding up
+// so partial trailing pages are compared) and records differing byte offsets
+// inside page 1.
 func diffImages(dataA, dataB []byte) fileDiff {
 	d := fileDiff{Equal: bytes.Equal(dataA, dataB), SizeA: len(dataA), SizeB: len(dataB)}
 	pages := (max(len(dataA), len(dataB)) + pageSize - 1) / pageSize
@@ -129,6 +133,8 @@ func onlyChangeCounter(d fileDiff) bool {
 	return onlyCounterBytes(d.Page1Bytes)
 }
 
+// onlyCounterBytes reports whether every page-1 byte offset in offsets falls
+// inside recipe.ChangeCounterRanges (bytes 24..27 or 92..95).
 func onlyCounterBytes(offsets []int) bool {
 	for _, offset := range offsets {
 		inCounter := false
@@ -346,6 +352,10 @@ type freelist struct {
 	leaves          map[int]bool
 }
 
+// readFreelist validates the database header's page size and freelist count,
+// walks SQLite's freelist trunk chain from header offset 32, and separates
+// trunk pages (with their leaf counts) from leaf pages while rejecting cycles,
+// out-of-range page numbers, and count mismatches.
 func readFreelist(data []byte) (freelist, error) {
 	fl := freelist{trunkLeafCounts: map[int]int{}, leaves: map[int]bool{}}
 	if len(data) < pageSize || len(data)%pageSize != 0 {
@@ -396,6 +406,12 @@ func isBtreePageType(t byte) bool {
 	return t == 0x02 || t == 0x05 || t == 0x0a || t == 0x0d
 }
 
+// unusedBytes marks every byte offset on page that holds no live data or
+// structural metadata: all bytes on a freelist leaf, bytes 8+4*leafCount..end
+// on a freelist trunk, or on a B-tree page (type 0x02/0x05/0x0a/0x0d) the
+// unallocated gap between the cell-pointer array and the cell content area plus
+// the bodies (after the 4-byte header) of every freeblock. Non-B-tree pages
+// (such as overflow pages) have no bytes marked unused.
 func unusedBytes(data []byte, page int, fl freelist) ([]bool, string, error) {
 	unused := make([]bool, pageSize)
 	if fl.leaves[page] {
@@ -470,6 +486,9 @@ func classifyDifferences(a, b string, d fileDiff) unusedReport {
 	return classifyImages(dataA, dataB, d)
 }
 
+// classifyImages checks every differing page in d against both images'
+// freelist and B-tree layouts to determine whether all differing bytes lie in
+// unused space. Any format error sets OnlyUnused to false.
 func classifyImages(dataA, dataB []byte, d fileDiff) unusedReport {
 	report := unusedReport{OnlyUnused: len(dataA) == len(dataB) && len(d.DifferingPages) > 0}
 	if len(dataA) != len(dataB) {
@@ -521,8 +540,9 @@ func classifyImages(dataA, dataB []byte, d fileDiff) unusedReport {
 
 // sessionVariant compares building steps 0..variantBase with one connection
 // session per step against building the exact same steps on one long-lived
-// connection. Under WAL mode only the header change counter differs because
-// dbFileVers is refreshed on page-1 read, not on WAL commit (src/pager.c:3109-3110).
+// connection. Because every recipe step dirties page 1 (PRAGMA user_version),
+// WAL mode differs in the header change counter alone: dbFileVers is refreshed
+// on page-1 read, not on WAL commit (src/pager.c:3109-3110, 3264).
 func sessionVariant(ctx context.Context, r recipe.Recipe, dir string) fileDiff {
 	canonical := filepath.Join(dir, "sessions-"+r.JournalMode+"-one-per-step.db")
 	if err := r.Build(ctx, canonical, variantBase); err != nil {
@@ -713,6 +733,10 @@ func main() {
 
 const touchAccountSQL = "UPDATE accounts SET balance = balance + 1 WHERE id = 1"
 
+// secureDeleteFastVariant compares the one-transaction-per-step WAL build
+// under PRAGMA secure_delete=FAST against secure_delete=ON. FAST zeroes freed
+// cell space inside B-tree pages (BTS_OVERWRITE) but does not zero freed
+// freelist pages (src/btree.c:6865-6876).
 func secureDeleteFastVariant(ctx context.Context, r recipe.Recipe, dir string) (fileDiff, unusedReport) {
 	batchVariant(ctx, r, dir, "FAST")
 	on := filepath.Join(dir, "batches-"+r.JournalMode+"-secure-delete-on-one-per-step.db")
@@ -721,6 +745,10 @@ func secureDeleteFastVariant(ctx context.Context, r recipe.Recipe, dir string) (
 	return d, classifyDifferences(on, fast, d)
 }
 
+// sessionsWithoutPage1 runs three commits that update accounts without
+// dirtying page 1, comparing one connection per commit against one connection
+// for all three. Because pagerWalFrames updates the change counter only when
+// pList->pgno == 1 (src/pager.c:3264), both WAL files remain byte-identical.
 func sessionsWithoutPage1(ctx context.Context, r recipe.Recipe, dir string) fileDiff {
 	perSession := filepath.Join(dir, "page1-untouched-"+r.JournalMode+"-one-per-commit.db")
 	oneSession := filepath.Join(dir, "page1-untouched-"+r.JournalMode+"-one-for-all.db")
@@ -756,6 +784,11 @@ const (
 	committedEventSQL     = "INSERT INTO events(id, account_id, kind, amount, note) VALUES(900003, 1, 'fee', 42, 'committed')"
 )
 
+// abortedSavepointVariant compares a transaction that commits one INSERT
+// against one that first inserts and rolls back large documents inside a
+// SAVEPOINT. Reused freelist leaves are fetched with PAGER_GET_NOCONTENT
+// (src/btree.c:6740), so ROLLBACK TO cannot restore bytes that were never
+// journaled even under secure_delete=ON.
 func abortedSavepointVariant(ctx context.Context, r recipe.Recipe, dir string) (fileDiff, unusedReport) {
 	clean := filepath.Join(dir, "savepoint-"+r.JournalMode+"-never-run.db")
 	aborted := filepath.Join(dir, "savepoint-"+r.JournalMode+"-rolled-back.db")
