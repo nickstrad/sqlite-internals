@@ -76,3 +76,5 @@ Per-chunk working scripts are indexed in `agent_work/chNN/INDEX.md`; adversarial
 | Chunk | Index | Review | Adversarial |
 | --- | --- | --- | --- |
 | 0 foundation | [ch00/INDEX.md](ch00/INDEX.md) | [REVIEW-1](ch00/REVIEW-1.md) FAIL → [REVIEW-2](ch00/REVIEW-2.md) PASS | [RESULTS](ch00/adversarial/RESULTS.md): 38 held, 0 broken after repair |
+| 1 chapter 1 | [ch01/INDEX.md](ch01/INDEX.md) | [REVIEW-1](ch01/REVIEW-1.md) → [REVIEW-2](ch01/REVIEW-2.md): Neon FAIL → one Opus repair → PASS | [RESULTS](ch01/adversarial/RESULTS.md): 48 held / 0 broken after repair (run 1: 11 broken; claims narrowed) |
+| 2 chapter 2 | [ch02/INDEX.md](ch02/INDEX.md) | [REVIEW-1](ch02/REVIEW-1.md) → [REVIEW-2](ch02/REVIEW-2.md): Neon FAIL → one Opus repair → PASS | [RESULTS](ch02/adversarial/RESULTS.md): 36 held / 0 broken after repair (run 1: 14 broken) |

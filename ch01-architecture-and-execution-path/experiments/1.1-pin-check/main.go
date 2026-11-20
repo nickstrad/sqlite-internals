@@ -124,6 +124,7 @@ func main() {
 	if err != nil {
 		fatal("open :memory:", err)
 	}
+	// Pin :memory: to one connection so every query shares one database.
 	db.SetMaxOpenConns(1)
 	defer db.Close()
 	// Every course experiment prints sqlite_source_id() first and exits

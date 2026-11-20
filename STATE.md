@@ -8,7 +8,7 @@ can be remade as needed; state capture and deterministic rebuild is the through-
 Plan: OUTLINE.md (revision 2). What changed from revision 1: OUTLINE-CHANGES.md.
 
 Status: **Phase 2 (build) IN PROGRESS** since 2026-11-20. Nick signed off OUTLINE.md revision 2
-with rulings (OUTLINE.md section 8). Chunk 0 landed; chapter 1 is in its Neon passes.
+with rulings (OUTLINE.md section 8). Chunks 0 and 1 have landed; chapters 2 and 7 are building.
 
 Rulings applied (details: OUTLINE.md section 8):
 - Upstream github.com/nickstrad/sqlite-internals (public); every chunk lands on main and is pushed.
@@ -47,14 +47,16 @@ Chunk status (build → Neon prose → Neon review → repair → re-review → 
 | Chunk | State | Review | Adversarial | Landed |
 | --- | --- | --- | --- | --- |
 | 0 foundation | done | Neon FAIL → repair → PASS | 38 held / 0 broken | merged cf58cb8 |
-| 1 chapter 1 | built (563721c); Neon prose, review, adversarial running | review 1: FAIL | – | – |
+| 1 chapter 1 | done | Neon FAIL → one Opus repair → PASS | 48 held / 0 broken after repair (run 1: 11 broken; claims narrowed) | merged 2dcf743 |
+| 2 chapter 2 | done | Neon FAIL → one Opus repair → PASS | 36 held / 0 broken after repair (run 1: 14 broken) | merged 68afd03 |
 | 2, 3, 4, 5, 7, 6, 8, 9, 10a, 10b, publishing | not started | | | |
 
-In progress: chapter 1, worktree `../sqlite-internals-work/ch01`, branch `chunk/ch01` (based on
-the pre-repair chunk 0 build; merge main into it before its repair round).
+In progress: Opus builds of chapter 2 (`chunk/ch02`) and chapter 7 (`chunk/ch07`), worktrees
+`../sqlite-internals-work/ch02` and `ch07`, both branched from the repaired chapter 1 branch.
 
-Next steps: finish and land chapter 1; then chapter 2; then 3, 4, 5, 7 in parallel; 6, 8; 9;
-10a; 10b; publishing.
+Next steps: Neon passes, repair, acceptance and landing for 2 and 7; then builds of 3, 4, 5
+(need chapter 2); then 6, 8; 9; 10a; 10b; publishing. Per-chunk flow and the scripts for it
+(`launch.sh`, `mkbrief.sh`, `accept.sh`, `land.sh`) are in `agent_work/orch/`.
 
 Open decisions / blockers:
 - Nick or Twin: the Claude sign-in on the build VM ends between 2026-11-25 and 2026-11-28.

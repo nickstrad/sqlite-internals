@@ -209,7 +209,8 @@ func main() {
 	}
 
 	// PIN-04: Keep source_id matching, but mutate driver_version in sqlite/PIN.
-	// Experiment 1.1 checks debug.ReadBuildInfo() against PIN.DriverVersion.
+	// sqlitex.MustPinCheck checks debug.ReadBuildInfo() via CheckDriverModules
+	// and exits 1 with FAIL on stderr before 1.1's own checks run.
 	badDriverPIN := strings.Replace(string(origPINBytes), "driver_version="+pin.DriverVersion, "driver_version=v1.99.9", 1)
 	if err := os.WriteFile(pinPath, []byte(badDriverPIN), 0o644); err != nil {
 		fatal("write bad driver PIN", err)
@@ -218,14 +219,14 @@ func main() {
 	if err != nil {
 		fatal("run PIN-04", err)
 	}
-	held04 := res04.exitCode != 0 &&
-		strings.Contains(res04.stdout, "check FAILED: the linked driver is") &&
-		strings.Contains(res04.stdout, "PIN CHECK FAILED")
+	hasModuleFail := strings.Contains(res04.stderr, "FAIL: this binary links "+pin.DriverModule) &&
+		strings.Contains(res04.stderr, "v1.99.9")
+	held04 := res04.exitCode != 0 && hasModuleFail && !strings.Contains(res04.stdout, "PIN CHECK OK")
 	report(
 		"PIN-04",
 		"run 1.1-pin-check with matching source_id but mismatched driver_version=v1.99.9 in scratch sqlite/PIN",
-		"non-zero exit and linked driver version check FAILED",
-		fmt.Sprintf("exit=%d hasFailedCheck=%v", res04.exitCode, strings.Contains(res04.stdout, "check FAILED: the linked driver is")),
+		"non-zero exit and MustPinCheck rejects mismatched driver_version on stderr",
+		fmt.Sprintf("exit=%d moduleFail=%v stderr=%q", res04.exitCode, hasModuleFail, strings.TrimSpace(res04.stderr)),
 		held04,
 	)
 

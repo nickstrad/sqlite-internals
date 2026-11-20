@@ -1,8 +1,9 @@
 // Experiment 1.2 traces one committed INSERT through every SQLite layer:
 // VDBE bytecode (EXPLAIN), B-tree pages (sqlite_dbpage), pager and VFS calls
 // (C CLI -vfstrace), and kernel syscalls (strace). It runs in both rollback
-// (DELETE) and WAL modes and performs the twin check comparing the translated
-// Go driver against the C CLI.
+// (DELETE) and WAL modes, performs the twin check comparing the translated Go
+// driver against the C CLI, and demonstrates the twin check's compile-option
+// limit with ANALYZE (ENABLE_STAT4).
 //
 // Run from the repo root (Linux for strace; on macOS run inside Docker via
 // docker compose run --rm lab go run ./ch01-architecture-and-execution-path/experiments/1.2-one-insert):
@@ -324,7 +325,8 @@ func syncName(name string) bool {
 
 // normalized canonicalizes syscall spellings that differ across libc or
 // configure builds (open vs openat, unlink vs unlinkat, fsync vs fdatasync)
-// so the twin check compares the actual file operations.
+// while preserving errno on failed calls, short-transfer byte counts, and
+// read/write lengths so the twin check compares the actual file operations.
 func normalized(call trace.Syscall) string {
 	text := normalizedOperation(call)
 	switch {
@@ -727,6 +729,9 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 	check(splitFileHash == cliFileHash, "BEGIN IMMEDIATE; INSERT; COMMIT leaves the same file bytes as the autocommit INSERT")
 }
 
+// expectedChangedPages returns the 1-based pages that the INSERT modifies:
+// pages 1 and 2 in rollback mode (header change counter plus table leaf), and
+// page 2 alone in WAL mode (page 1 is not dirtied).
 func expectedChangedPages(mode string) []int {
 	if mode == sqlitex.JournalWAL {
 		return []int{2}
@@ -734,6 +739,8 @@ func expectedChangedPages(mode string) []int {
 	return []int{1, 2}
 }
 
+// checkChangedPages verifies that sqlite_dbpage observed exactly the pages
+// expected for mode (runs on both Linux and non-Linux hosts).
 func checkChangedPages(mode string, changed []int) {
 	want := expectedChangedPages(mode)
 	reason := "page 1 (the change counter in the header) and page 2 (table t's leaf)"
@@ -743,6 +750,9 @@ func checkChangedPages(mode string, changed []int) {
 	check(slices.Equal(changed, want), fmt.Sprintf("the INSERT changes %s: %v", reason, want))
 }
 
+// expectedFreshWALWrites returns the complete sequence of "offset+length"
+// pwrite64 operations for a freshly created WAL file: the 32-byte WAL header
+// at offset 0 followed by each frame's 24-byte header and 4096-byte page image.
 func expectedFreshWALWrites(frames []walFrame) []string {
 	if len(frames) == 0 {
 		return nil
@@ -822,6 +832,8 @@ const (
 	stat4OptionSQL   = "SELECT sqlite_compileoption_used('ENABLE_STAT4')"
 )
 
+// statTables returns the sorted names of any sqlite_stat* tables created by
+// ANALYZE in the database at path.
 func statTables(ctx context.Context, path string) []string {
 	db, err := sqlitex.Open(ctx, path, options(sqlitex.JournalWAL))
 	if err != nil {
@@ -847,6 +859,10 @@ func statTables(ctx context.Context, path string) []string {
 	return names
 }
 
+// twinLimitAnalyze demonstrates a boundary of the twin check: starting from
+// byte-identical copies of an indexed table, ANALYZE writes sqlite_stat4 in
+// the ENABLE_STAT4-enabled Go driver but only sqlite_stat1 in the CLI, so the
+// resulting database files diverge.
 func twinLimitAnalyze(ctx context.Context, base string, cli sqlitex.CLI) {
 	fmt.Println("\n== a limit of the twin check: compile options that change file contents ==")
 	dir := filepath.Join(base, "analyze")
