@@ -556,3 +556,95 @@ Indexed in `agent_work/ch05/INDEX.md`: `shm-crosscheck` (walfile vs `showshm`).
 - Stale-base detection needs capture metadata (correction 6) — `internal/walship`, chapter 9.
 - `showshm` is not part of `cmd/course build-tools`; if the chapter wants it as a cross-check,
   add it there (one more make target).
+
+## Repair round 1 (after REVIEW-1 and adversarial run 1)
+
+Where this section disagrees with the sections above, this section is current. Full table:
+`agent_work/ch05/REPAIR-REPORT.md`.
+
+### internal/walfile changes
+
+- `ParseIndex`: if copy 1 (bytes 0-47) is all zero and copy 2 (48-95) carries the version word,
+  the result is a **torn header**: no error, `Initialized=false`, both headers and
+  `CheckpointInfo` decoded (byte order taken from copy 2), `HeadersAgree()=false`, `FramePage`
+  refuses (`ErrFrameNotIndexed`). Both copies zero → uninitialized as before. Copy 1 zero and
+  copy 2 garbage → `ErrIndexVersion`. SQLite treats the same state as "header changed, retry or
+  recover" (`walIndexTryHdr`, wal.c: memcmp of the two copies, then `isInit==0`).
+- `HeadersAgree()` now compares the two raw 48-byte copies (`memcmp(&h1,&h2,sizeof(h1))`, as
+  `walIndexTryHdr` does), so the 4-byte `unused` field at bytes 4-7 / 52-55 counts too.
+- `Replay`: the base's page-size field (bytes 16-17) must be a power of two in 512..65536
+  (else `ErrBaseNotDatabase`); a non-empty base whose page size differs from the WAL's is
+  `ErrPageSizeMismatch`, and a base that is not a whole number of pages is `ErrBaseSize`, **also
+  when the WAL has no commit frame** (header-only or only uncommitted frames). With an empty WAL
+  file, the base length is checked against the base's own page size. Empty base: no checks
+  besides the WAL's.
+- `ReplayFiles`: if `outPath.replay-tmp` already exists it returns the `O_EXCL` error
+  (`errors.Is(err, os.ErrExist)`) and leaves that file untouched; the temp file is removed on
+  error only when this call created it.
+- `CompareWithShowwal` also reports the reverse disagreement: walfile rejects the first invalid
+  frame with `checksum mismatch` while showwal says the checksum agrees.
+- `CopyLiveFiles(ctx, nil)` returns `nil, nil` without starting a child. `ReadLiveState` removes
+  its two temp copies on every return path, including a `-shm` parse error.
+- New tests: `internal/walfile/repair_test.go` (7 tests; each fails on the pre-repair code).
+
+### Experiment 5.2 (finding 1, blocker)
+
+- Parts B/C's open transaction is now the single statement `UPDATE documents SET title =
+  upper(title)` (was step 11's statements plus `UPDATE events SET note = upper(note)`). Each page
+  it dirties is spilled once, so no spilled frame is overwritten in place and the checksum chain
+  stays valid: captured `-wal` 60 frames (247,232 bytes), **valid 60**, last commit frame 41,
+  19 valid uncommitted frames. showwal on that capture: 0 `should be` lines.
+- Replay report B and C: `ignored frames 42-60 (19): valid but uncommitted: no commit frame
+  follows`; applied 41 frames (34 distinct pages); E1 sha256 `fb68a521…` unchanged (still recipe
+  step 10).
+- New/changed checks: every spilled frame is valid (`ValidFrames == frames > LastCommitFrame`);
+  applied + skipped-beyond-size == LastCommitFrame and the only ignored group is the
+  uncommitted tail (this check fails if the replayer applied `Frames[:ValidFrames]`). Part C's
+  check now asserts the same reason it prints.
+- The old observation (frame 42 overwritten in place → checksum mismatch, wal.c:4143-4161,
+  fixed at commit by `walRewriteChecksums`) is no longer shown by 5.2. It is still true; the
+  adversarial REP-05 attack shows the committed variant (valid 10/10 after commit).
+- Evidence now 62 lines; runtime ~2.5 s.
+
+### Experiment 5.3 (finding 3)
+
+- The writer's `count(*)` now runs **before** each row's `-shm` sample, so each row shows the
+  state including that read; on the rows just before a reader begins (`after step 6` in A,
+  `checkpointed` in B) the writer does not read at all and its column prints `-`.
+- A: `after step 6 … 0,0,unused…`; `reader began … 0,22,…` — the reader itself set mark 1 to 22
+  (new check: mark 22 absent before, present after). Per commit, mark 2 now equals that row's
+  mxFrame (the writer's own read: 38, 61, …, 555). `step 30 committed` and `reader ended` both
+  show `0,22,555` — ending the reader changes nothing in the `-shm` (correction 5 now visible).
+  `step 31 committed` shows `0,18,…` (the writer's read after the restart reused slot 1).
+- B: `checkpointed … 0,22,…` (the PASSIVE checkpoint itself wrote mark 1), `reader began`
+  unchanged (read lock 0); per commit the writer's mark in slot 1 equals that row's mxFrame
+  (16, 39, …, 533). All checks and every other number unchanged.
+
+### Experiment 5.4 (finding 4)
+
+- The `waited` column and the check "only the non-PASSIVE modes that ended busy waited the busy
+  timeout" are removed. Waits are no longer a claim; elapsed times stay on `INFO:` lines. The
+  whole table is EXACT now (no BOUND column). Busy is shown by the exact `busy=0/1` result.
+  Evidence 68 lines.
+
+### Answered adversarial lines (no code change)
+
+- CHK-03: outline wording; the attack's own output (`shm salt-1 +1`, restarted WAL salt-1 a
+  fresh random value, checkpoint-seq 0→0) is correction 1 above.
+- REP-02: stale-generation base cannot be detected from base + WAL (correction 6).
+- REP-05 `savepoint_ghost=true`: SQLite's own checkpointed database holds the same bytes (9
+  occurrences in `_work/adv-ch05/wal-replay-falsify/rep05/r.db` after SQLite's TRUNCATE, 9 in the
+  WAL, 9 in our replay, E1 equal); no row contains the string (0 of 336 `events` rows,
+  `integrity_check ok`). They are leftover cell bytes in unused page space that SQLite wrote in
+  committed frames — not visible data.
+- CHK-05 `ro_ckpt … checkpointed=38`: the read-only connection did not checkpoint; the RESTART
+  checkpointer had already backfilled all 38 frames before waiting on the reader, so `log=38
+  checkpointed=38` just reports nBackfill. Probe `agent_work/ch05/repair-probes/readonly-checkpoint`:
+  `mode=ro` PASSIVE on an un-backfilled WAL → `disk I/O error (778)` (SQLITE_IOERR_WRITE), nBackfill
+  stays 0; after the writer's PASSIVE, the same `mode=ro` call returns `busy=0 log=38
+  checkpointed=38` with no error.
+
+### Repo check note
+
+`go run ./cmd/course check all` on this merged tree: every check passes except `check paths`,
+which flags the tracked binary `_tools/bin/kb` (added on main by c51ff44, not by this chunk).
