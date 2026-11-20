@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# spans.sh -> regenerate spans.txt: every function/struct/opcode span cited in
+# docs/knowledge/source-inventory-ch01-04.md, measured on the pinned tree.
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+SRC=${SQLITE_SRC:-/root/Software/sqlite-src/3.53.4/src}
+F(){ python3 -I "$here/funcspan.py" "$SRC/$1" "${@:2}"; }
+{
+echo "# ch1"
+F prepare.c sqlite3_prepare_v2 sqlite3_prepare_v3 sqlite3LockAndPrepare sqlite3Prepare sqlite3Reprepare sqlite3Init
+F tokenize.c sqlite3RunParser sqlite3GetToken
+F build.c sqlite3FinishCoding sqlite3BeginTransaction sqlite3StartTable sqlite3EndTable
+F select.c sqlite3Select
+F insert.c sqlite3Insert
+F where.c sqlite3WhereBegin sqlite3WhereEnd
+F wherecode.c sqlite3WhereExplainOneScan
+F vdbeapi.c sqlite3_step sqlite3Step sqlite3_finalize sqlite3_reset sqlite3_stmt_status
+F vdbe.c sqlite3VdbeExec OP_Halt OP_ResultRow OP_Column OP_MakeRecord OP_AutoCommit OP_Transaction OP_OpenRead OP_NewRowid OP_Insert OP_Rewind OP_Prev OP_Next OP_Init vdbeColumnFromOverflow
+F vdbeaux.c sqlite3VdbeMakeReady sqlite3VdbeList sqlite3VdbeExplain sqlite3VdbeHalt vdbeCommit sqlite3VdbeReset sqlite3VdbeFinalize sqlite3VdbeDelete
+F vdbevtab.c bytecodevtabConnect bytecodevtabColumn sqlite3VdbeBytecodeVtabInit
+F main.c setupLookaside sqlite3_db_release_memory sqlite3_db_cacheflush sqlite3Close sqlite3_trace_v2 sqlite3RollbackAll openDatabase sqlite3_open_v2 sqlite3_close_v2
+F status.c sqlite3_status64 sqlite3_status sqlite3_db_status64 sqlite3_db_status
+F os.c sqlite3OsRead sqlite3OsWrite sqlite3OsSync sqlite3OsTruncate sqlite3OsFileSize sqlite3OsLock sqlite3OsFetch sqlite3OsUnfetch sqlite3OsOpen
+echo "# ch2"
+F btreeInt.h "struct MemPage" "struct Btree" "struct BtShared" "struct CellInfo" "struct BtCursor" "struct IntegrityCk"
+F btree.c sqlite3BtreeOpen lockBtree newDatabase sqlite3BtreeNewDb zeroPage decodeFlags btreeComputeFreeSpace btreeInitPage btreeCellSizeCheck btreeGetPage btreePageFromDbPage getAndInitPage btreeParseCellPtrNoPayload btreeParseCellPtr btreeParseCellPtrIndex btreeParseCell btreeParseCellAdjustSizeForOverflow cellSizePtr cellSizePtrIdxLeaf cellSizePtrNoPayload cellSizePtrTableLeaf getOverflowPage copyPayload accessPayload fetchPayload sqlite3BtreePayload sqlite3BtreePayloadFetch ptrmapPageno ptrmapPut ptrmapGet ptrmapPutOvflPtr allocateBtreePage freePage2 freePage sqlite3BtreeGetMeta sqlite3BtreeUpdateMeta sqlite3BtreeSetPageSize sqlite3BtreeBeginTrans btreeBeginTrans moveToRoot moveToChild sqlite3BtreeFirst sqlite3BtreeNext sqlite3BtreeTableMoveto sqlite3BtreeCursor btreeCursor
+F vdbeaux.c sqlite3VdbeSerialType sqlite3VdbeSerialTypeLen sqlite3VdbeOneByteSerialTypeLen sqlite3VdbeSerialGet sqlite3VdbeRecordUnpack sqlite3VdbeRecordCompareWithSkip
+F vdbemem.c sqlite3VdbeMemFromBtree sqlite3VdbeMemFromBtreeZeroOffset
+F util.c putVarint64 sqlite3PutVarint sqlite3GetVarint sqlite3GetVarint32 sqlite3VarintLen
+F pager.c pager_write_changecounter pager_incr_changecounter sqlite3PagerReadFileheader pagerPagecount
+F dbpage.c dbpageConnect dbpageBestIndex dbpageFilter dbpageColumn dbpageUpdate dbpageBegin dbpageSync sqlite3DbpageRegister
+F dbstat.c statConnect statBestIndex statFilter statNext statDecodePage statGetPage statSizeAndOffset statColumn sqlite3DbstatRegister
+echo "# ch3"
+F btree.c sqlite3BtreeInsert btreeOverwriteContent btreeOverwriteCell fillInCell insertCell insertCellFast dropCell clearCellOverflow pageFindSlot allocateSpace freeSpace defragmentPage populateCellCache computeCellSize rebuildPage pageInsertArray pageFreeArray editPage balance_quick copyNodeContent balance_nonroot balance_deeper balance sqlite3BtreeDelete saveAllCursors relocatePage incrVacuumStep finalDbSize sqlite3BtreeIncrVacuum autoVacuumCommit sqlite3BtreeCommitPhaseOne sqlite3BtreeCommitPhaseTwo sqlite3BtreeCommit sqlite3BtreeRollback btreeCreateTable sqlite3BtreeCreateTable clearDatabasePage sqlite3BtreeClearTable btreeDropTable sqlite3BtreeSetAutoVacuum checkPtrmap checkList checkTreePage sqlite3BtreeIntegrityCheck
+echo "# ch4"
+F pager.c "struct PagerSavepoint" "struct Pager" assert_pager_state pagerUnlockDb pagerLockDb zeroJournalHdr writeJournalHdr readJournalHdr writeSuperJournal pager_reset pager_unlock pager_error pager_end_transaction pager_playback_one_page pager_truncate pager_playback readDbPage sqlite3PagerSetCachesize sqlite3PagerSetSpillsize pagerFixMaplimit sqlite3PagerSetMmapLimit sqlite3PagerShrink sqlite3PagerSetFlags pagerOpentemp pagerAcquireMapPage pagerReleaseMapPage syncJournal pager_write_pagelist subjournalPage pagerStress sqlite3PagerOpen hasHotJournal sqlite3PagerSharedLock getPageNormal getPageMMap getPageError sqlite3PagerGet sqlite3PagerUnrefNotNull sqlite3PagerUnref pager_open_journal sqlite3PagerBegin pager_write pagerWriteLargeSector sqlite3PagerWrite sqlite3PagerSync sqlite3PagerExclusiveLock sqlite3PagerCommitPhaseOne sqlite3PagerCommitPhaseTwo sqlite3PagerRollback sqlite3PagerMemUsed sqlite3PagerCacheStat
+F pcache.h "struct PgHdr"
+F vdbeInt.h "struct Vdbe" "struct VdbeCursor"
+F pcache.c "struct PCache" pcacheManageDirtyList numberOfCachePages sqlite3PcacheSize sqlite3PcacheOpen sqlite3PcacheSetPageSize sqlite3PcacheFetch sqlite3PcacheFetchStress pcacheFetchFinishWithInit sqlite3PcacheFetchFinish sqlite3PcacheRelease sqlite3PcacheMakeDirty sqlite3PcacheMakeClean sqlite3PcacheClearWritable sqlite3PcacheTruncate pcacheSortDirtyList sqlite3PcacheDirtyList sqlite3PcacheSetCachesize sqlite3PcacheSetSpillsize sqlite3PcacheShrink sqlite3PCacheIsDirty sqlite3PCachePercentDirty
+F pcache1.c "struct PgHdr1" "struct PGroup" "struct PCache1" "struct PgFreeslot" sqlite3PCacheBufferSetup pcache1InitBulk pcache1Alloc pcache1Free pcache1AllocPage pcache1FreePage pcache1UnderMemoryPressure pcache1ResizeHash pcache1EnforceMaxPage pcache1Init pcache1Create pcache1Cachesize pcache1Shrink pcache1Pagecount pcache1FetchStage2 pcache1FetchNoMutex pcache1Fetch pcache1Unpin pcache1Rekey pcache1Truncate pcache1Destroy sqlite3PCacheSetDefault sqlite3PcacheReleaseMemory
+F os_unix.c unixRead unixWrite full_fsync unixSync unixUnmapfile unixRemapfile unixMapfile unixFetch unixUnfetch
+F malloc.c sqlite3_soft_heap_limit64 sqlite3_hard_heap_limit64
+} 2>&1
