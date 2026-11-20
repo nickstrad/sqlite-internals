@@ -16,6 +16,10 @@ import (
 	"github.com/nickstrad/sqlite-internals/sqlite"
 )
 
+// FileSHA256 returns the lowercase hex SHA-256 digest of the file at path.
+// Never call it on a file currently held open by a SQLite connection in the
+// same process: closing the extra file descriptor drops the process's POSIX
+// locks on that file.
 func FileSHA256(path string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -29,8 +33,14 @@ func FileSHA256(path string) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+// ChangeCounterRanges lists the half-open byte offsets in page 1's 100-byte
+// header updated by pager_write_changecounter (src/pager.c:3130-3143):
+// bytes 24..27 (file change counter) and 92..95 (version-valid-for number).
 var ChangeCounterRanges = [][2]int{{24, 28}, {92, 96}}
 
+// MaskChangeCounter returns a copy of image with the change-counter header
+// bytes zeroed so two WAL databases built with different connection session
+// counts can still be compared byte for byte.
 func MaskChangeCounter(image []byte) []byte {
 	masked := append([]byte(nil), image...)
 	for _, span := range ChangeCounterRanges {
@@ -41,11 +51,15 @@ func MaskChangeCounter(image []byte) []byte {
 	return masked
 }
 
+// FileHashes holds the SHA-256 digests of a database file both verbatim and
+// with ChangeCounterRanges zeroed.
 type FileHashes struct {
 	Exact  string
 	Masked string
 }
 
+// HashFile reads path from disk and returns its exact and masked SHA-256
+// hashes. The database must already be closed.
 func HashFile(path string) (FileHashes, error) {
 	image, err := os.ReadFile(path)
 	if err != nil {
@@ -54,12 +68,16 @@ func HashFile(path string) (FileHashes, error) {
 	return HashImage(image), nil
 }
 
+// HashImage returns the exact and change-counter-masked SHA-256 hashes of a
+// database file image in memory.
 func HashImage(image []byte) FileHashes {
 	exact := sha256.Sum256(image)
 	masked := sha256.Sum256(MaskChangeCounter(image))
 	return FileHashes{Exact: hex.EncodeToString(exact[:]), Masked: hex.EncodeToString(masked[:])}
 }
 
+// ComputeStepHashes builds r inside dir from step 0 through r.Steps and
+// returns the at-rest FileHashes after every step.
 func (r Recipe) ComputeStepHashes(ctx context.Context, dir string) ([]FileHashes, error) {
 	path := filepath.Join(dir, "recipe-step-hashes.db")
 	defer RemoveDatabase(path)
@@ -79,9 +97,13 @@ func (r Recipe) ComputeStepHashes(ctx context.Context, dir string) ([]FileHashes
 }
 
 func (r Recipe) cacheKey() string {
+	// Include FormatVersion and the pinned Fossil check-in so a generator or
+	// SQLite upgrade never reuses stale hashes.
 	return fmt.Sprintf("v%d-%s-seed%d-%s", FormatVersion, sqlite.Current().FossilID[:16], r.Seed, r.JournalMode)
 }
 
+// CacheDir returns the directory under the course work base where computed
+// per-step hash lists are cached across experiment runs.
 func CacheDir() (string, error) {
 	base, err := sqlitex.WorkBase()
 	if err != nil {
@@ -90,6 +112,8 @@ func CacheDir() (string, error) {
 	return filepath.Join(base, "recipe-cache"), nil
 }
 
+// CachePath returns the cache file path for r's seed, mode, format version,
+// and pinned SQLite check-in.
 func (r Recipe) CachePath() (string, error) {
 	dir, err := CacheDir()
 	if err != nil {
@@ -98,6 +122,9 @@ func (r Recipe) CachePath() (string, error) {
 	return filepath.Join(dir, r.cacheKey()+".txt"), nil
 }
 
+// StepHashes returns the per-step hashes for steps 0..r.Steps, reusing the
+// cached file on disk when it already holds at least r.Steps+1 valid entries
+// and rebuilding it atomically otherwise.
 func (r Recipe) StepHashes(ctx context.Context) ([]FileHashes, error) {
 	if err := r.Validate(); err != nil {
 		return nil, err
@@ -128,6 +155,7 @@ func (r Recipe) StepHashes(ctx context.Context) ([]FileHashes, error) {
 	return hashes, nil
 }
 
+// ExpectedHash returns the exact at-rest SHA-256 digest for step k of r.
 func (r Recipe) ExpectedHash(ctx context.Context, k int) (string, error) {
 	if k < 0 || k > r.Steps {
 		return "", fmt.Errorf("recipe: step %d out of range 0..%d", k, r.Steps)
@@ -139,15 +167,20 @@ func (r Recipe) ExpectedHash(ctx context.Context, k int) (string, error) {
 	return hashes[k].Exact, nil
 }
 
+// Match identifies which recipe step a database file equals. Step is -1 when
+// no step matches; Exact is true for a verbatim SHA-256 match and false when
+// only the change-counter-masked hash matched.
 type Match struct {
 	Step  int
 	Exact bool
 }
 
+// Found reports whether m matched a step of the recipe.
 func (m Match) Found() bool {
 	return m.Step >= 0
 }
 
+// String describes m for experiment output.
 func (m Match) String() string {
 	switch {
 	case !m.Found():
@@ -159,6 +192,8 @@ func (m Match) String() string {
 	}
 }
 
+// MatchHashes searches hashes for h, preferring an exact byte match before
+// falling back to a change-counter-masked match.
 func MatchHashes(hashes []FileHashes, h FileHashes) Match {
 	for k, candidate := range hashes {
 		if candidate.Exact == h.Exact {
@@ -173,6 +208,8 @@ func MatchHashes(hashes []FileHashes, h FileHashes) Match {
 	return Match{Step: -1}
 }
 
+// MatchStep checks that path is at rest, hashes it, and reports which step of
+// r it equals.
 func (r Recipe) MatchStep(ctx context.Context, path string) (Match, error) {
 	if err := CheckAtRest(path); err != nil {
 		return Match{Step: -1}, err
@@ -226,6 +263,8 @@ func writeHashCache(path string, hashes []FileHashes) error {
 	for k, h := range hashes {
 		fmt.Fprintf(&b, "%d %s %s\n", k, h.Exact, h.Masked)
 	}
+	// Write to a sibling temp file and rename so concurrent readers never see
+	// a partially written cache file.
 	temp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-")
 	if err != nil {
 		return err

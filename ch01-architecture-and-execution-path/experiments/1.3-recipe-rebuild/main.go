@@ -1,3 +1,12 @@
+// Experiment 1.3 proves Rebuild Ladder rung R0: running the seeded recipe
+// twice in different directories under different names produces byte-identical
+// database files at every step. It then tests six sources of variation to show
+// which determinism rules are required and where SQLite's behavior differs
+// between WAL and rollback modes.
+//
+// Run from the repo root (portable; no strace needed):
+//
+//	go run ./ch01-architecture-and-execution-path/experiments/1.3-recipe-rebuild
 package main
 
 import (
@@ -65,6 +74,8 @@ func limitPages(pages []int) string {
 	return fmt.Sprintf("%v...", pages[:8])
 }
 
+// compareFiles compares two closed database files page by page (1-based) and
+// records the differing byte offsets inside page 1 when page 1 differs.
 func compareFiles(a, b string) fileDiff {
 	dataA, err := os.ReadFile(a)
 	if err != nil {
@@ -100,6 +111,9 @@ func compareFiles(a, b string) fileDiff {
 	return d
 }
 
+// onlyChangeCounter reports whether two equal-sized files differ exclusively
+// inside header bytes 24..27 (file change counter) and 92..95
+// (version-valid-for), written by pager_write_changecounter (src/pager.c:3130-3143).
 func onlyChangeCounter(d fileDiff) bool {
 	if d.Equal || d.SizeA != d.SizeB || !slices.Equal(d.DifferingPages, []int{1}) {
 		return false
@@ -151,6 +165,8 @@ func applyStatementsInSession(ctx context.Context, r recipe.Recipe, path string,
 	if err != nil {
 		fatal("open", err)
 	}
+	// Pin a single *sql.Conn so any PRAGMAs apply to the exact connection that
+	// runs the transaction.
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		fatal("conn", err)
@@ -206,6 +222,9 @@ func runTwice(ctx context.Context, r recipe.Recipe, dir string, v variant) fileD
 	return d
 }
 
+// timestampVariant demonstrates both sides of current_timestamp's one-second
+// resolution: two runs inside the same wall-clock second produce identical
+// files, while a third run after the second advances differs.
 func timestampVariant(ctx context.Context, r recipe.Recipe, dir string) (sameSecond, nextSecond fileDiff) {
 	statement := "INSERT INTO events(id, account_id, kind, amount, note) VALUES(900002, 1, 'fee', 0, current_timestamp)"
 	a := filepath.Join(dir, "timestamp-run1.db")
@@ -237,6 +256,9 @@ func waitForNextSecond() {
 	time.Sleep(now.Truncate(time.Second).Add(time.Second).Sub(now) + 5*time.Millisecond)
 }
 
+// mergedWithNext selects steps 2+3 and 4+5 to merge into single transactions:
+// step 3 deletes rows written in step 2, exposing stale unzeroed bytes when
+// secure_delete=OFF.
 var mergedWithNext = []int{2, 4}
 
 func batchVariant(ctx context.Context, r recipe.Recipe, dir string, secureDelete bool) (fileDiff, unusedReport) {
@@ -293,6 +315,10 @@ func be32(data []byte, offset int) int {
 	return int(data[offset])<<24 | int(data[offset+1])<<16 | int(data[offset+2])<<8 | int(data[offset+3])
 }
 
+// freelistPages walks SQLite's freelist trunk chain starting from header
+// offset 32 (4-byte big-endian first trunk page number). Each trunk holds the
+// next trunk pointer at offset 0, the leaf count at offset 4, and 4-byte leaf
+// page numbers starting at offset 8.
 func freelistPages(data []byte) []int {
 	var free []int
 	for trunk := be32(data, 32); trunk != 0 && len(free) <= len(data)/pageSize; trunk = be32(data, (trunk-1)*pageSize) {
@@ -305,6 +331,10 @@ func freelistPages(data []byte) []int {
 	return free
 }
 
+// unusedBytes marks every byte offset on page that belongs to no live cell:
+// all bytes of a freelist page, or on a B-tree page the unallocated gap
+// between the cell-pointer array and the cell content area plus the bodies of
+// all freeblocks.
 func unusedBytes(data []byte, page int, free []int) []bool {
 	unused := make([]bool, pageSize)
 	if slices.Contains(free, page) {
@@ -380,6 +410,10 @@ func classifyDifferences(a, b string, d fileDiff) unusedReport {
 	return report
 }
 
+// sessionVariant compares building steps 0..variantBase with one connection
+// session per step against building the exact same steps on one long-lived
+// connection. Under WAL mode only the header change counter differs because
+// dbFileVers is refreshed on page-1 read, not on WAL commit (src/pager.c:3109-3110).
 func sessionVariant(ctx context.Context, r recipe.Recipe, dir string) fileDiff {
 	canonical := filepath.Join(dir, "sessions-"+r.JournalMode+"-one-per-step.db")
 	if err := r.Build(ctx, canonical, variantBase); err != nil {

@@ -1,3 +1,13 @@
+// Experiment 1.2 traces one committed INSERT through every SQLite layer:
+// VDBE bytecode (EXPLAIN), B-tree pages (sqlite_dbpage), pager and VFS calls
+// (C CLI -vfstrace), and kernel syscalls (strace). It runs in both rollback
+// (DELETE) and WAL modes and performs the twin check comparing the translated
+// Go driver against the C CLI.
+//
+// Run from the repo root (Linux for strace; on macOS run inside Docker via
+// docker compose run --rm lab go run ./ch01-architecture-and-execution-path/experiments/1.2-one-insert):
+//
+//	go run ./ch01-architecture-and-execution-path/experiments/1.2-one-insert
 package main
 
 import (
@@ -20,6 +30,8 @@ import (
 
 const packagePath = "ch01-architecture-and-execution-path/experiments/1.2-one-insert"
 
+// On-disk geometry and SQL shared by the rollback and WAL runs: 4096-byte
+// pages, 32-byte WAL header, and 24-byte WAL frame header (src/wal.c:21-60).
 const (
 	pageSize       = 4096
 	walHeaderSize  = 32
@@ -52,6 +64,8 @@ func options(mode string) sqlitex.Options {
 	return o
 }
 
+// cliPrelude translates sqlitex.Options into PRAGMA statements so the C CLI
+// runs under the exact same connection settings as the Go driver.
 func cliPrelude(o sqlitex.Options) string {
 	onOff := func(b bool) string {
 		if b {
@@ -68,6 +82,10 @@ func markerPath(dir, name string) string {
 	return filepath.Join(dir, "marker-"+name)
 }
 
+// createMarkers creates empty files that both the Go child and the CLI (.read)
+// open immediately before and after a statement. Because CLI stdout is
+// buffered, opening a named file puts an unbuffered syscall bracket in strace
+// at the exact statement boundary.
 func createMarkers(dir string, names ...string) {
 	for _, name := range names {
 		if err := os.WriteFile(markerPath(dir, name), nil, 0o644); err != nil {
@@ -101,6 +119,8 @@ func createBase(ctx context.Context, path, mode string) {
 	}
 }
 
+// pageHashes reads every page through the sqlite_dbpage virtual table and
+// returns its SHA-256 hex digest in page-number order.
 func pageHashes(ctx context.Context, path, mode string) []string {
 	db, err := sqlitex.Open(ctx, path, options(mode))
 	if err != nil {
@@ -148,6 +168,8 @@ func short(hash string) string {
 	return hash[:16]
 }
 
+// printExplain queries SQLite's bytecode listing for insertSQL, which
+// sqlite3Step produces via sqlite3VdbeList (src/vdbeapi.c:863-865).
 func printExplain(ctx context.Context, path string) {
 	db, err := sqlitex.Open(ctx, path, options(sqlitex.JournalDelete))
 	if err != nil {
@@ -181,6 +203,8 @@ type walFrame struct {
 	CommitSize uint32
 }
 
+// readWALFrames decodes the page number (bytes 0..3) and commit-size field
+// (bytes 4..7) from every 24-byte frame header after the 32-byte WAL header.
 func readWALFrames(path string) ([]walFrame, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -197,6 +221,10 @@ func readWALFrames(path string) ([]walFrame, error) {
 	return frames, nil
 }
 
+// childInsert is the re-exec'd child entry point traced by strace. It locks
+// its goroutine to one OS thread so strace sees its syscalls in order, brackets
+// the INSERT with marker files, and reads the -wal frames before db.Close
+// checkpoints and deletes the WAL.
 func childInsert(dir, mode string) {
 	runtime.LockOSThread()
 	ctx := context.Background()
@@ -211,6 +239,9 @@ func childInsert(dir, mode string) {
 	}
 	touchMarker(dir, "2")
 	if mode == sqlitex.JournalWAL {
+		// Read the -wal before closing, since closing the last WAL connection
+		// checkpoints frames into t.db and deletes t.db-wal. Reading the -wal
+		// (not t.db) avoids touching the POSIX locks held on t.db and t.db-shm.
 		frames, err := readWALFrames(path + "-wal")
 		if err != nil {
 			fatal("child read wal", err)
@@ -259,6 +290,8 @@ func isDatabaseIO(call trace.Syscall, dir string) bool {
 	return call.Path == dir || strings.HasPrefix(call.Path, dir+string(filepath.Separator))
 }
 
+// segmentCalls extracts all database-directory file syscalls strictly between
+// the open of marker from and the open of marker to.
 func segmentCalls(calls []trace.Syscall, dir, from, to string) ([]trace.Syscall, error) {
 	start, end := -1, -1
 	for i, call := range calls {
@@ -289,6 +322,9 @@ func syncName(name string) bool {
 	return name == "fsync" || name == "fdatasync"
 }
 
+// normalized canonicalizes syscall spellings that differ across libc or
+// configure builds (open vs openat, unlink vs unlinkat, fsync vs fdatasync)
+// so the twin check compares the actual file operations.
 func normalized(call trace.Syscall) string {
 	switch {
 	case call.Name == "open" || call.Name == "openat":
@@ -324,6 +360,9 @@ func normalizedAll(calls []trace.Syscall, keep func(trace.Syscall) bool) []strin
 	return out
 }
 
+// isCloexecFcntl matches the extra fcntl(fd, F_SETFD, FD_CLOEXEC) call that
+// modernc's musl-derived libc issues after every O_CLOEXEC open, whereas
+// SQLite's C build relies on O_CLOEXEC directly.
 func isCloexecFcntl(call trace.Syscall) bool {
 	return call.Name == "fcntl" && call.Lock == nil && strings.HasPrefix(call.Flags, "F_SETFD")
 }
@@ -374,6 +413,8 @@ type phase struct {
 	path      string
 }
 
+// phases maps the three split statements (BEGIN IMMEDIATE, INSERT, COMMIT) to
+// the opcodes and C call paths they isolate inside one autocommit INSERT.
 func phases(mode string) []phase {
 	commitPath := "sqlite3VdbeHalt -> vdbeCommit -> sqlite3BtreeCommitPhaseOne/PhaseTwo -> sqlite3PagerCommitPhaseOne/PhaseTwo"
 	insertPath := "sqlite3BtreeInsert -> sqlite3PagerWrite"
@@ -465,6 +506,8 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 	}
 	fmt.Printf("base: table t with 1 row, %d pages, sha256 %s\n", len(before), short(baseHash))
 
+	// On non-Linux hosts, strace is unavailable; still run the INSERT in
+	// process so the reader sees which pages changed.
 	if !trace.Supported {
 		db, err := sqlitex.Open(ctx, path, options(mode))
 		if err != nil {
@@ -523,6 +566,8 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 		}
 	}
 	if mode == sqlitex.JournalDelete {
+		// In rollback mode, pager_write_pagelist writes each modified page
+		// directly to t.db at offset (page - 1) * pageSize.
 		everyChangedWrittenOnce := len(written) == len(changed)
 		for _, page := range changed {
 			if written[page] != 1 {
@@ -531,6 +576,8 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 		}
 		check(dbWrites > 0 && offsetsMatch && everyChangedWrittenOnce, fmt.Sprintf("rollback mode: each pwrite64 on %s is one whole page at offset (page-1)*4096, and the pages written are exactly the changed pages %v", dbName, changed))
 	} else {
+		// In WAL mode, pagerWalFrames appends each modified page as a frame in
+		// t.db-wal and leaves t.db untouched until a checkpoint runs.
 		check(dbWrites == 0, fmt.Sprintf("WAL mode: the commit writes nothing to %s itself (database-file pwrite64 calls during the INSERT: %d)", dbName, dbWrites))
 		frames := parseChildFrames(goRun.Stdout)
 		var framePages []int
@@ -561,6 +608,9 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 		return
 	}
 
+	// Twin check: rebuild the base and run the exact same autocommit INSERT in
+	// the C CLI under strace, then compare writes, syncs, other syscalls, and
+	// final file bytes.
 	createBase(ctx, path, mode)
 	cliCommand := cli.Command(ctx, sqlitex.CLIRun{}).Args
 	cliCommand[0] = cli.Path
@@ -595,6 +645,10 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 	check(allSame, "apart from fcntl F_SETFD, every file syscall of the INSERT is the same in both builds (open vs openat and fsync vs fdatasync are not distinguished)")
 	check(goFileHash == cliFileHash, fmt.Sprintf("the database file after the INSERT is byte-identical from both builds (sha256 %s)", short(goFileHash)))
 
+	// Measured call path: split the INSERT into BEGIN IMMEDIATE, INSERT, and
+	// COMMIT under CLI -vfstrace + strace so each VFS call and syscall is
+	// attributed to the opcode that caused it, then verify the combined
+	// syscalls equal the autocommit INSERT's.
 	createBase(ctx, path, mode)
 	merged, splitRun, err := trace.RunCLIMerged(ctx, cli, trace.CLITrace{Dir: dir, DB: path, SQL: splitScript(dir, options(mode))}, trace.Options{})
 	if err != nil {
@@ -622,6 +676,8 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 			switch event.Kind {
 			case trace.EventVFS:
 				if event.VFS.Method == "xRandomness" {
+					// Different CLI builds seed SQLite's PRNG at different
+					// points, so keep xRandomness on an INFO line.
 					fmt.Printf("INFO: phase %s: VFS %s (SQLite seeds its PRNG on first use; this CLI build first needs randomness here)\n", p.statement, vfsLine(*event.VFS, dir))
 					continue
 				}

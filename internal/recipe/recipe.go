@@ -1,3 +1,9 @@
+// Package recipe generates and applies a seeded, deterministic SQLite workload.
+//
+// Every step k is one transaction ending in PRAGMA user_version = k. Running
+// the same recipe produces byte-identical database files at rest, giving every
+// chapter a known ground-truth SHA-256 hash after each step (Rebuild Ladder
+// rung R0).
 package recipe
 
 import (
@@ -8,35 +14,50 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
 )
 
+// Default recipe parameters and bounds.
 const (
-	DefaultSeed  uint64 = 1
-	DefaultSteps        = 30
-	IndexStep           = 5
-	MaxSteps            = 10000
+	// DefaultSeed is the PRNG seed used by Default.
+	DefaultSeed uint64 = 1
+	// DefaultSteps is the number of workload steps after schema step 0.
+	DefaultSteps = 30
+	// IndexStep is the step that creates the secondary index on events.
+	IndexStep = 5
+	// MaxSteps caps the step count accepted by Validate.
+	MaxSteps = 10000
 )
 
+// FormatVersion versions the on-disk step-hash cache. Bump it whenever the
+// generated SQL, parameters, or SQLite options change.
 const FormatVersion = 1
 
+// Recipe identifies a deterministic workload by PRNG seed, step count, and
+// journal mode ("wal" or "delete").
 type Recipe struct {
 	Seed        uint64
 	Steps       int
 	JournalMode string
 }
 
+// Default returns the standard course recipe: seed 1, 30 workload steps, and
+// WAL mode (the platform default).
 func Default() Recipe {
 	return Recipe{Seed: DefaultSeed, Steps: DefaultSteps, JournalMode: sqlitex.JournalWAL}
 }
 
+// WithSteps returns a copy of r with Steps replaced by steps.
 func (r Recipe) WithSteps(steps int) Recipe {
 	r.Steps = steps
 	return r
 }
 
+// WithJournalMode returns a copy of r with JournalMode replaced by mode.
 func (r Recipe) WithJournalMode(mode string) Recipe {
 	r.JournalMode = mode
 	return r
 }
 
+// Validate reports an error if r's step count is out of range or its journal
+// mode is neither WAL nor DELETE.
 func (r Recipe) Validate() error {
 	if r.Steps < 0 || r.Steps > MaxSteps {
 		return fmt.Errorf("recipe: steps %d out of range 0..%d", r.Steps, MaxSteps)
@@ -48,10 +69,18 @@ func (r Recipe) Validate() error {
 	return fmt.Errorf("recipe: journal mode %q not supported (want %q or %q)", r.JournalMode, sqlitex.JournalWAL, sqlitex.JournalDelete)
 }
 
+// String formats r as a compact description for logs and evidence output.
 func (r Recipe) String() string {
 	return fmt.Sprintf("seed=%d steps=%d journal_mode=%s", r.Seed, r.Steps, r.JournalMode)
 }
 
+// SQLiteOptions returns the explicit file and connection settings used when
+// building or opening a recipe database.
+//
+// SecureDelete is always enabled so freed space inside B-tree pages and
+// freelist leaves is zeroed rather than keeping stale bytes from earlier
+// histories. SingleConnection pins the pool to one SQLite connection so step
+// execution never interleaves across connections.
 func (r Recipe) SQLiteOptions() sqlitex.Options {
 	options := sqlitex.DefaultOptions()
 	options.File.JournalMode = r.JournalMode
@@ -60,13 +89,16 @@ func (r Recipe) SQLiteOptions() sqlitex.Options {
 	return options
 }
 
+// Statement is one parameterized SQL statement and its bound arguments.
 type Statement struct {
 	SQL  string
 	Args []any
 }
 
+// StepKind classifies a statement inside a Step for summary counts and tests.
 type StepKind int
 
+// Statement kinds recorded alongside each generated Statement.
 const (
 	KindSchema StepKind = iota
 	KindInsert
@@ -76,12 +108,15 @@ const (
 	KindUserVersion
 )
 
+// Step is one numbered transaction in a recipe plan. Number 0 creates the
+// schema; numbers 1..N run workload statements.
 type Step struct {
 	Number     int
 	Statements []Statement
 	Kinds      []StepKind
 }
 
+// StepCounts summarizes how many statements of each kind appear in a Step.
 type StepCounts struct {
 	Schema  int
 	Inserts int
@@ -90,6 +125,7 @@ type StepCounts struct {
 	Indexes int
 }
 
+// Counts tallies the non-metadata statements in s by StepKind.
 func (s Step) Counts() StepCounts {
 	var counts StepCounts
 	for _, kind := range s.Kinds {
@@ -109,6 +145,7 @@ func (s Step) Counts() StepCounts {
 	return counts
 }
 
+// Summary formats s's statement counts as a single human-readable line.
 func (s Step) Summary() string {
 	counts := s.Counts()
 	return fmt.Sprintf("step %d: schema=%d inserts=%d updates=%d deletes=%d indexes=%d", s.Number, counts.Schema, counts.Inserts, counts.Updates, counts.Deletes, counts.Indexes)
@@ -119,16 +156,23 @@ func (s *Step) add(kind StepKind, sql string, args ...any) {
 	s.Kinds = append(s.Kinds, kind)
 }
 
+// SchemaSQL holds the three CREATE TABLE statements executed in step 0. Every
+// table uses an explicit INTEGER PRIMARY KEY so rowids are supplied by Go
+// rather than chosen by SQLite.
 var SchemaSQL = []string{
 	"CREATE TABLE accounts(id INTEGER PRIMARY KEY, name TEXT NOT NULL, balance INTEGER NOT NULL)",
 	"CREATE TABLE documents(id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL, title TEXT NOT NULL, body BLOB NOT NULL)",
 	"CREATE TABLE events(id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL, kind TEXT NOT NULL, amount INTEGER NOT NULL, note TEXT NOT NULL)",
 }
 
+// IndexSQL is the secondary index created during step IndexStep.
 const IndexSQL = "CREATE INDEX events_by_account ON events(account_id, id)"
 
 var eventKinds = []string{"deposit", "withdraw", "transfer", "fee"}
 
+// Bounds on generated document body sizes in bytes. On a 4096-byte page a
+// table leaf row spills to overflow pages above 4061 bytes of payload, so this
+// range exercises both inline rows and multi-page overflow chains.
 const (
 	MinBodyBytes = 2000
 	MaxBodyBytes = 16000
@@ -148,6 +192,8 @@ func newGenerator(seed uint64) *generator {
 	return &generator{seed: seed, nextAccountID: 1, nextDocID: 1, nextEventID: 1}
 }
 
+// Plan generates steps 0 through r.Steps in order. Each step depends only on
+// r.Seed and its step index, never on r.Steps.
 func (r Recipe) Plan() ([]Step, error) {
 	if err := r.Validate(); err != nil {
 		return nil, err
@@ -160,6 +206,8 @@ func (r Recipe) Plan() ([]Step, error) {
 	return steps, nil
 }
 
+// Step generates and returns step k alone by walking the live-id state from
+// step 0 through step k.
 func (r Recipe) Step(k int) (Step, error) {
 	if k < 0 || k > r.Steps {
 		return Step{}, fmt.Errorf("recipe: step %d out of range 0..%d", k, r.Steps)
@@ -184,6 +232,8 @@ func (g *generator) step(k int) Step {
 		s.add(KindUserVersion, userVersionSQL(0))
 		return s
 	}
+	// Seed each step from (seed, k) so every value comes from Go's deterministic
+	// PRNG rather than SQL random() or wall-clock functions.
 	rng := rand.New(rand.NewPCG(g.seed, uint64(k)))
 
 	for range 4 + rng.IntN(5) {
@@ -212,6 +262,8 @@ func (g *generator) step(k int) Step {
 		s.add(KindUpdate, "UPDATE documents SET body = ? WHERE id = ?", randomBody(rng), pick(rng, g.documents))
 	}
 
+	// Periodic deletes exercise freeblocks and freelist pages (and overflow
+	// chain release when a document is removed).
 	if k%3 == 0 {
 		for range 4 + rng.IntN(8) {
 			var id int64
@@ -228,6 +280,8 @@ func (g *generator) step(k int) Step {
 	if k == IndexStep {
 		s.add(KindIndex, IndexSQL)
 	}
+	// Record the step number in header bytes 60..63 inside the same transaction
+	// so CurrentStep always agrees with the committed rows.
 	s.add(KindUserVersion, userVersionSQL(k))
 	return s
 }

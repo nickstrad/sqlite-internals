@@ -15,6 +15,7 @@ func small(mode string, steps int) Recipe {
 	return Default().WithJournalMode(mode).WithSteps(steps)
 }
 
+// TestValidate checks default recipe settings and rejection of invalid step counts or journal modes.
 func TestValidate(t *testing.T) {
 	if err := Default().Validate(); err != nil {
 		t.Fatal(err)
@@ -34,6 +35,7 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+// TestPlanIsDeterministic checks that generating the default plan twice returns identical steps.
 func TestPlanIsDeterministic(t *testing.T) {
 	a, err := Default().Plan()
 	if err != nil {
@@ -48,6 +50,7 @@ func TestPlanIsDeterministic(t *testing.T) {
 	}
 }
 
+// TestStepDoesNotDependOnStepCount checks that step k is identical regardless of total recipe length.
 func TestStepDoesNotDependOnStepCount(t *testing.T) {
 	short, err := Default().WithSteps(7).Plan()
 	if err != nil {
@@ -74,6 +77,7 @@ func TestStepDoesNotDependOnStepCount(t *testing.T) {
 	}
 }
 
+// TestSeedsDiffer checks that different seeds change workload steps while keeping schema step 0 identical.
 func TestSeedsDiffer(t *testing.T) {
 	a, _ := Recipe{Seed: 1, Steps: 2, JournalMode: sqlitex.JournalWAL}.Plan()
 	b, _ := Recipe{Seed: 2, Steps: 2, JournalMode: sqlitex.JournalWAL}.Plan()
@@ -85,6 +89,7 @@ func TestSeedsDiffer(t *testing.T) {
 	}
 }
 
+// TestPlanShape checks schema, user_version markers, explicit ids, banned SQL functions, index timing, and overflow body sizes.
 func TestPlanShape(t *testing.T) {
 	plan, err := Default().Plan()
 	if err != nil {
@@ -151,6 +156,7 @@ func TestPlanShape(t *testing.T) {
 	}
 }
 
+// TestBuildIsReproducibleAndAtRest checks byte-identical rebuilds, at-rest state, integrity, overflow pages, and journal mode.
 func TestBuildIsReproducibleAndAtRest(t *testing.T) {
 	ctx := context.Background()
 	for _, mode := range []string{sqlitex.JournalWAL, sqlitex.JournalDelete} {
@@ -201,6 +207,7 @@ func TestBuildIsReproducibleAndAtRest(t *testing.T) {
 	}
 }
 
+// TestStepHashesEqualSeparateBuilds checks that ComputeStepHashes matches fresh builds to each k and all hashes are distinct.
 func TestStepHashesEqualSeparateBuilds(t *testing.T) {
 	ctx := context.Background()
 	r := small(sqlitex.JournalWAL, 5)
@@ -232,6 +239,7 @@ func TestStepHashesEqualSeparateBuilds(t *testing.T) {
 	}
 }
 
+// TestLongLivedConnectionDiffersOnlyInChangeCounterUnderWAL checks that one WAL connection differs from canonical only in the change counter.
 func TestLongLivedConnectionDiffersOnlyInChangeCounterUnderWAL(t *testing.T) {
 	ctx := context.Background()
 	for _, mode := range []string{sqlitex.JournalWAL, sqlitex.JournalDelete} {
@@ -270,6 +278,7 @@ func TestLongLivedConnectionDiffersOnlyInChangeCounterUnderWAL(t *testing.T) {
 	}
 }
 
+// TestMatchStepAndCache checks step-hash caching, prefix reuse, exact/masked/missing MatchStep lookups, and corrupt-cache recovery.
 func TestMatchStepAndCache(t *testing.T) {
 	ctx := context.Background()
 	t.Setenv(sqlitex.WorkDirEnv, t.TempDir())
@@ -340,6 +349,7 @@ func TestMatchStepAndCache(t *testing.T) {
 	}
 }
 
+// TestApplyNextFromEmpty checks stepping an empty database through every step and failing past the final step.
 func TestApplyNextFromEmpty(t *testing.T) {
 	ctx := context.Background()
 	r := small(sqlitex.JournalWAL, 3)
@@ -364,6 +374,7 @@ func TestApplyNextFromEmpty(t *testing.T) {
 	}
 }
 
+// TestFailedStepRollsBack checks that a failed step leaves CurrentStep unchanged.
 func TestFailedStepRollsBack(t *testing.T) {
 	ctx := context.Background()
 	r := small(sqlitex.JournalWAL, 2)
@@ -385,6 +396,7 @@ func TestFailedStepRollsBack(t *testing.T) {
 	}
 }
 
+// TestMaskChangeCounter checks that MaskChangeCounter zeroes only bytes 24..27 and 92..95 without mutating the input slice.
 func TestMaskChangeCounter(t *testing.T) {
 	image := make([]byte, 100)
 	for i := range image {
