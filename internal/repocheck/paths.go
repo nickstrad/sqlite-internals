@@ -191,6 +191,7 @@ func SweepPaths(root string) (PathSweep, error) {
 		}
 		sweep.Checked++
 		markdown := strings.HasSuffix(name, ".md")
+		reportExternal := !strings.HasSuffix(name, "_test.go")
 		var fence fenceState
 		for i, line := range strings.Split(string(data), "\n") {
 			where := fmt.Sprintf("%s:%d", name, i+1)
@@ -199,7 +200,7 @@ func SweepPaths(root string) (PathSweep, error) {
 			}
 			for _, raw := range urlPattern.FindAllString(line, -1) {
 				link := trimURL(raw)
-				if IsPublicReference(link) {
+				if !reportExternal || IsPublicReference(link) {
 					continue
 				}
 				if entry, ok := external[link]; ok {

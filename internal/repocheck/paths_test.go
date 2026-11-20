@@ -12,17 +12,18 @@ func TestSweepPathsReaderFacingRules(t *testing.T) {
 	mac := "/" + "Users" + "/" + "bob" + "/"
 	repo := newGitRepo(t)
 	repo.commit("Opus", "files", map[string]string{
-		"tools/bin/tool":      "ELF\x00\x01" + ForbiddenPathFragment + "baked in\n",
-		"README.md":           "# Book\n\nSee [one](ch01-a/ch01-a.md#x), [dir](docs/), [plan](OUTLINE.md \"title\") and [gone](missing.md).\n",
-		"OUTLINE.md":          "[ref]: ./docs/a.md\n[bad]: nowhere.md\n",
-		"ch01-a/ch01-a.md":    "Up: [readme](../README.md). Out: [x](../../outside.md). Abs: [y](/etc/hosts).\n```go\n[z](inside-fence.md)\n```\nCode `[w](in-code.md)` ok.\n",
-		"docs/a.md":           "cd " + home + "src and " + mac + "x and " + ForbiddenPathFragment + "y\nnot flagged: /home/<name>/ or https://example.org" + ForbiddenPathFragment + "z or a" + ForbiddenPathFragment + "b\n",
-		"docs/links.md":       "[s](https://sqlite.org/fileformat.html) [g](https://github.com/nickstrad/sqlite-internals/blob/main/x) [p](https://nickstrad.github.io/sqlite-internals/) <https://proxy.golang.org/> https://github.com/sqlite/sqlite/blob/x.\nhttps://github.com/other/repo, https://github.com/other/repo and https://github.com/nickstrad/other-repo\n",
-		"agent_work/notes.md": ForbiddenPathFragment + "fine [broken](nope.md)\n",
-		"kb/vendored.md":      mac + "fine\n",
-		"STATE.md":            home + "fine\n",
-		"internal/code.go":    "package internal\n\nvar dir = \"" + ForbiddenPathFragment + "x\"\n",
-		"docs/plain.txt":      "[not markdown](missing.txt)\n",
+		"tools/bin/tool":        "ELF\x00\x01" + ForbiddenPathFragment + "baked in\n",
+		"README.md":             "# Book\n\nSee [one](ch01-a/ch01-a.md#x), [dir](docs/), [plan](OUTLINE.md \"title\") and [gone](missing.md).\n",
+		"OUTLINE.md":            "[ref]: ./docs/a.md\n[bad]: nowhere.md\n",
+		"ch01-a/ch01-a.md":      "Up: [readme](../README.md). Out: [x](../../outside.md). Abs: [y](/etc/hosts).\n```go\n[z](inside-fence.md)\n```\nCode `[w](in-code.md)` ok.\n",
+		"docs/a.md":             "cd " + home + "src and " + mac + "x and " + ForbiddenPathFragment + "y\nnot flagged: /home/<name>/ or https://example.org" + ForbiddenPathFragment + "z or a" + ForbiddenPathFragment + "b\n",
+		"docs/links.md":         "[s](https://sqlite.org/fileformat.html) [g](https://github.com/nickstrad/sqlite-internals/blob/main/x) [p](https://nickstrad.github.io/sqlite-internals/) <https://proxy.golang.org/> https://github.com/sqlite/sqlite/blob/x.\nhttps://github.com/other/repo, https://github.com/other/repo and https://github.com/nickstrad/other-repo\n",
+		"agent_work/notes.md":   ForbiddenPathFragment + "fine [broken](nope.md)\n",
+		"kb/vendored.md":        mac + "fine\n",
+		"STATE.md":              home + "fine\n",
+		"internal/code.go":      "package internal\n\nvar dir = \"" + ForbiddenPathFragment + "x\"\n",
+		"docs/plain.txt":        "[not markdown](missing.txt)\n",
+		"internal/code_test.go": "package internal\n\nvar fixture = \"https://github.com/fixture/only\"\n",
 	})
 	repo.commit("Opus", "ignore tools", map[string]string{".gitignore": "/tools/\n/untracked.md\n"})
 	if err := os.WriteFile(filepath.Join(repo.dir, "untracked.md"), []byte(ForbiddenPathFragment+"x\n"), 0o644); err != nil {
@@ -71,7 +72,7 @@ func TestSweepPathsReaderFacingRules(t *testing.T) {
 	if strings.Join(external, "\n") != strings.Join(wantExternal, "\n") {
 		t.Fatalf("external:\n%s\nwant:\n%s", strings.Join(external, "\n"), strings.Join(wantExternal, "\n"))
 	}
-	if sweep.Checked != 8 {
+	if sweep.Checked != 9 {
 		t.Fatalf("checked = %d", sweep.Checked)
 	}
 }
