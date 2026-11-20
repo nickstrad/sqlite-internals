@@ -1,0 +1,75 @@
+sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
+INFO: work dir _work/3.2
+settings: page_size=4096, journal_mode=wal, synchronous=FULL; files are read only after their connection closed
+
+== secure_delete=OFF (WAL; every step is its own connection, so the file is at rest and checkpointed when it is read)
+1. 400 rows of 1000-byte blobs (each blob repeats a marker like "SECRET-000150"): file 417792 bytes = 102 pages; freelist 0 page(s) (trunk [], 0 leaves); 100 table-leaf pages
+2. DELETE FROM t WHERE id BETWEEN 99 AND 302 (204 rows, held on leaf pages 27-78): file 417792 bytes = 102 pages; freelist 50 page(s) (trunk [29], 49 leaves)
+   pages now on the freelist: 29-78; of them, former leaves of the deleted rows: 50
+   the DELETE's commit wrote 5 WAL frames
+check ok: the file does not shrink on delete
+check ok: pages emptied by the delete moved to the freelist
+   search for the deleted markers: 199 of 204 deleted rows still readable in the file, on 52 page(s): freelist-leaf=49 freelist-trunk=1 table-leaf=2
+3. 100 new rows (ids 1001..1100): file 417792 bytes = 102 pages; freelist 25 page(s) (trunk [29], 24 leaves)
+   leaf pages holding the new rows: 30,55-78; of them taken from the freelist: 25
+check ok: the new rows fit in the file: its size is unchanged
+check ok: every leaf page of the new rows is a former freelist page
+   search for the deleted markers: 104 of 204 deleted rows still readable in the file, on 27 page(s): freelist-leaf=24 freelist-trunk=1 table-leaf=2
+4. 30 more transactions of 4 rows each: file 438272 bytes = 107 pages; freelist 0 page(s) (trunk [], 0 leaves)
+   batch 1: freelist 25->24, page_count 102->102
+   batch 25: freelist 1->0, page_count 102->102
+   batch 26: freelist 0->0, page_count 102->103
+   batch 27: freelist 0->0, page_count 103->104
+   ... (2 more batches that grew the file)
+   batch 30: freelist 0->0, page_count 106->107
+check ok: page_count grows only in a transaction that started with an empty freelist
+check ok: once the freelist is used up, the file grows
+5. DELETE FROM t WHERE id >= 1001: file 438272 bytes = 107 pages; freelist 55 page(s) (trunk [102], 54 leaves)
+check ok: the file still does not shrink
+6. VACUUM: file 208896 bytes = 51 pages; freelist 0 page(s) (trunk [], 0 leaves)
+   search for the deleted markers: 0 of 204 deleted rows still readable in the file, on 0 page(s): 
+check ok: VACUUM is what returns space: 107 pages -> 51, at least the 55 freelist pages are gone
+check ok: after VACUUM no deleted marker is left in the file
+
+== secure_delete=ON (WAL; every step is its own connection, so the file is at rest and checkpointed when it is read)
+1. 400 rows of 1000-byte blobs (each blob repeats a marker like "SECRET-000150"): file 417792 bytes = 102 pages; freelist 0 page(s) (trunk [], 0 leaves); 100 table-leaf pages
+2. DELETE FROM t WHERE id BETWEEN 99 AND 302 (204 rows, held on leaf pages 27-78): file 417792 bytes = 102 pages; freelist 50 page(s) (trunk [29], 49 leaves)
+   pages now on the freelist: 29-78; of them, former leaves of the deleted rows: 50
+   the DELETE's commit wrote 54 WAL frames
+check ok: the file does not shrink on delete
+check ok: pages emptied by the delete moved to the freelist
+   search for the deleted markers: 0 of 204 deleted rows still readable in the file, on 0 page(s): 
+3. 100 new rows (ids 1001..1100): file 417792 bytes = 102 pages; freelist 25 page(s) (trunk [29], 24 leaves)
+   leaf pages holding the new rows: 30,55-78; of them taken from the freelist: 25
+check ok: the new rows fit in the file: its size is unchanged
+check ok: every leaf page of the new rows is a former freelist page
+   search for the deleted markers: 0 of 204 deleted rows still readable in the file, on 0 page(s): 
+4. 30 more transactions of 4 rows each: file 438272 bytes = 107 pages; freelist 0 page(s) (trunk [], 0 leaves)
+   batch 1: freelist 25->24, page_count 102->102
+   batch 25: freelist 1->0, page_count 102->102
+   batch 26: freelist 0->0, page_count 102->103
+   batch 27: freelist 0->0, page_count 103->104
+   ... (2 more batches that grew the file)
+   batch 30: freelist 0->0, page_count 106->107
+check ok: page_count grows only in a transaction that started with an empty freelist
+check ok: once the freelist is used up, the file grows
+5. DELETE FROM t WHERE id >= 1001: file 438272 bytes = 107 pages; freelist 55 page(s) (trunk [102], 54 leaves)
+check ok: the file still does not shrink
+6. VACUUM: file 208896 bytes = 51 pages; freelist 0 page(s) (trunk [], 0 leaves)
+   search for the deleted markers: 0 of 204 deleted rows still readable in the file, on 0 page(s): 
+check ok: VACUUM is what returns space: 107 pages -> 51, at least the 55 freelist pages are gone
+check ok: after VACUUM no deleted marker is left in the file
+
+== comparison
+file sizes, secure_delete=OFF: [417792 417792 417792 438272 438272 208896]
+file sizes, secure_delete=ON:  [417792 417792 417792 438272 438272 208896]
+deleted rows readable after the delete: OFF 199, ON 0
+deleted rows readable after the reuse:  OFF 104, ON 0
+WAL frames written by the DELETE of 204 rows: OFF 5, ON 54
+check ok: secure_delete costs WAL frames: the zeroed pages are written, while without it freed leaf pages are not written at all
+check ok: without secure_delete the deleted payload bytes are still in the file
+check ok: without secure_delete freelist leaf pages keep their old content
+check ok: with secure_delete the deleted payload bytes are nowhere in the file
+check ok: secure_delete changes the bytes, not the layout: file sizes are the same at every step
+
+DELETE AND REUSE OK
