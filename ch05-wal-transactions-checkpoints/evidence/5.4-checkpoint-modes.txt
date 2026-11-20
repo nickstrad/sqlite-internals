@@ -1,0 +1,69 @@
+sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
+INFO: work dir _work/5.4
+
+== setup per case: recipe step 5 (closed file); writer commits step 6 and step 7 with wal_autocheckpoint=0;
+   "reader behind" began its read transaction between the two commits, "reader current" after both;
+   a third connection (busy_timeout=300ms) runs the checkpoint; then the reader ends and the writer commits step 8
+
+checkpoint result and state right after it (WAL file header from a child's copy; wal-index from the -shm):
+mode      reader          busy/log/checkpointed          waited  WAL bytes  mxFrame nBackfill  file salt-1   shm salt-1
+PASSIVE   no reader       busy=0 log=38 checkpointed=38  no         156592       38        38         same         same
+INFO: PASSIVE no reader elapsed 33ms
+PASSIVE   reader behind   busy=0 log=38 checkpointed=22  no         156592       38        22         same         same
+INFO: PASSIVE reader behind elapsed 7ms
+PASSIVE   reader current  busy=0 log=38 checkpointed=38  no         156592       38        38         same         same
+INFO: PASSIVE reader current elapsed 15ms
+FULL      no reader       busy=0 log=38 checkpointed=38  no         156592       38        38         same         same
+INFO: FULL no reader elapsed 83ms
+FULL      reader behind   busy=1 log=38 checkpointed=22  yes        156592       38        22         same         same
+INFO: FULL reader behind elapsed 354ms
+FULL      reader current  busy=0 log=38 checkpointed=38  no         156592       38        38         same         same
+INFO: FULL reader current elapsed 33ms
+RESTART   no reader       busy=0 log=38 checkpointed=38  no         156592       38        38         same         same
+INFO: RESTART no reader elapsed 67ms
+RESTART   reader behind   busy=1 log=38 checkpointed=22  yes        156592       38        22         same         same
+INFO: RESTART reader behind elapsed 350ms
+RESTART   reader current  busy=1 log=38 checkpointed=38  yes        156592       38        38         same         same
+INFO: RESTART reader current elapsed 329ms
+TRUNCATE  no reader       busy=0 log=0 checkpointed=0    no              0        0         0  (no header)           +1
+INFO: TRUNCATE no reader elapsed 18ms
+TRUNCATE  reader behind   busy=1 log=38 checkpointed=22  yes        156592       38        22         same         same
+INFO: TRUNCATE reader behind elapsed 323ms
+TRUNCATE  reader current  busy=1 log=38 checkpointed=38  yes        156592       38        38         same         same
+INFO: TRUNCATE reader current elapsed 324ms
+
+after the reader ended and the writer committed step 8:
+mode      reader          restarted   file salt-1 checkpoint-seq WAL bytes  mxFrame valid frames / frames in file
+PASSIVE   no reader       yes                  +1             +1    156592       23 23 / 38
+PASSIVE   reader behind   no                 same           same    251352       61 61 / 61
+PASSIVE   reader current  yes                  +1             +1    156592       23 23 / 38
+FULL      no reader       yes                  +1             +1    156592       23 23 / 38
+FULL      reader behind   no                 same           same    251352       61 61 / 61
+FULL      reader current  yes                  +1             +1    156592       23 23 / 38
+RESTART   no reader       yes                  +1             +1    156592       23 23 / 38
+RESTART   reader behind   no                 same           same    251352       61 61 / 61
+RESTART   reader current  yes                  +1             +1    156592       23 23 / 38
+TRUNCATE  no reader       yes           new value           same     94792       23 23 / 23
+TRUNCATE  reader behind   no                 same           same    251352       61 61 / 61
+TRUNCATE  reader current  yes                  +1             +1    156592       23 23 / 38
+
+frames before every checkpoint: 38; the "reader behind" snapshot is frame 22
+check ok: with no reader, PASSIVE, FULL and RESTART all copy every frame and report busy=0
+check ok: TRUNCATE with no reader reports 0/0/0 and leaves a zero-length -wal
+check ok: PASSIVE with a reader behind copies up to the reader's frame and still reports busy=0
+check ok: FULL, RESTART and TRUNCATE with a reader behind copy the same frames, then report busy=1
+check ok: a reader whose snapshot is the end of the WAL does not limit PASSIVE or FULL
+check ok: RESTART and TRUNCATE copy everything but report busy=1 while any reader is still using the WAL
+check ok: only the non-PASSIVE modes that ended busy waited the busy timeout (300ms); PASSIVE never waits
+check ok: TRUNCATE restarts the wal-index at once: shm salt-1 + 1, mxFrame 0
+check ok: PASSIVE, FULL and RESTART change neither salt nor the WAL size: the restart happens at the next write
+check ok: the next write restarts the WAL exactly when the checkpoint had copied every frame (or TRUNCATE emptied it); otherwise it appends with the same salts
+check ok: when the writer itself restarts the WAL at its next write, the new header has salt-1 + 1 and checkpoint sequence + 1
+check ok: after another connection's TRUNCATE, the writer's next WAL header has new random salts and the writer's own checkpoint sequence (0): the sequence is per connection
+
+== the writer runs TRUNCATE itself (no reader), then commits step 8
+wal_checkpoint(TRUNCATE) -> busy=0 log=0 checkpointed=0; WAL bytes 0; shm salt-1 +1
+next write: WAL bytes 94792, mxFrame 23, file salt-1 +1, checkpoint-seq +1 (0 -> 1)
+check ok: when the connection that ran TRUNCATE writes next, the new WAL header has salt-1 + 1 and checkpoint sequence + 1
+
+CHECKPOINT MODES OK

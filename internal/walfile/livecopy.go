@@ -136,3 +136,45 @@ func isMissingSource(err error) bool {
 	var source *sourceError
 	return errors.As(err, &source) && errors.Is(err, os.ErrNotExist)
 }
+
+type LiveState struct {
+	WALPresent   bool
+	WALSize      int64
+	WAL          *File
+	WALProblem   string
+	IndexPresent bool
+	Index        *Index
+}
+
+func ReadLiveState(ctx context.Context, database, scratchDirectory string) (LiveState, error) {
+	walCopy := filepath.Join(scratchDirectory, "live-state-copy-wal")
+	indexCopy := filepath.Join(scratchDirectory, "live-state-copy-shm")
+	results, err := CopyLiveFiles(ctx, []CopyPair{{database + "-wal", walCopy}, {database + "-shm", indexCopy}})
+	if err != nil {
+		return LiveState{}, err
+	}
+	var state LiveState
+	if results[0].Present {
+		state.WALPresent = true
+		state.WALSize = results[0].Bytes
+		wal, err := ParseFile(walCopy)
+		if err != nil {
+			state.WALProblem = err.Error()
+		}
+		state.WAL = wal
+	}
+	if results[1].Present {
+		state.IndexPresent = true
+		index, err := ParseIndexFile(indexCopy)
+		if err != nil {
+			return state, fmt.Errorf("wal-index copy: %w", err)
+		}
+		state.Index = index
+	}
+	for _, path := range []string{walCopy, indexCopy} {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return state, err
+		}
+	}
+	return state, nil
+}

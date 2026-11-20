@@ -162,3 +162,38 @@ func TestReplayMatchesSQLiteCheckpoint(t *testing.T) {
 		t.Fatalf("replay differs from SQLite's checkpoint: %v", report.Lines())
 	}
 }
+
+func TestReadLiveState(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.db")
+	state, err := ReadLiveState(ctx, path, dir)
+	if err != nil || state.WALPresent || state.IndexPresent {
+		t.Fatalf("no database yet: %+v %v", state, err)
+	}
+	db := openLiveWAL(t, path)
+	execAll(t, db, "CREATE TABLE t(x)", "INSERT INTO t VALUES (1)")
+	state, err = ReadLiveState(ctx, path, dir)
+	if err != nil || !state.WALPresent || !state.IndexPresent || state.WAL == nil || state.WALProblem != "" {
+		t.Fatalf("%+v %v", state, err)
+	}
+	if state.Index.Header().MaxFrame != uint32(state.WAL.LastCommitFrame) || state.WALSize != state.WAL.Size {
+		t.Fatalf("index %s, WAL last commit %d", state.Index.Header(), state.WAL.LastCommitFrame)
+	}
+	if _, err := sqlitex.Checkpoint(ctx, db, "", sqlitex.CheckpointTruncate); err != nil {
+		t.Fatal(err)
+	}
+	state, err = ReadLiveState(ctx, path, dir)
+	if err != nil || !state.WALPresent || state.WALSize != 0 || len(state.WAL.Frames) != 0 || state.Index.Checkpoint.Backfill != 0 {
+		t.Fatalf("after TRUNCATE: %+v %v", state, err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "live-state-copy") {
+			t.Fatalf("left behind %s", e.Name())
+		}
+	}
+}
