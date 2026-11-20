@@ -1,0 +1,349 @@
+sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
+INFO: work dir /root/Software/sqlite-internals-work/ch07/_work/7.1
+sqlite3 CLI sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
+INFO: CLI /usr/local/bin/sqlite3
+statements, one CLI session (.open --normal t.db first):
+  STEP 1 set WAL mode: PRAGMA journal_mode=WAL;
+  STEP 2 set synchronous FULL: PRAGMA synchronous=FULL;
+  STEP 3 create a table: CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT NOT NULL);
+  STEP 4 commit one insert: INSERT INTO t(id, v) VALUES(1, 'one');
+  STEP 5 checkpoint: PRAGMA wal_checkpoint(TRUNCATE);
+  STEP 6 close: end of input, the CLI closes the database
+
+== merged stream: 139 VFS calls and 143 file syscalls in one order ==
+(VFS = a line of the CLI's -vfstrace; indented SYS = a syscall made while that VFS call ran;
+ unindented SYS = a syscall outside any printed VFS call; OUT = CLI output;
+ names normalized: open = open/openat, sync = fsync/fdatasync, stat = stat family, unlink = unlink/unlinkat)
+VFS xFullPathname("t.db") -> SQLITE_OK, out="t.db"
+    SYS stat . = 0
+    SYS stat t.db = -1 ENOENT
+SYS open t.db O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC = fd
+SYS stat t.db = 0
+SYS stat t.db = 0
+SYS stat t.db = 0
+VFS xOpen(t.db,flags=0x106) -> SQLITE_OK, outFlags=0x106
+VFS xDeviceCharacteristics(t.db) -> 0x00009000
+VFS xDeviceCharacteristics(t.db) -> 0x00009000
+VFS xFileControl(t.db,MMAP_SIZE,0) -> SQLITE_OK, 0
+VFS xDeviceCharacteristics(t.db) -> 0x00009000
+VFS xFileControl(t.db,MMAP_SIZE,0) -> SQLITE_OK, 0
+VFS xRead(t.db,n=100,ofst=0) -> SQLITE_IOERR_SHORT_READ
+    SYS pread64 t.db off=0 len=100 = 0
+VFS xFileControl(t.db,BUSYHANDLER) -> SQLITE_NOTFOUND
+VFS xFileControl(t.db,MMAP_SIZE,0) -> SQLITE_OK, 0
+VFS xFileControl(t.db,PDB) -> SQLITE_NOTFOUND
+VFS xRandomness(44)
+OUT STEP 1 set WAL mode
+VFS xFileControl(t.db,PRAGMA,[journal_mode,WAL]) -> SQLITE_NOTFOUND
+VFS xLock(t.db,SHARED) -> SQLITE_OK
+    SYS fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1 = 0
+    SYS fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510 = 0
+    SYS fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1 = 0
+VFS xAccess("t.db-journal",0) -> SQLITE_OK, out=0
+    SYS stat t.db-journal = -1 ENOENT
+VFS xAccess("t.db-wal",0) -> SQLITE_OK, out=0
+    SYS stat t.db-wal = -1 ENOENT
+VFS xFileSize(t.db) -> SQLITE_OK, size=0
+    SYS stat t.db = 0
+VFS xDeviceCharacteristics(t.db) -> 0x00009000
+VFS xUnlock(t.db,NONE) -> SQLITE_OK
+    SYS fcntl t.db F_SETLK F_UNLCK start=0 len=0 = 0
+VFS xLock(t.db,SHARED) -> SQLITE_OK
+    SYS fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1 = 0
+    SYS fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510 = 0
+    SYS fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1 = 0
+VFS xAccess("t.db-journal",0) -> SQLITE_OK, out=0
+    SYS stat t.db-journal = -1 ENOENT
+VFS xRead(t.db,n=16,ofst=24) -> SQLITE_IOERR_SHORT_READ
+    SYS pread64 t.db off=24 len=16 = 0
+VFS xAccess("t.db-wal",0) -> SQLITE_OK, out=0
+    SYS stat t.db-wal = -1 ENOENT
+VFS xFileSize(t.db) -> SQLITE_OK, size=0
+    SYS stat t.db = 0
+VFS xLock(t.db,RESERVED) -> SQLITE_OK
+    SYS fcntl t.db F_SETLK F_WRLCK start=1073741825 len=1 = 0
+VFS xLock(t.db,EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db F_SETLK F_WRLCK start=1073741824 len=1 = 0
+    SYS fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510 = 0
+SYS stat t.db = 0
+SYS open t.db-journal O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC = fd
+SYS stat t.db-journal = 0
+VFS xOpen(t.db-journal,flags=0x806) -> SQLITE_OK
+VFS xDeviceCharacteristics(t.db) -> 0x00009000
+VFS xWrite(t.db-journal,n=512,ofst=0) -> SQLITE_OK
+    SYS pwrite64 t.db-journal off=0 len=512 = 512
+OUT wal
+VFS xDeviceCharacteristics(t.db) -> 0x00009000
+VFS xRead(t.db-journal,n=8,ofst=512) -> SQLITE_IOERR_SHORT_READ
+    SYS pread64 t.db-journal off=512 len=8 = 0
+VFS xSync(t.db-journal,FULL) -> 0
+    SYS sync t.db-journal = 0
+    SYS open . O_RDONLY|O_CLOEXEC = fd
+    SYS sync . = 0
+    SYS close . = 0
+VFS xWrite(t.db-journal,n=12,ofst=0) -> SQLITE_OK
+    SYS pwrite64 t.db-journal off=0 len=12 = 12
+VFS xSync(t.db-journal,FULL) -> 0
+    SYS sync t.db-journal = 0
+VFS xFileControl(t.db,SIZE_HINT,4096) -> SQLITE_OK
+VFS xWrite(t.db,n=4096,ofst=0) -> SQLITE_OK
+    SYS pwrite64 t.db off=0 len=4096 = 4096
+VFS xFileControl(t.db,SYNC) -> SQLITE_NOTFOUND
+VFS xSync(t.db,FULL) -> 0
+    SYS sync t.db = 0
+VFS xClose(t.db-journal) -> SQLITE_OK
+    SYS close t.db-journal = 0
+VFS xDelete("t.db-journal",0) -> SQLITE_OK
+    SYS unlink t.db-journal = 0
+VFS xFileControl(t.db,COMMIT_PHASETWO) -> SQLITE_NOTFOUND
+VFS xUnlock(t.db,SHARED) -> SQLITE_OK
+    SYS fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510 = 0
+    SYS fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2 = 0
+VFS xDeviceCharacteristics(t.db) -> 0x00009000
+VFS xUnlock(t.db,NONE) -> SQLITE_OK
+    SYS fcntl t.db F_SETLK F_UNLCK start=0 len=0 = 0
+OUT STEP 2 set synchronous FULL
+VFS xFileControl(t.db,PRAGMA,[synchronous,FULL]) -> SQLITE_NOTFOUND
+OUT STEP 3 create a table
+VFS xLock(t.db,SHARED) -> SQLITE_OK
+    SYS fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1 = 0
+    SYS fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510 = 0
+    SYS fcntl t.db F_SETLK F_UNLCK start=1073741824 len=1 = 0
+VFS xAccess("t.db-journal",0) -> SQLITE_OK, out=0
+    SYS stat t.db-journal = -1 ENOENT
+VFS xRead(t.db,n=16,ofst=24) -> SQLITE_OK
+    SYS pread64 t.db off=24 len=16 = 16
+VFS xAccess("t.db-wal",0) -> SQLITE_OK, out=0
+    SYS stat t.db-wal = -1 ENOENT
+VFS xFileSize(t.db) -> SQLITE_OK, size=4096
+    SYS stat t.db = 0
+SYS stat t.db = 0
+SYS open t.db-wal O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC = fd
+SYS stat t.db-wal = 0
+VFS xOpen(t.db-wal,flags=0x80006) -> SQLITE_OK, outFlags=0x80006
+VFS xDeviceCharacteristics(t.db) -> 0x00009000
+VFS xFileControl(t.db,MMAP_SIZE,0) -> SQLITE_OK, 0
+VFS xShmMap(t.db,iRegion=0,szRegion=32768,isWrite=0,*) -> SQLITE_OK
+    SYS stat t.db = 0
+    SYS open t.db-shm O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC = fd
+    SYS stat t.db-shm = 0
+    SYS fcntl t.db-shm F_GETLK F_UNLCK start=128 len=1 = 0
+    SYS fcntl t.db-shm F_SETLK F_WRLCK start=128 len=1 = 0
+    SYS ftruncate t.db-shm len=3 = 0
+    SYS fcntl t.db-shm F_SETLK F_RDLCK start=128 len=1 = 0
+    SYS stat t.db-shm = 0
+VFS xShmLock(t.db,ofst=0(WRITE),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_WRLCK start=120 len=1 = 0
+VFS xShmMap(t.db,iRegion=0,szRegion=32768,isWrite=2,*) -> SQLITE_OK
+    SYS stat t.db-shm = 0
+    SYS pwrite64 t.db-shm off=4095 len=1 = 1
+    SYS pwrite64 t.db-shm off=8191 len=1 = 1
+    SYS pwrite64 t.db-shm off=12287 len=1 = 1
+    SYS pwrite64 t.db-shm off=16383 len=1 = 1
+    SYS pwrite64 t.db-shm off=20479 len=1 = 1
+    SYS pwrite64 t.db-shm off=24575 len=1 = 1
+    SYS pwrite64 t.db-shm off=28671 len=1 = 1
+    SYS pwrite64 t.db-shm off=32767 len=1 = 1
+    SYS mmap t.db-shm off=0 len=32768 = ok
+VFS xShmBarrier(t.db)
+VFS xShmLock(t.db,ofst=1(CKPT),n=2,LOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_WRLCK start=121 len=2 = 0
+VFS xFileSize(t.db-wal) -> SQLITE_OK, size=0
+    SYS stat t.db-wal = 0
+VFS xShmBarrier(t.db)
+VFS xShmLock(t.db,ofst=4(READ1),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_WRLCK start=124 len=1 = 0
+VFS xShmLock(t.db,ofst=4(READ1),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1 = 0
+VFS xShmLock(t.db,ofst=5(READ2),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_WRLCK start=125 len=1 = 0
+VFS xShmLock(t.db,ofst=5(READ2),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_UNLCK start=125 len=1 = 0
+VFS xShmLock(t.db,ofst=6(READ3),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_WRLCK start=126 len=1 = 0
+VFS xShmLock(t.db,ofst=6(READ3),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_UNLCK start=126 len=1 = 0
+VFS xShmLock(t.db,ofst=7(READ4),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_WRLCK start=127 len=1 = 0
+VFS xShmLock(t.db,ofst=7(READ4),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_UNLCK start=127 len=1 = 0
+VFS xShmLock(t.db,ofst=1(CKPT),n=2,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_UNLCK start=121 len=2 = 0
+VFS xShmLock(t.db,ofst=0(WRITE),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_UNLCK start=120 len=1 = 0
+VFS xShmLock(t.db,ofst=3(READ0),n=1,LOCK|SHARED) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_RDLCK start=123 len=1 = 0
+VFS xShmBarrier(t.db)
+VFS xFileSize(t.db) -> SQLITE_OK, size=4096
+    SYS stat t.db = 0
+VFS xRead(t.db,n=4096,ofst=0) -> SQLITE_OK
+    SYS pread64 t.db off=0 len=4096 = 4096
+VFS xShmLock(t.db,ofst=0(WRITE),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_WRLCK start=120 len=1 = 0
+VFS xShmLock(t.db,ofst=3(READ0),n=1,UNLOCK|SHARED) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_UNLCK start=123 len=1 = 0
+VFS xShmLock(t.db,ofst=4(READ1),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_WRLCK start=124 len=1 = 0
+VFS xShmLock(t.db,ofst=4(READ1),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1 = 0
+VFS xShmLock(t.db,ofst=4(READ1),n=1,LOCK|SHARED) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_RDLCK start=124 len=1 = 0
+VFS xShmBarrier(t.db)
+VFS xWrite(t.db-wal,n=32,ofst=0) -> SQLITE_OK
+    SYS pwrite64 t.db-wal off=0 len=32 = 32
+VFS xSync(t.db-wal,FULL) -> 0
+    SYS sync t.db-wal = 0
+    SYS open . O_RDONLY|O_CLOEXEC = fd
+    SYS sync . = 0
+    SYS close . = 0
+VFS xWrite(t.db-wal,n=24,ofst=32) -> SQLITE_OK
+    SYS pwrite64 t.db-wal off=32 len=24 = 24
+VFS xWrite(t.db-wal,n=4096,ofst=56) -> SQLITE_OK
+    SYS pwrite64 t.db-wal off=56 len=4096 = 4096
+VFS xWrite(t.db-wal,n=24,ofst=4152) -> SQLITE_OK
+    SYS pwrite64 t.db-wal off=4152 len=24 = 24
+VFS xWrite(t.db-wal,n=4096,ofst=4176) -> SQLITE_OK
+    SYS pwrite64 t.db-wal off=4176 len=4096 = 4096
+VFS xSync(t.db-wal,FULL) -> 0
+    SYS sync t.db-wal = 0
+VFS xShmBarrier(t.db)
+VFS xShmLock(t.db,ofst=0(WRITE),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_UNLCK start=120 len=1 = 0
+VFS xFileControl(t.db,COMMIT_PHASETWO) -> SQLITE_NOTFOUND
+VFS xShmLock(t.db,ofst=4(READ1),n=1,UNLOCK|SHARED) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1 = 0
+OUT STEP 4 commit one insert
+VFS xShmBarrier(t.db)
+VFS xShmLock(t.db,ofst=4(READ1),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_WRLCK start=124 len=1 = 0
+VFS xShmLock(t.db,ofst=4(READ1),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1 = 0
+VFS xShmLock(t.db,ofst=4(READ1),n=1,LOCK|SHARED) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_RDLCK start=124 len=1 = 0
+VFS xShmBarrier(t.db)
+VFS xShmLock(t.db,ofst=0(WRITE),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_WRLCK start=120 len=1 = 0
+VFS xWrite(t.db-wal,n=24,ofst=8272) -> SQLITE_OK
+    SYS pwrite64 t.db-wal off=8272 len=24 = 24
+VFS xWrite(t.db-wal,n=4096,ofst=8296) -> SQLITE_OK
+    SYS pwrite64 t.db-wal off=8296 len=4096 = 4096
+VFS xSync(t.db-wal,FULL) -> 0
+    SYS sync t.db-wal = 0
+VFS xShmBarrier(t.db)
+VFS xShmLock(t.db,ofst=0(WRITE),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_UNLCK start=120 len=1 = 0
+VFS xFileControl(t.db,COMMIT_PHASETWO) -> SQLITE_NOTFOUND
+VFS xShmLock(t.db,ofst=4(READ1),n=1,UNLOCK|SHARED) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1 = 0
+OUT STEP 5 checkpoint
+VFS xFileControl(t.db,PRAGMA,[wal_checkpoint,TRUNCATE]) -> SQLITE_NOTFOUND
+VFS xShmLock(t.db,ofst=1(CKPT),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_WRLCK start=121 len=1 = 0
+VFS xShmLock(t.db,ofst=0(WRITE),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_WRLCK start=120 len=1 = 0
+VFS xShmBarrier(t.db)
+VFS xShmLock(t.db,ofst=4(READ1),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_WRLCK start=124 len=1 = 0
+VFS xShmLock(t.db,ofst=4(READ1),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1 = 0
+VFS xShmLock(t.db,ofst=3(READ0),n=1,LOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_WRLCK start=123 len=1 = 0
+VFS xSync(t.db-wal,FULL) -> 0
+    SYS sync t.db-wal = 0
+VFS xFileControl(t.db,CKPT_START) -> SQLITE_NOTFOUND
+VFS xFileSize(t.db) -> SQLITE_OK, size=4096
+    SYS stat t.db = 0
+VFS xFileControl(t.db,SIZE_HINT,8192) -> SQLITE_OK
+VFS xRead(t.db-wal,n=4096,ofst=56) -> SQLITE_OK
+    SYS pread64 t.db-wal off=56 len=4096 = 4096
+VFS xWrite(t.db,n=4096,ofst=0) -> SQLITE_OK
+    SYS pwrite64 t.db off=0 len=4096 = 4096
+VFS xRead(t.db-wal,n=4096,ofst=8296) -> SQLITE_OK
+    SYS pread64 t.db-wal off=8296 len=4096 = 4096
+VFS xWrite(t.db,n=4096,ofst=4096) -> SQLITE_OK
+    SYS pwrite64 t.db off=4096 len=4096 = 4096
+VFS xFileControl(t.db,CKPT_DONE) -> SQLITE_NOTFOUND
+VFS xTruncate(t.db,8192) -> 0
+    SYS ftruncate t.db len=8192 = 0
+VFS xSync(t.db,FULL) -> 0
+    SYS sync t.db = 0
+VFS xShmLock(t.db,ofst=3(READ0),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_UNLCK start=123 len=1 = 0
+VFS xShmLock(t.db,ofst=4(READ1),n=4,LOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_WRLCK start=124 len=4 = 0
+VFS xShmBarrier(t.db)
+VFS xTruncate(t.db-wal,0) -> 0
+    SYS ftruncate t.db-wal len=0 = 0
+VFS xShmLock(t.db,ofst=4(READ1),n=4,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_UNLCK start=124 len=4 = 0
+VFS xShmLock(t.db,ofst=0(WRITE),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_UNLCK start=120 len=1 = 0
+VFS xShmLock(t.db,ofst=1(CKPT),n=1,UNLOCK|EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_SETLK F_UNLCK start=121 len=1 = 0
+OUT 0|0|0
+OUT STEP 6 close
+VFS xFileControl(t.db,HAS_MOVED) -> SQLITE_OK, 0
+    SYS stat t.db = 0
+VFS xLock(t.db,EXCLUSIVE) -> SQLITE_OK
+    SYS fcntl t.db-shm F_GETLK F_UNLCK start=128 len=1 = 0
+    SYS fcntl t.db F_SETLK F_WRLCK start=1073741826 len=510 = 0
+VFS xShmBarrier(t.db)
+VFS xFileControl(t.db,PERSIST_WAL,-1) -> SQLITE_OK, 0
+VFS xShmUnmap(t.db,delFlag=1) -> SQLITE_OK
+    SYS unlink t.db-shm = 0
+    SYS close t.db-shm = 0
+VFS xClose(t.db-wal) -> SQLITE_OK
+    SYS close t.db-wal = 0
+VFS xDelete("t.db-wal",0) -> SQLITE_OK
+    SYS unlink t.db-wal = 0
+VFS xDeviceCharacteristics(t.db) -> 0x00009000
+VFS xUnlock(t.db,NONE) -> SQLITE_OK
+    SYS fcntl t.db F_SETLK F_UNLCK start=1073741824 len=2 = 0
+    SYS fcntl t.db F_SETLK F_UNLCK start=0 len=0 = 0
+VFS xClose(t.db) -> SQLITE_OK
+    SYS stat t.db = 0
+    SYS stat t.db = 0
+    SYS close t.db = 0
+
+== each VFS method, the os_unix.c function behind it, and the syscalls seen while it ran ==
+(xOpen: syscalls just before its line, because vfstrace prints xOpen after the real open returns)
+  xAccess                    6 call(s)  unixAccess                 -> stat x6
+  xClose                     3 call(s)  unixClose                  -> close x3, stat x2
+  xDelete                    2 call(s)  unixDelete                 -> unlink x2
+  xDeviceCharacteristics     9 call(s)  unixDeviceCharacteristics  -> no file syscall
+  xFileControl              19 call(s)  unixFileControl            -> stat x1
+  xFileSize                  6 call(s)  unixFileSize               -> stat x6
+  xFullPathname              1 call(s)  unixFullPathname           -> stat x2
+  xLock                      6 call(s)  unixLock                   -> fcntl x14
+  xOpen                      3 call(s)  unixOpen                   -> open x3, stat x7
+  xRandomness                1 call(s)  unixRandomness             -> no file syscall
+  xRead                      7 call(s)  unixRead                   -> pread64 x7
+  xShmBarrier               11 call(s)  unixShmBarrier             -> no file syscall
+  xShmLock                  36 call(s)  unixShmLock                -> fcntl x36
+  xShmMap                    2 call(s)  unixShmMap                 -> fcntl x3, ftruncate x1, mmap x1, open x1, pwrite64 x8, stat x4
+  xShmUnmap                  1 call(s)  unixShmUnmap               -> close x1, unlink x1
+  xSync                      8 call(s)  unixSync                   -> close x2, open x2, sync x10
+  xTruncate                  2 call(s)  unixTruncate               -> ftruncate x2
+  xUnlock                    4 call(s)  unixUnlock                 -> fcntl x6
+  xWrite                    12 call(s)  unixWrite                  -> pwrite64 x12
+
+== syncs ==
+  t.db: 2 sync(s), each inside one xSync of that file
+  t.db-journal: 2 sync(s), each inside one xSync of that file
+  t.db-wal: 4 sync(s), each inside one xSync of that file
+  directory (.): 2 sync(s), no VFS call names the directory:
+    inside xSync(t.db-journal) number 1
+    inside xSync(t.db-wal) number 1
+
+files left in the directory after the CLI exits: t.db
+
+check ok: each of the 12 xWrite calls made exactly one pwrite64 to the same file, offset and length
+check ok: each of the 7 xRead calls made exactly one pread64 of the same file, offset and length
+check ok: every pread64/pwrite64 on the database, journal, WAL and shm files happened inside xRead, xWrite or xShmMap
+check ok: each of the 8 xSync calls made exactly one fsync/fdatasync of its own file
+check ok: the directory is synced twice, inside the first xSync of the new journal and of the new WAL (unixSync's one-time directory sync)
+check ok: the -wal file is created (O_CREAT) at its first use, by xOpen
+check ok: the -shm file is created inside the first xShmMap
+check ok: at the last close xDelete unlinks the -wal and xShmUnmap unlinks the -shm
+check ok: only the database file is left after the CLI exits
+ALL CHECKS PASSED
