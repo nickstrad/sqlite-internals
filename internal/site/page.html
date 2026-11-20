@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{if .Home}}{{.BookTitle}}{{else}}{{.Title}} · {{.BookTitle}}{{end}}</title>
+<link rel="stylesheet" href="{{.Base}}style.css">
+</head>
+<body>
+<header class="site-header"><a href="{{.Base}}">{{.BookTitle}}</a></header>
+<div class="layout{{if .TOC}} with-toc{{end}}">
+{{- if .TOC}}
+<nav class="toc" aria-label="{{.Labels.Contents}}">
+<h2>{{.Labels.Contents}}</h2>
+<ul>
+{{- range .TOC}}
+<li class="toc-{{.Level}}"><a href="#{{.ID}}">{{.Text}}</a></li>
+{{- end}}
+</ul>
+{{- if .Answers}}
+<p class="toc-answers"><a href="{{.Answers.URL}}">{{.Answers.Title}}</a></p>
+{{- end}}
+</nav>
+{{- end}}
+<main>
+{{- if .Chapter}}
+<p class="chapter-link"><a href="{{.Chapter.URL}}">{{.Chapter.Title}}</a></p>
+{{- end}}
+{{- if or .Previous .Next}}
+<nav class="pager">
+{{- if .Previous}}<a class="previous" href="{{.Previous.URL}}"><span>{{$.Labels.Previous}}</span> {{.Previous.Title}}</a>{{end}}
+{{- if .Next}}<a class="next" href="{{.Next.URL}}"><span>{{$.Labels.Next}}</span> {{.Next.Title}}</a>{{end}}
+</nav>
+{{- end}}
+<article>
+{{.Body}}
+</article>
+{{- if .Home}}
+{{- if .ReadingPath}}
+<section class="reading-path">
+<h2 id="{{.ReadingID}}">{{.Labels.ReadingPath}}</h2>
+<ol>
+{{- range .ReadingPath}}
+<li><a href="{{.URL}}">{{.Title}}</a>{{if .Rung}} <span class="rung">{{$.Labels.Rung}} {{.Rung}}</span>{{end}}
+{{- if .Experiments}}
+<ul>
+{{- range .Experiments}}
+<li><a href="{{.URL}}">{{.Title}}</a></li>
+{{- end}}
+</ul>
+{{- end}}
+</li>
+{{- end}}
+</ol>
+</section>
+{{- end}}
+{{- if .Reference}}
+<section class="reference">
+<h2 id="{{.ReferenceID}}">{{.Labels.Reference}}</h2>
+<ul>
+{{- range .Reference}}
+<li><a href="{{.URL}}">{{.Title}}</a></li>
+{{- end}}
+</ul>
+</section>
+{{- end}}
+{{- end}}
+{{- if or .Previous .Next}}
+<nav class="pager">
+{{- if .Previous}}<a class="previous" href="{{.Previous.URL}}"><span>{{$.Labels.Previous}}</span> {{.Previous.Title}}</a>{{end}}
+{{- if .Next}}<a class="next" href="{{.Next.URL}}"><span>{{$.Labels.Next}}</span> {{.Next.Title}}</a>{{end}}
+</nav>
+{{- end}}
+</main>
+</div>
+</body>
+</html>

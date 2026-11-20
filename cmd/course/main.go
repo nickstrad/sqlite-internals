@@ -30,6 +30,8 @@ commands:
   check gofmt                          verify tracked Go files are gofmt-formatted
   check paths                          verify no tracked file mentions a machine-local path
   check all [-runs N] [-skip-evidence] every check that needs no revisions
+  site [-out DIR] [-base PATH] [-repo URL] [-branch NAME] [-check]
+                                       render the book as a static site (or with -check, verify its links)
 `
 
 // exitError carries a process exit code back to main without printing an extra FAIL line.
@@ -60,6 +62,8 @@ func main() {
 		err = runInline(root, args)
 	case "check":
 		err = runCheck(ctx, root, args)
+	case "site":
+		err = runSite(root, args)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return
