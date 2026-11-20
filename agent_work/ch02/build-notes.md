@@ -640,3 +640,44 @@ table for any database file) and `build-r0` (build the recipe to step N in a mod
   territory; chapter 3/9).
 - Neon's adversarial list for 2.1 (other page sizes, truncated file, WAL difference) is already
   covered in parts F, E and C; 2.2's list in parts B-F; 2.3's in parts C and D.
+
+## Repair round 1 (Opus, 2026-11-20) — facts that supersede statements above
+
+Details and evidence: `agent_work/ch02/REPAIR-REPORT.md`.
+
+- **Correction 2 restated (the true rule).** In WAL mode a commit that writes page 1 stores
+  `dbFileVers + 1`; `dbFileVers` is refreshed whenever page 1 is read into the page cache
+  (`readDbPage`). On one connection the counter stays constant only while page 1 stays cached
+  (2.1 C1: 30, 30, 30). 2.1 C4 runs `PRAGMA shrink_memory` before each step: 30, 31, 32 on one
+  connection. "Once per connection" (C3) is a consequence of a new connection reading page 1.
+- **WITHOUT ROWID tables:** `type = 'table'` in `sqlite_schema`, tree is an index b-tree. The
+  census accepts them (roles index-interior/index-leaf/overflow, `Tree.Type` "table"); only an
+  `index` entry with a table-page root is corrupt. `WalkTable` still refuses them (row decoding
+  for every table kind is out of scope). Test: `TestWithoutRowidTableCensus` (matches `dbstat`).
+- **Page checks now in `ParseBTreePage`:** freeblocks ≥ 4 bytes apart and total free space ≤
+  usable size (`btreeComputeFreeSpace`, btree.c:2146, 2166 — `integrity_check` says "free space
+  corruption"); coverage (`checkTreePage`, btree.c:11076-11108): no byte used by two cells or a
+  cell and a freeblock ("Multiple uses for byte"), and the bytes covered by nothing between the
+  content start and the usable size must equal header byte 7 ("Fragmentation of N bytes reported
+  as M"). Replaces "Not checked: fragmentation accounting, overlapping cells" above; key order and
+  pointer-map contents are still not checked. 2.2 F6 is now caught at page 2 by the fragmentation
+  rule (1699 bytes vs 0), exactly what SQLite reports, not via unaccounted pages.
+- **Last overflow page:** a non-zero next pointer is `ErrCorrupt` (was "not checked").
+- **`WALMode()`** = byte 19 == 2 (btree.c:3341 opens the WAL on the read version alone).
+- **Flipped-bytes test:** 319 of 3000 rejected (was 262).
+- **capture:** `Pages` removes an earlier capture in `dir`, writes `*.capture-tmp`, renames after
+  the final checks; a failed capture leaves nothing. `Rebuild` refuses a 0-page manifest and runs
+  the census on the rebuilt file, refusing on census failure or any role/page disagreement with
+  the manifest (an attacker who drops the last page from both files, or edits a role, is caught).
+- **CLI rule in 2.1:** `NO-CLI:` only when no CLI exists anywhere (`sqlitex.ErrNoCLI`); a
+  `$SQLITE3_BIN` naming nothing or a CLI with the wrong pin fails the experiment.
+- **2.1 A:** `version-valid-for` has no oracle and prints `n/a`; 18 of 19 rows are checked with
+  the CLI. `.dbinfo` prints all fields unsigned (`%u`, shell.c.in:5561-5562), PRAGMA prints
+  `user_version`/`application_id` signed; ours match PRAGMA.
+- **Process rule:** 2.2 now reads databases with `os.ReadFile` + `dbfile.FromBytes` before any
+  connection opens; Part E opens the 1 GiB sparse file with `dbfile.Open` and closes it before
+  SQLite opens it. The statement "All experiments read databases only after closing their
+  connections, or from a child process" is now true.
+- **Capture with a live connection and a 0-byte `-wal` (CAP-04):** accepted, and correct: the
+  probe `agent_work/ch02/repair-probe/cap04` shows the capture equals the committed state.
+- Runtimes after repair: 2.1 4–7 s, 2.2 ≈ 3 s, 2.3 4–5 s.
