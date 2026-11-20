@@ -135,6 +135,13 @@ func options(cacheSize int) sqlitex.Options {
 
 // budgetBytes converts PRAGMA cache_size to bytes matching numberOfCachePages
 // (src/pcache.c:277-292): negative values are KiB, positive values are pages.
+func budgetBytes(cacheSize int) int {
+	if cacheSize < 0 {
+		return -1024 * cacheSize
+	}
+	return cacheSize * pageSize
+}
+
 const (
 	calibrationPages = 200
 	minBudgetBytes   = 1 << 20
@@ -149,13 +156,6 @@ func withinBudget(cacheUsed, cacheSize int) bool {
 		return cachedPages(cacheUsed) <= cacheSize
 	}
 	return cacheUsed <= budgetBytes(cacheSize)*105/100
-}
-
-func budgetBytes(cacheSize int) int {
-	if cacheSize < 0 {
-		return -1024 * cacheSize
-	}
-	return cacheSize * pageSize
 }
 
 func fileName(dir string, i int) string {

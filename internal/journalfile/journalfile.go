@@ -60,7 +60,6 @@ const (
 	// HeaderInvalid indicates bytes that are neither valid magic, nor zeroed,
 	// nor a valid sector/page-size geometry (readJournalHdr, src/pager.c:1650-1672).
 	HeaderInvalid
-	// HeaderMissing indicates fewer than HeaderFieldsSize bytes were present.
 	HeaderMissing
 )
 
