@@ -53,15 +53,36 @@ Chunk status (build → Neon prose → Neon review → repair → re-review → 
 | 2 chapter 2 | done | Neon FAIL → one Opus repair → PASS | 36 held / 0 broken after repair (run 1: 14 broken) | merged 68afd03 |
 | 2, 3, 4, 5, 7, 6, 8, 9, 10a, 10b, publishing | not started | | | |
 
-In progress (worktrees `../sqlite-internals-work/chNN`, branches `chunk/chNN`): chapter 7 — Opus
-repair round, then Neon re-review (`agent_work/orch/rereview.sh`), `finalize.sh`, `land.sh`;
-chapters 3, 4, 5 — Opus builds (branched from chapter 2's repaired branch; merge main before
-their repair rounds), then `neon-trio.sh`, `post-neon.sh`, `repair.sh`, `rereview.sh`,
-`finalize.sh`, `land.sh` each.
+Where each open chunk stands (worktrees `../sqlite-internals-work/<name>`, branches `chunk/<name>`):
 
-Next steps: after 5 lands, build 6 and 8 (8 also needs 4); then 9; 10a; 10b; publishing
-(GitHub Pages workflow, README, self-contained sweep). Build briefs for every chunk are already
-written (build machine: briefs directory `sqlite-p2/chunkNN-build.md`).
+| Chunk | Opus build | Neon prose | Neon review 1 | Neon adversarial | Opus repair | Neon re-review |
+| --- | --- | --- | --- | --- | --- | --- |
+| 7 | done | done (comments + chapter) | FAIL, done | done; runs 1 and 2 recorded | done (5449623) | **waiting for Neon** |
+| 4 | done | done (comments + chapter) | FAIL, done | **partial**: 3 attack programs, no run-all.sh/README | done (075ed33) | waiting for Neon |
+| 5 | done | **partial**: comments done, chapter text not written | FAIL, done | files complete, author run cut before its done marker; run 1 recorded | done (208d5ad) | waiting for Neon |
+| 3 | done (fa19f6a) | **not started** | not started | not started | – | – |
+| pub (Pages site generator + workflow) | done (5bf7893); not on main, workflow not triggered | README/home text not written | not started | not started | – | – |
+| 6 | building (base: repaired chapter 5) | | | | | |
+| 8 | building (base: repaired chapters 4 + 5 merged) | | | | | |
+| 9, 10a, 10b | to build after 6 and 8 (Opus, not blocked) | | | | | |
+
+In progress: Opus builds of chapters 6 and 8. Then 9 (needs 6), 10a (needs 8, 9), 10b.
+
+Next steps when Neon credit is back, in this order (scripts in `agent_work/orch/`;
+`agent_work/neon/neon-run.sh` picks the route itself: OpenRouter if it has budget, else the
+direct key):
+1. Chapter 7: `rereview.sh ch07 …` (same arguments as the brief `ch07-rereview` on the build
+   machine) → `finalize.sh ch07 ch07-vfs-and-filesystem-io` → `land.sh`.
+2. Chapter 4: finish the adversarial brief (run-all.sh, README, remaining attacks), run it,
+   then `rereview.sh` → `finalize.sh` → `land.sh`.
+3. Chapter 5: chapter-text pass (a brief like `ch07-prose2`: comments are done, write the
+   chapter only), then `rereview.sh` → `finalize.sh` → `land.sh`.
+4. Chapter 3: `neon-trio.sh` → `post-neon.sh` → `repair.sh` → `rereview.sh` → `finalize.sh` → `land.sh`.
+5. The same full chain for 6, 8, 9, 10a (no chapter text), 10b, then pub (Neon writes
+   README.md as the book's home page; review; adversarial on the site checker), the
+   self-contained sweep, landing pub (this publishes the site), and
+   the done file.
+Branches built on unlanded chapters must merge main before their repair rounds.
 
 Open decisions / blockers:
 - **Nick: Neon has no credit on either route.** OpenRouter key: $0.15 left of the $50 monthly
