@@ -55,6 +55,7 @@ func countRows(t *testing.T, path, journal string) (int, string) {
 	return n, check
 }
 
+// TestFunctionPointerConvention verifies funcAddress, funcAt, codeAddress, and typed C-memory reads/writes via at.
 func TestFunctionPointerConvention(t *testing.T) {
 	if err := checkFunctionPointerConvention(); err != nil {
 		t.Fatal(err)
@@ -76,6 +77,7 @@ func TestFunctionPointerConvention(t *testing.T) {
 	}
 }
 
+// TestRegisterValidation checks empty names, out-of-range io_methods versions, duplicate names, and default version 3.
 func TestRegisterValidation(t *testing.T) {
 	if _, err := Register("", Options{}); err == nil {
 		t.Fatal("empty name accepted")
@@ -98,6 +100,7 @@ func TestRegisterValidation(t *testing.T) {
 	}
 }
 
+// TestForwardingInBothJournalModes confirms the shim forwards and records commits in DELETE and WAL modes and persists rows.
 func TestForwardingInBothJournalModes(t *testing.T) {
 	for _, journal := range []string{"delete", "wal"} {
 		t.Run(journal, func(t *testing.T) {
@@ -135,6 +138,7 @@ func TestForwardingInBothJournalModes(t *testing.T) {
 	}
 }
 
+// TestIOVersionOneCannotUseWAL confirms a version-1 io_methods table omits xShm* so SQLite stays in DELETE mode.
 func TestIOVersionOneCannotUseWAL(t *testing.T) {
 	v := registerForTest(t, Options{IOVersion: 1})
 	path := filepath.Join(t.TempDir(), "t.db")
@@ -155,6 +159,7 @@ func TestIOVersionOneCannotUseWAL(t *testing.T) {
 	}
 }
 
+// TestFaultInjection verifies injecting SQLITE_IOERR on the first xWrite or xSync aborts the insert and leaves zero rows.
 func TestFaultInjection(t *testing.T) {
 	for _, journal := range []string{"delete", "wal"} {
 		for _, method := range []string{"xWrite", "xSync"} {
@@ -189,6 +194,7 @@ func TestFaultInjection(t *testing.T) {
 	}
 }
 
+// TestFaultKindFilterAndNotReached verifies unreached Nth faults do not fire and Kind filters match only that file role.
 func TestFaultKindFilterAndNotReached(t *testing.T) {
 	v := registerForTest(t, Options{})
 	path := filepath.Join(t.TempDir(), "t.db")
@@ -220,6 +226,7 @@ func TestFaultKindFilterAndNotReached(t *testing.T) {
 	}
 }
 
+// TestArmValidation rejects Nth < 1, non-faultable methods, and SQLITE_OK as a fault code.
 func TestArmValidation(t *testing.T) {
 	v := registerForTest(t, Options{})
 	bad := []Fault{
@@ -237,6 +244,7 @@ func TestArmValidation(t *testing.T) {
 	}
 }
 
+// TestRecordingSwitchAndTake checks SetRecording toggling and TakeCalls draining and sequence resetting.
 func TestRecordingSwitchAndTake(t *testing.T) {
 	v := registerForTest(t, Options{})
 	path := filepath.Join(t.TempDir(), "t.db")
@@ -263,6 +271,7 @@ func TestRecordingSwitchAndTake(t *testing.T) {
 	}
 }
 
+// TestStringsAndFlags verifies Call.String, VFSTraceSyncLabel vs SyncFlagsString, KindFromOpenFlags, and Counts.String.
 func TestStringsAndFlags(t *testing.T) {
 	cases := map[string]Call{
 		"xSync t.db-wal flags=NORMAL -> 0":                     {Method: "xSync", File: "t.db-wal", Flags: SyncNormal},

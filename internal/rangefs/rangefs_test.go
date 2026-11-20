@@ -27,6 +27,7 @@ func serve(t *testing.T, files map[string][]byte) *FS {
 	return New(context.Background(), HTTPSource{BaseURL: server.URL, Client: server.Client()})
 }
 
+// TestHTTPRangeReads verifies range reads, EOF clipping, request logging, and Summarize over HTTPSource.
 func TestHTTPRangeReads(t *testing.T) {
 	body := bytes.Repeat([]byte("0123456789"), 1000)
 	fsys := serve(t, map[string][]byte{"a.db": body})
@@ -76,6 +77,7 @@ func TestHTTPRangeReads(t *testing.T) {
 	}
 }
 
+// TestMissingAndInvalid verifies 404 maps to fs.ErrNotExist, invalid paths return fs.ErrInvalid, and Stat implements fs.StatFS.
 func TestMissingAndInvalid(t *testing.T) {
 	fsys := serve(t, map[string][]byte{"a.db": []byte("x")})
 	if _, err := fsys.Open("a.db-wal"); !errors.Is(err, fs.ErrNotExist) {
@@ -96,6 +98,7 @@ func TestMissingAndInvalid(t *testing.T) {
 	}
 }
 
+// TestSeekAndClose verifies Seek whence modes, negative-offset rejection, and fs.ErrClosed after Close.
 func TestSeekAndClose(t *testing.T) {
 	fsys := serve(t, map[string][]byte{"a.db": []byte("abcdef")})
 	f, err := fsys.Open("a.db")
@@ -122,6 +125,7 @@ func TestSeekAndClose(t *testing.T) {
 	}
 }
 
+// TestS3ConfigFromEnv verifies environment overrides, fallback defaults, and S3Source prefix joining.
 func TestS3ConfigFromEnv(t *testing.T) {
 	t.Setenv("COURSE_S3_ENDPOINT", "")
 	t.Setenv("COURSE_S3_ACCESS_KEY", "k")
@@ -134,6 +138,7 @@ func TestS3ConfigFromEnv(t *testing.T) {
 	}
 }
 
+// TestS3RoundTripLive exercises PutObject, range reads, and missing-object lookup against a live SeaweedFS store when reachable.
 func TestS3RoundTripLive(t *testing.T) {
 	cfg := S3ConfigFromEnv()
 	client := NewS3Client(cfg)

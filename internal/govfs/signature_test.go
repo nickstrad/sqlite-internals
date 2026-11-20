@@ -129,6 +129,9 @@ func reflectTypes(fn reflect.Type) (in, out []string) {
 	return in, out
 }
 
+// TestSignaturesMatchTranslatedSource parses the installed modernc.org/sqlite/lib
+// source for the current platform and verifies that every parameter and result
+// type of all 27 shim slots matches the translated function behind it.
 func TestSignaturesMatchTranslatedSource(t *testing.T) {
 	v := registerForTest(t, Options{})
 	path := filepath.Join(t.TempDir(), "t.db")

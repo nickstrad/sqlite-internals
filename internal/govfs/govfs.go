@@ -1,3 +1,11 @@
+// Package govfs registers a pure-Go forwarding VFS shim on top of
+// modernc.org/sqlite's default VFS (unix on Linux and macOS). It records every
+// VFS and sqlite3_io_methods call in-process and supports deterministic fault
+// injection on xRead, xWrite, xSync, and xTruncate without cgo or custom C.
+//
+// Like ext/misc/vfstrace.c (vfstrace_register, lines 1138-1199), each shim
+// sqlite3_file prefixes an 8-byte header (its own pMethods pointer) ahead of
+// the underlying VFS's sqlite3_file bytes in memory allocated by SQLite.
 package govfs
 
 import (
@@ -11,13 +19,20 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
+// headerSize is the byte size of the leading sqlite3_file header (one pMethods
+// pointer on 64-bit platforms) placed in front of the wrapped VFS's file object
+// (sqlite.h.in:747-749).
 const headerSize = 8
 
+// Options configures a shim VFS registered with Register.
 type Options struct {
 	IOVersion   int32
 	MakeDefault bool
 }
 
+// Fault specifies a single deterministic error to inject on the Nth matching
+// call to Method (one of xRead, xWrite, xSync, xTruncate), optionally limited
+// to files of Kind.
 type Fault struct {
 	Method string
 	Nth    int
@@ -25,6 +40,7 @@ type Fault struct {
 	Kind   FileKind
 }
 
+// FaultReport summarizes what happened to an armed Fault when Disarm is called.
 type FaultReport struct {
 	Armed bool
 	Fault Fault
@@ -33,6 +49,8 @@ type FaultReport struct {
 	Call  Call
 }
 
+// VFS is a registered Go forwarding VFS that records calls and can inject
+// single-shot I/O errors.
 type VFS struct {
 	name      string
 	address   uintptr
@@ -61,6 +79,8 @@ type methodTable struct {
 	version int32
 }
 
+// registry maps C-memory sqlite3_vfs and sqlite3_file addresses back to Go
+// state so no Go pointer is ever stored inside C-allocated SQLite structs.
 var registry = struct {
 	sync.RWMutex
 	realVFS   uintptr
@@ -77,8 +97,15 @@ var registry = struct {
 	checked:   map[uintptr]error{},
 }
 
+// ErrAlreadyRegistered is returned by Register when SQLite already has a VFS
+// with the requested name.
 var ErrAlreadyRegistered = errors.New("a VFS with this name is already registered")
 
+// Register allocates and registers a forwarding sqlite3_vfs named name using
+// sqlite3_vfs_find(NULL) as its underlying VFS (os.c:362-381) and
+// sqlite3_vfs_register (os.c:408-431). An Options.IOVersion of 0 defaults to 3.
+// Startup self-checks verify the default VFS layout and ccgo's function-pointer
+// convention before registering.
 func Register(name string, options Options) (*VFS, error) {
 	if name == "" {
 		return nil, errors.New("govfs: empty VFS name")
@@ -98,6 +125,8 @@ func Register(name string, options Options) (*VFS, error) {
 	if _, ok := registry.byName[name]; ok {
 		return nil, fmt.Errorf("govfs: %q: %w", name, ErrAlreadyRegistered)
 	}
+	// Allocate zName in C memory and keep it alive for the process lifetime:
+	// sqlite3_vfs_register stores the pointer without copying (os.c:408-431).
 	cname, err := libc.CString(name)
 	if err != nil {
 		return nil, err
@@ -123,6 +152,8 @@ func Register(name string, options Options) (*VFS, error) {
 	if address == 0 {
 		return nil, errors.New("govfs: out of memory")
 	}
+	// Copy the underlying VFS struct verbatim, grow szOsFile by headerSize for
+	// our leading pMethods pointer, and swap in only the 9 wrapped VFS slots.
 	shim := at[sqlite3.Tsqlite3_vfs](address)
 	*shim = *real
 	shim.FzName = cname
@@ -145,26 +176,31 @@ func Register(name string, options Options) (*VFS, error) {
 	return v, nil
 }
 
+// Lookup returns the registered shim VFS for name, or nil if none exists.
 func Lookup(name string) *VFS {
 	registry.RLock()
 	defer registry.RUnlock()
 	return registry.byName[name]
 }
 
+// Name returns the registered SQLite VFS name for URI selection (?vfs=<name>).
 func (v *VFS) Name() string {
 	return v.name
 }
 
+// IOVersion returns the maximum sqlite3_io_methods version this shim advertises.
 func (v *VFS) IOVersion() int32 {
 	return v.ioVersion
 }
 
+// SetRecording enables or disables recording of forwarded VFS calls.
 func (v *VFS) SetRecording(on bool) {
 	v.mu.Lock()
 	v.recording = on
 	v.mu.Unlock()
 }
 
+// Reset clears all recorded calls and resets the sequence counter to zero.
 func (v *VFS) Reset() {
 	v.mu.Lock()
 	v.calls = nil
@@ -172,12 +208,15 @@ func (v *VFS) Reset() {
 	v.mu.Unlock()
 }
 
+// Calls returns a snapshot copy of all recorded calls since the last Reset or TakeCalls.
 func (v *VFS) Calls() []Call {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	return append([]Call(nil), v.calls...)
 }
 
+// TakeCalls returns all recorded calls and clears the buffer, resetting the
+// sequence counter to zero.
 func (v *VFS) TakeCalls() []Call {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -187,6 +226,8 @@ func (v *VFS) TakeCalls() []Call {
 	return calls
 }
 
+// Arm installs a one-shot fault that will fail the Nth matching call with
+// f.Code instead of forwarding to the underlying VFS.
 func (v *VFS) Arm(f Fault) error {
 	if f.Nth < 1 {
 		return fmt.Errorf("govfs: fault Nth must be >= 1, got %d", f.Nth)
@@ -205,6 +246,8 @@ func (v *VFS) Arm(f Fault) error {
 	return nil
 }
 
+// Disarm clears any armed fault and returns a FaultReport describing how many
+// matching calls were observed and whether the fault fired.
 func (v *VFS) Disarm() FaultReport {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -224,6 +267,8 @@ func (v *VFS) Disarm() FaultReport {
 
 var faultable = map[string]bool{"xRead": true, "xWrite": true, "xSync": true, "xTruncate": true}
 
+// Err returns the first internal self-check error encountered when wrapping a
+// file's sqlite3_io_methods table during xOpen, or nil if none occurred.
 func (v *VFS) Err() error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -305,6 +350,8 @@ func fileFor(pFile uintptr) *openFile {
 	return registry.files[pFile]
 }
 
+// inner advances past the 8-byte shim sqlite3_file header to the embedded real
+// VFS sqlite3_file struct.
 func inner(pFile uintptr) uintptr {
 	return pFile + headerSize
 }
@@ -320,6 +367,10 @@ func displayName(path string) string {
 	return filepath.Base(path)
 }
 
+// methodTableFor returns a cached shim sqlite3_io_methods table allocated in
+// SQLite memory for the (shim VFS, real method table) pair. Its iVersion is
+// capped at min(v.ioVersion, realTable.FiVersion) and null slots stay null,
+// matching vfstraceOpen's pattern (vfstrace.c:894-922).
 func methodTableFor(v *VFS, real uintptr) (uintptr, error) {
 	key := [2]uintptr{v.address, real}
 	registry.RLock()

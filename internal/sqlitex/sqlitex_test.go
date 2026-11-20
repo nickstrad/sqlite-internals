@@ -703,6 +703,7 @@ func TestUnstampedEmptyDatabaseIsStampedButUsedOneIsNot(t *testing.T) {
 	}
 }
 
+// TestDSNWithVFS verifies Options.VFS emits a vfs= URI parameter and reaches SQLite's VFS selection.
 func TestDSNWithVFS(t *testing.T) {
 	o := DefaultOptions()
 	o.VFS = "unix-none"
@@ -738,6 +739,7 @@ func TestDSNWithVFS(t *testing.T) {
 	}
 }
 
+// TestDisplayPath verifies repo-internal paths render relative and external paths stay unchanged.
 func TestDisplayPath(t *testing.T) {
 	root, err := RepoRoot()
 	if err != nil {

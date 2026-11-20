@@ -1,3 +1,13 @@
+// Experiment 7.1 runs the pinned sqlite3 C CLI with -vfstrace under Linux
+// strace to merge VFS calls and kernel syscalls into a single ordered stream.
+// It verifies that every xRead/xWrite/xSync maps to the expected pread64,
+// pwrite64, or fsync/fdatasync syscall, that directory syncs happen inside the
+// first xSync of a new journal or WAL, and that -wal/-shm are created at first
+// use and removed at last close.
+//
+// Run from the repo root (Linux; on macOS, use docker compose run --rm lab):
+//
+//	go run ./ch07-vfs-and-filesystem-io/experiments/7.1-vfs-calls-to-syscalls
 package main
 
 import (
@@ -59,6 +69,9 @@ var unixFunction = map[string]string{
 	"xUnfetch":               "unixUnfetch",
 }
 
+// tracedSyscalls extends trace.DefaultSyscalls with stat and access families so
+// xAccess (os_unix.c:6881-6903), xFileSize, and xFullPathname show their kernel
+// calls. fchown is omitted because unixOpen only calls it when running as root.
 var tracedSyscalls = append(append([]string(nil), trace.DefaultSyscalls...), "fstat", "newfstatat", "statx", "stat", "lstat", "access", "faccessat", "faccessat2")
 
 var failures []string
@@ -220,6 +233,8 @@ func analyze(m *trace.Merged, dir string) {
 	randomness := 0
 	for position, i := range kept {
 		e := m.Events[i]
+		// Omit xRandomness from the printed stream so evidence matches across
+		// CLI builds that seed SQLite's PRNG at different points.
 		if e.Kind == trace.EventVFS && e.VFS.Method == "xRandomness" {
 			randomness++
 			fmt.Printf("INFO: xRandomness at stream line %d: %s\n", position+1, e.VFS.String())
@@ -238,6 +253,9 @@ func analyze(m *trace.Merged, dir string) {
 		}
 		return out
 	}
+	// before collects unenclosed file syscalls immediately preceding an xOpen
+	// event, because vfstraceOpen calls the underlying xOpen before printing
+	// its trace line (vfstrace.c:890-893).
 	before := func(i int) []trace.Syscall {
 		var out []trace.Syscall
 		for j := i - 1; j >= 0; j-- {

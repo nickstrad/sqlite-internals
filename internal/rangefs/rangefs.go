@@ -1,3 +1,8 @@
+// Package rangefs implements a read-only io/fs.FS and fs.StatFS backed by
+// byte-range reads over HTTP or S3, recording every stat and range request.
+// Passed to modernc.org/sqlite/vfs.New, it lets SQLite query a checkpointed
+// remote database snapshot one page miss at a time with no local copy, no
+// caching, and no read-ahead.
 package rangefs
 
 import (
@@ -11,18 +16,23 @@ import (
 	"time"
 )
 
+// Source fetches file metadata and exact byte ranges from a remote store.
+// Stat must return an error wrapping fs.ErrNotExist when the object is absent.
 type Source interface {
 	Stat(ctx context.Context, name string) (int64, error)
 	ReadRange(ctx context.Context, name string, offset int64, p []byte) (int, error)
 }
 
+// RequestKind distinguishes metadata checks (stat) from byte-range reads (range).
 type RequestKind string
 
+// RequestKind values recorded by FS.
 const (
 	KindStat  RequestKind = "stat"
 	KindRange RequestKind = "range"
 )
 
+// Request logs one remote operation issued through FS.
 type Request struct {
 	Kind   RequestKind
 	Name   string
@@ -31,6 +41,7 @@ type Request struct {
 	Found  bool
 }
 
+// String formats a Request as a single readable line for evidence output.
 func (r Request) String() string {
 	switch r.Kind {
 	case KindStat:
@@ -44,20 +55,24 @@ func (r Request) String() string {
 	return string(r.Kind)
 }
 
+// Stats aggregates request counts and total bytes read across a slice of Requests.
 type Stats struct {
 	StatRequests  int
 	RangeRequests int
 	BytesRead     int64
 }
 
+// Requests returns the total number of stat and range requests.
 func (s Stats) Requests() int {
 	return s.StatRequests + s.RangeRequests
 }
 
+// String formats Stats as "N requests (S stat, R range), B bytes".
 func (s Stats) String() string {
 	return fmt.Sprintf("%d requests (%d stat, %d range), %d bytes", s.Requests(), s.StatRequests, s.RangeRequests, s.BytesRead)
 }
 
+// Summarize tallies stat requests, range requests, and bytes read in requests.
 func Summarize(requests []Request) Stats {
 	var s Stats
 	for _, r := range requests {
@@ -72,6 +87,10 @@ func Summarize(requests []Request) Stats {
 	return s
 }
 
+// FS adapts a Source into a read-only fs.FS and fs.StatFS that records every
+// remote request. Open and Stat each issue one Source.Stat call; each Read or
+// ReadAt on an open file issues one Source.ReadRange call for the exact bytes
+// requested, clipped at EOF.
 type FS struct {
 	source Source
 	ctx    context.Context
@@ -80,6 +99,7 @@ type FS struct {
 	requests []Request
 }
 
+// New returns an FS that performs all Source calls using ctx.
 func New(ctx context.Context, source Source) *FS {
 	return &FS{source: source, ctx: ctx}
 }
@@ -90,12 +110,14 @@ func (f *FS) log(r Request) {
 	f.mu.Unlock()
 }
 
+// Requests returns a snapshot copy of all recorded requests.
 func (f *FS) Requests() []Request {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]Request(nil), f.requests...)
 }
 
+// TakeRequests returns all recorded requests and clears the log.
 func (f *FS) TakeRequests() []Request {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -117,6 +139,7 @@ func (f *FS) stat(op, name string) (int64, error) {
 	return size, nil
 }
 
+// Open stats name and returns a read-only seekable file implementing io.ReaderAt.
 func (f *FS) Open(name string) (fs.File, error) {
 	size, err := f.stat("open", name)
 	if err != nil {
@@ -125,6 +148,8 @@ func (f *FS) Open(name string) (fs.File, error) {
 	return &file{fsys: f, name: name, size: size}, nil
 }
 
+// Stat implements fs.StatFS, which modernc.org/sqlite/vfs calls to answer
+// SQLite's xAccess checks (for example, probing for -journal and -wal files).
 func (f *FS) Stat(name string) (fs.FileInfo, error) {
 	size, err := f.stat("stat", name)
 	if err != nil {
@@ -155,6 +180,8 @@ func (f *file) ReadAt(p []byte, offset int64) (int, error) {
 	if offset >= f.size {
 		return 0, io.EOF
 	}
+	// Clip the range at EOF so the store never receives an out-of-bounds
+	// Range header, then return io.EOF on a short read as io.ReaderAt requires.
 	want := min(int64(len(p)), f.size-offset)
 	n, err := f.fsys.source.ReadRange(f.fsys.ctx, f.name, offset, p[:want])
 	f.fsys.log(Request{Kind: KindRange, Name: f.name, Offset: offset, Length: want})

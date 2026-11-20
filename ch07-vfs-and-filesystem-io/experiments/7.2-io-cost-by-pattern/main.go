@@ -1,3 +1,12 @@
+// Experiment 7.2 measures exact pwrite64 calls, bytes written, fsync/fdatasync
+// calls, opens, unlinks, and ftruncates for inserting 1,000 rows across 12
+// configurations: journal_mode {delete, wal} x synchronous {NORMAL, FULL} x
+// batching {1x1000, 20x50, 1000x1}. Each cell runs a child Go process under
+// Linux strace and splits the syscall log per commit using a marker file.
+//
+// Run from the repo root (Linux; on macOS, use docker compose run --rm lab):
+//
+//	go run ./ch07-vfs-and-filesystem-io/experiments/7.2-io-cost-by-pattern
 package main
 
 import (
@@ -187,6 +196,9 @@ func runWorkload(ctx context.Context, dir string, c cell, afterCommit func()) er
 	return nil
 }
 
+// child runs one workload cell inside a dedicated straced process, pinning its
+// goroutine to one OS thread and opening markerName after CREATE, after every
+// commit, and after Close so the parent can segment the strace log per commit.
 func child(args []string) {
 	runtime.LockOSThread()
 	if len(args) != 4 {
@@ -449,6 +461,10 @@ func report(results map[cell]*measurement) {
 	check(walOne.totalSyncs() < delOne.totalSyncs() && walOne.bytes < delOne.bytes, fmt.Sprintf("1000 one-row commits at NORMAL: WAL %d syncs and %d bytes written, rollback %d syncs and %d bytes", walOne.totalSyncs(), walOne.bytes, delOne.totalSyncs(), delOne.bytes))
 }
 
+// walShapes returns the expected per-commit sync patterns in WAL mode:
+// plain commits sync nothing at NORMAL (wal:1 at FULL), an automatic checkpoint
+// commit syncs both WAL and db (wal.c:2277, 2333), and the immediately following
+// restart commit writes and syncs a fresh WAL header (wal.c:3875-3915, 4114-4124).
 func walShapes(sync string) (plain, restart, checkpoint string) {
 	if sync == sqlitex.SyncFull {
 		return "wal:1", "wal:2", "db:1 wal:2"

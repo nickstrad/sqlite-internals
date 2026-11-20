@@ -114,6 +114,8 @@ func MustWorkDir(name string) string {
 	return dir
 }
 
+// DisplayPath returns path relative to the repository root with forward slashes
+// when it lies inside the checkout (resolving symlinks), or path unchanged otherwise.
 func DisplayPath(path string) string {
 	root, err := RepoRoot()
 	if err != nil {

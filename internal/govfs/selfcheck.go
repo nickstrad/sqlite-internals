@@ -11,6 +11,8 @@ import (
 
 const translatedPackage = "modernc.org/sqlite/lib."
 
+// Target pairs one intercepted Slot with the fully qualified Go function name
+// resolved from the underlying VFS or sqlite3_io_methods table at run time.
 type Target struct {
 	Slot     Slot
 	Function string
@@ -33,6 +35,9 @@ func functionName(address uintptr) string {
 	return f.Name()
 }
 
+// checkTarget verifies that a stored C function pointer resolves to a function
+// in modernc.org/sqlite/lib whose name ends with the slot's suffix (for
+// example xWrite -> _unixWrite, xLock -> _unixLock or _dotlockLock).
 func checkTarget(slot Slot, address uintptr) (Target, error) {
 	name := functionName(address)
 	target := Target{Slot: slot, Function: name}
@@ -77,6 +82,8 @@ func checkRealVFS(real uintptr) error {
 	return err
 }
 
+// checkRealMethods validates a newly encountered real sqlite3_io_methods table
+// once and caches both the check result and resolved Targets for signature tests.
 func checkRealMethods(real uintptr) error {
 	checkedTables.Lock()
 	defer checkedTables.Unlock()
@@ -116,6 +123,9 @@ func selfCheckDouble(x int32) int32 {
 	return 2 * x
 }
 
+// checkFunctionPointerConvention verifies at startup that funcAddress, funcAt,
+// and codeAddress round-trip a top-level Go function through a uintptr pointer
+// on the current Go toolchain and architecture.
 func checkFunctionPointerConvention() error {
 	address := funcAddress(selfCheckDouble)
 	if got := funcAt[func(int32) int32](address)(21); got != 42 {
@@ -127,6 +137,8 @@ func checkFunctionPointerConvention() error {
 	return nil
 }
 
+// ForwardTargets returns every underlying modernc.org/sqlite/lib function
+// resolved so far across the default VFS and all checked io_methods tables.
 func ForwardTargets() []Target {
 	registry.RLock()
 	real := registry.realVFS

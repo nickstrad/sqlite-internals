@@ -1,3 +1,13 @@
+// Experiment 7.4 serves a checkpointed 30-step recipe snapshot over HTTP (by
+// default) or SeaweedFS S3 (-s3) and queries it through modernc.org/sqlite/vfs
+// backed by internal/rangefs. It counts stat and byte-range requests for a
+// point lookup, index range scan, and full scan, verifies remote results equal
+// the local file, and demonstrates why immutable=1 and a fully checkpointed
+// file are both required for WAL-format snapshots.
+//
+// Run from the repo root (add -s3 after docker compose up -d seaweedfs):
+//
+//	go run ./ch07-vfs-and-filesystem-io/experiments/7.4-read-only-snapshot-vfs
 package main
 
 import (
@@ -464,6 +474,11 @@ func withoutImmutable(ctx context.Context, vfsName string, remote *rangefs.FS, n
 	}
 }
 
+// rollbackFormat flips database header bytes 18 and 19 (file format write and
+// read versions) from 2 (WAL) to 1 (rollback) on a copy of the checkpointed
+// snapshot to prove that the header's WAL flag—not the page content—is what
+// makes SQLite require shared memory (io_methods version >= 2) when immutable=1
+// is omitted.
 func rollbackFormat(ctx context.Context, pub publisher, snapshot []byte, vfsName string, remote *rangefs.FS, local string) {
 	patched := append([]byte(nil), snapshot...)
 	patched[18], patched[19] = 1, 1
@@ -490,6 +505,10 @@ func fallback(state string, err error) string {
 	return state
 }
 
+// childWriter commits the final recipe step in a separate process and holds its
+// connection open until stdin closes. Keeping the writer in a child process
+// ensures the parent's plain os.ReadFile calls do not close a descriptor to the
+// same file inside the writer process and drop its POSIX locks.
 func childWriter(path string) {
 	ctx := context.Background()
 	r := recipe.Default()

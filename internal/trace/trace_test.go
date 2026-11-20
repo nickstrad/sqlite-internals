@@ -245,6 +245,7 @@ func TestWritevMergesLikeWrite(t *testing.T) {
 	}
 }
 
+// TestParseStatAndAccessPaths confirms strace parsing resolves paths for stat, newfstatat, statx, and access syscalls.
 func TestParseStatAndAccessPaths(t *testing.T) {
 	text := `7 newfstatat(AT_FDCWD</w>, "/w/t.db-wal", 0x7ffd, 0) = -1 ENOENT (No such file or directory)
 7 newfstatat(AT_FDCWD</w>, "t.db", {st_mode=S_IFREG|0644, st_size=4096, ...}, 0) = 0
@@ -277,6 +278,7 @@ func TestParseStatAndAccessPaths(t *testing.T) {
 	}
 }
 
+// TestCanonicalNames checks syscall normalization across open, unlink, sync, stat, access, and pwrite variants.
 func TestCanonicalNames(t *testing.T) {
 	cases := map[string]string{"openat": "open", "unlinkat": "unlink", "fdatasync": "sync", "fsync": "sync", "newfstatat": "stat", "fstat": "stat", "faccessat2": "access", "pwrite": "pwrite64", "fcntl": "fcntl"}
 	for in, want := range cases {

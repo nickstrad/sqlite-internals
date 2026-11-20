@@ -5,6 +5,8 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
+// codeCantOpen is SQLITE_CANTOPEN (14), returned if a newly opened file's real
+// sqlite3_io_methods table fails the startup self-check.
 const codeCantOpen int32 = 14
 
 func goString(z uintptr) string {
@@ -14,9 +16,14 @@ func goString(z uintptr) string {
 	return libc.GoString(z)
 }
 
+// vfsOpen forwards xOpen to the underlying VFS on the embedded file object at
+// inner(pFile), then installs a shim sqlite3_io_methods table in pFile's
+// leading header if the underlying open populated pMethods (vfstrace.c:876-930).
 func vfsOpen(tls *libc.TLS, pVfs uintptr, zName uintptr, pFile uintptr, flags int32, pOutFlags uintptr) int32 {
 	v := vfsFor(pVfs)
 	path := goString(zName)
+	// Clear pMethods before calling the underlying xOpen: sqlite3OsOpen asserts
+	// pFile->pMethods == 0 whenever xOpen returns non-OK (os.c:230).
 	header := at[sqlite3.Tsqlite3_file](pFile)
 	header.FpMethods = 0
 	rc := funcAt[vfsOpenFunc](realVFS().FxOpen)(tls, registry.realVFS, zName, inner(pFile), flags, pOutFlags)
@@ -77,6 +84,8 @@ func vfsCurrentTime(tls *libc.TLS, pVfs uintptr, pOut uintptr) int32 {
 	return rc
 }
 
+// vfsGetLastError forwards without recording, matching vfstrace.c, because
+// SQLite calls it only while formatting a prior error.
 func vfsGetLastError(tls *libc.TLS, pVfs uintptr, nByte int32, zOut uintptr) int32 {
 	return funcAt[vfsGetLastErrorFunc](realVFS().FxGetLastError)(tls, registry.realVFS, nByte, zOut)
 }

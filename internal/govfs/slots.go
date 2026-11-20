@@ -7,6 +7,11 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
+// Function types matching ccgo's translated signatures for sqlite3_vfs
+// (sqlite.h.in:1513-1550) and sqlite3_io_methods (sqlite.h.in:854-878).
+// Every wrapper must match its type alias at compile time, and
+// TestSignaturesMatchTranslatedSource verifies each type against the
+// translated modernc.org/sqlite/lib source.
 type (
 	vfsOpenFunc             = func(*libc.TLS, uintptr, uintptr, uintptr, int32, uintptr) int32
 	vfsDeleteFunc           = func(*libc.TLS, uintptr, uintptr, int32) int32
@@ -38,6 +43,8 @@ type (
 	ioUnfetchFunc               = func(*libc.TLS, uintptr, int64, uintptr) int32
 )
 
+// Slot describes one intercepted sqlite3_vfs or sqlite3_io_methods method,
+// the minimum struct iVersion that defines it, and its expected Go signature.
 type Slot struct {
 	Method     string
 	MinVersion int32
@@ -56,14 +63,21 @@ type ioSlot struct {
 	wrapper uintptr
 }
 
+// newVFSSlot binds a sqlite3_vfs field to a wrapper whose type must equal F at
+// compile time, recording F via reflect.TypeFor for the signature test.
 func newVFSSlot[F any](method string, minVersion int32, field func(*sqlite3.Tsqlite3_vfs) *uintptr, wrapper F) vfsSlot {
 	return vfsSlot{Slot{method, minVersion, reflect.TypeFor[F]()}, field, funcAddress(wrapper)}
 }
 
+// newIOSlot binds a sqlite3_io_methods field to a wrapper whose type must equal
+// F at compile time, recording F via reflect.TypeFor for the signature test.
 func newIOSlot[F any](method string, minVersion int32, field func(*sqlite3.Tsqlite3_io_methods) *uintptr, wrapper F) ioSlot {
 	return ioSlot{Slot{method, minVersion, reflect.TypeFor[F]()}, field, funcAddress(wrapper)}
 }
 
+// vfsSlots lists the 9 VFS methods wrapped by the shim. Dynamic-library
+// (xDl*) and system-call override slots keep the underlying VFS's pointers,
+// which ignore their pVfs parameter.
 var vfsSlots = []vfsSlot{
 	newVFSSlot[vfsOpenFunc]("xOpen", 1, func(v *sqlite3.Tsqlite3_vfs) *uintptr { return &v.FxOpen }, vfsOpen),
 	newVFSSlot[vfsDeleteFunc]("xDelete", 1, func(v *sqlite3.Tsqlite3_vfs) *uintptr { return &v.FxDelete }, vfsDelete),
@@ -76,6 +90,8 @@ var vfsSlots = []vfsSlot{
 	newVFSSlot[vfsCurrentTimeInt64Func]("xCurrentTimeInt64", 2, func(v *sqlite3.Tsqlite3_vfs) *uintptr { return &v.FxCurrentTimeInt64 }, vfsCurrentTimeInt64),
 }
 
+// ioSlots lists all 18 sqlite3_io_methods entries across versions 1 through 3
+// (sqlite.h.in:854-878).
 var ioSlots = []ioSlot{
 	newIOSlot[ioCloseFunc]("xClose", 1, func(m *sqlite3.Tsqlite3_io_methods) *uintptr { return &m.FxClose }, ioClose),
 	newIOSlot[ioReadFunc]("xRead", 1, func(m *sqlite3.Tsqlite3_io_methods) *uintptr { return &m.FxRead }, ioRead),
@@ -97,6 +113,7 @@ var ioSlots = []ioSlot{
 	newIOSlot[ioUnfetchFunc]("xUnfetch", 3, func(m *sqlite3.Tsqlite3_io_methods) *uintptr { return &m.FxUnfetch }, ioUnfetch),
 }
 
+// VFSSlots returns copies of the 9 intercepted sqlite3_vfs slot descriptors.
 func VFSSlots() []Slot {
 	slots := make([]Slot, len(vfsSlots))
 	for i, s := range vfsSlots {
@@ -105,6 +122,7 @@ func VFSSlots() []Slot {
 	return slots
 }
 
+// IOSlots returns copies of the 18 intercepted sqlite3_io_methods slot descriptors.
 func IOSlots() []Slot {
 	slots := make([]Slot, len(ioSlots))
 	for i, s := range ioSlots {

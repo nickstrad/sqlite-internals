@@ -1,3 +1,14 @@
+// Experiment 7.3 registers the pure-Go forwarding VFS shim (internal/govfs) on
+// top of modernc.org/sqlite's default VFS. Part A compares the Go driver's
+// per-commit VFS call sequence call-for-call against the C CLI's -vfstrace in
+// DELETE and WAL modes at NORMAL and FULL, also recording the real SQLITE_SYNC_*
+// flag values. Part B fails every Nth xWrite and xSync of a recipe step with
+// SQLITE_IOERR in both journal modes and verifies SQLite rolls back cleanly to
+// the exact pre-step database bytes.
+//
+// Run from the repo root (requires the pinned CLI via go run ./cmd/course build-tools):
+//
+//	go run ./ch07-vfs-and-filesystem-io/experiments/7.3-go-vfs-shim
 package main
 
 import (
@@ -113,6 +124,9 @@ func cliPrelude(o sqlitex.Options) string {
 		f.PageSize, f.AutoVacuum, f.Encoding, f.JournalMode, f.ApplicationID, f.UserVersion, c.Synchronous, onOff(c.ForeignKeys), onOff(c.SecureDelete), c.CacheSize, c.WALAutocheckpoint, c.BusyTimeout.Milliseconds())
 }
 
+// goKey normalizes a recorded govfs.Call to the same comparison tuple produced
+// by cliKey for CLI -vfstrace output, including vfstrace's sync flag label
+// (vfstrace.c:453-458).
 func goKey(c govfs.Call) string {
 	switch c.Method {
 	case "xRead", "xWrite":
@@ -409,6 +423,10 @@ func errorText(err error) string {
 	return err.Error()
 }
 
+// applyThroughVFS runs one recipe step inside a single transaction through the
+// shim VFS with an optional armed fault, disarms and drains recorded calls, and
+// closes the connection before returning so the caller can safely reopen and
+// inspect the file.
 func applyThroughVFS(ctx context.Context, r recipe.Recipe, path string, step recipe.Step, v *govfs.VFS, fault *govfs.Fault) (stepErr error, where string, report govfs.FaultReport, calls []govfs.Call, closeErr error) {
 	o := r.SQLiteOptions()
 	o.VFS = vfsName

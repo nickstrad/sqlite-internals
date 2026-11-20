@@ -6,8 +6,11 @@ import (
 	"strings"
 )
 
+// FileKind identifies the SQLite file role passed to xOpen in the SQLITE_OPEN_*
+// flags (sqlite.h.in:584-622).
 type FileKind string
 
+// FileKind constants corresponding to SQLite's file-type open flags.
 const (
 	KindMainDB       FileKind = "main-db"
 	KindMainJournal  FileKind = "main-journal"
@@ -21,6 +24,8 @@ const (
 	KindNone         FileKind = ""
 )
 
+// SQLITE_OPEN_* bit flags forwarded through sqlite3OsOpen (sqlite.h.in:584-622,
+// masked by 0x1087f7f at os.c:229).
 const (
 	OpenReadOnly      = 0x00000001
 	OpenReadWrite     = 0x00000002
@@ -37,17 +42,21 @@ const (
 	OpenWAL           = 0x00080000
 )
 
+// SQLITE_SYNC_* flags passed to xSync (sqlite.h.in:731-733). Note that
+// SyncFull (0x03) shares bit 0x02 with SyncNormal (0x02).
 const (
 	SyncNormal   = 0x00002
 	SyncFull     = 0x00003
 	SyncDataOnly = 0x00010
 )
 
+// Primary SQLite result codes used for fault injection and success checks.
 const (
 	CodeOK    int32 = 0
 	CodeIOErr int32 = 10
 )
 
+// KindFromOpenFlags decodes the file-role bit from an xOpen flags word.
 func KindFromOpenFlags(flags int32) FileKind {
 	switch {
 	case flags&OpenMainDB != 0:
@@ -70,6 +79,7 @@ func KindFromOpenFlags(flags int32) FileKind {
 	return KindOther
 }
 
+// Call records one intercepted sqlite3_vfs or sqlite3_io_methods invocation.
 type Call struct {
 	Seq      int
 	Method   string
@@ -83,6 +93,7 @@ type Call struct {
 	Injected bool
 }
 
+// String formats a recorded Call into the single-line text used in evidence logs.
 func (c Call) String() string {
 	var args string
 	switch c.Method {
@@ -144,6 +155,9 @@ func (c Call) String() string {
 	return b.String()
 }
 
+// SyncFlagsString formats the actual SQLITE_SYNC_* flags passed to xSync,
+// distinguishing SyncNormal (0x2) from SyncFull (0x3) by masking with SyncFull
+// as unixSync does (os_unix.c:3916).
 func SyncFlagsString(flags int64) string {
 	var parts []string
 	switch flags & SyncFull {
@@ -164,6 +178,10 @@ func SyncFlagsString(flags int64) string {
 	return strings.Join(parts, "|")
 }
 
+// VFSTraceSyncLabel reproduces ext/misc/vfstrace.c's sync label logic
+// (vfstraceSync, vfstrace.c:453-458). Because SQLITE_SYNC_FULL is 0x03 and
+// SQLITE_SYNC_NORMAL is 0x02, testing flags&SyncFull != 0 prints "FULL" for
+// NORMAL syncs as well.
 func VFSTraceSyncLabel(flags int64) string {
 	var parts []string
 	if flags&SyncFull != 0 {
@@ -185,6 +203,7 @@ func VFSTraceSyncLabel(flags int64) string {
 
 var lockLevels = []string{"NONE", "SHARED", "RESERVED", "PENDING", "EXCLUSIVE"}
 
+// LockLevelString formats a SQLITE_LOCK_* level (0..4) as its symbolic name.
 func LockLevelString(level int64) string {
 	if level >= 0 && int(level) < len(lockLevels) {
 		return lockLevels[level]
@@ -192,6 +211,7 @@ func LockLevelString(level int64) string {
 	return fmt.Sprintf("%d", level)
 }
 
+// SQLITE_SHM_* lock flags passed to xShmLock.
 const (
 	ShmUnlock    = 1
 	ShmLock      = 2
@@ -199,6 +219,7 @@ const (
 	ShmExclusive = 8
 )
 
+// ShmLockFlagsString formats a SQLITE_SHM_* flag bitmask as pipe-joined names.
 func ShmLockFlagsString(flags int64) string {
 	var parts []string
 	if flags&ShmUnlock != 0 {
@@ -219,8 +240,10 @@ func ShmLockFlagsString(flags int64) string {
 	return strings.Join(parts, "|")
 }
 
+// Counts tallies recorded VFS calls keyed by method name.
 type Counts map[string]int
 
+// CountCalls aggregates calls by Method into a Counts map.
 func CountCalls(calls []Call) Counts {
 	counts := Counts{}
 	for _, c := range calls {
@@ -229,6 +252,7 @@ func CountCalls(calls []Call) Counts {
 	return counts
 }
 
+// String renders Counts in sorted "method=n" order separated by spaces.
 func (c Counts) String() string {
 	methods := make([]string, 0, len(c))
 	for m := range c {
@@ -242,6 +266,7 @@ func (c Counts) String() string {
 	return strings.Join(parts, " ")
 }
 
+// Filter returns a slice of calls for which keep returns true.
 func Filter(calls []Call, keep func(Call) bool) []Call {
 	var out []Call
 	for _, c := range calls {
@@ -252,6 +277,7 @@ func Filter(calls []Call, keep func(Call) bool) []Call {
 	return out
 }
 
+// Methods returns a Filter predicate matching any call whose Method is in names.
 func Methods(names ...string) func(Call) bool {
 	return func(c Call) bool {
 		for _, n := range names {
@@ -263,6 +289,7 @@ func Methods(names ...string) func(Call) bool {
 	}
 }
 
+// SQLITE_FCNTL_* opcode numbers from src/sqlite.h.in (1243-1286).
 var fileControlNames = map[int64]string{
 	1: "LOCKSTATE", 2: "GET_LOCKPROXYFILE", 3: "SET_LOCKPROXYFILE", 4: "LAST_ERRNO", 5: "SIZE_HINT",
 	6: "CHUNK_SIZE", 7: "FILE_POINTER", 8: "SYNC_OMITTED", 9: "WIN32_AV_RETRY", 10: "PERSIST_WAL",
@@ -276,6 +303,8 @@ var fileControlNames = map[int64]string{
 	44: "BLOCK_ON_CONNECT", 45: "FILESTAT",
 }
 
+// FileControlName returns the symbolic SQLITE_FCNTL_* name for op, or its
+// decimal number if unknown.
 func FileControlName(op int64) string {
 	if name, ok := fileControlNames[op]; ok {
 		return name

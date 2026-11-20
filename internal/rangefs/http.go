@@ -10,6 +10,8 @@ import (
 	"strings"
 )
 
+// HTTPSource implements Source against an HTTP server that supports HEAD and
+// byte-range GET requests (206 Partial Content).
 type HTTPSource struct {
 	BaseURL string
 	Client  *http.Client
@@ -26,6 +28,8 @@ func (h HTTPSource) url(name string) string {
 	return strings.TrimSuffix(h.BaseURL, "/") + "/" + (&url.URL{Path: name}).EscapedPath()
 }
 
+// Stat issues an HTTP HEAD request for name and returns its Content-Length,
+// mapping 404 Not Found to fs.ErrNotExist.
 func (h HTTPSource) Stat(ctx context.Context, name string) (int64, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, h.url(name), nil)
 	if err != nil {
@@ -49,6 +53,9 @@ func (h HTTPSource) Stat(ctx context.Context, name string) (int64, error) {
 	return resp.ContentLength, nil
 }
 
+// ReadRange issues an HTTP GET with an inclusive Range header for len(p) bytes
+// starting at offset, requiring a 206 Partial Content response so a server
+// ignoring Range cannot silently send the entire file.
 func (h HTTPSource) ReadRange(ctx context.Context, name string, offset int64, p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
