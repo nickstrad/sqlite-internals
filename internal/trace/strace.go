@@ -115,7 +115,10 @@ var (
 	exitedLine   = regexp.MustCompile(`^\+\+\+ exited with (\d+) \+\+\+$`)
 	killedLine   = regexp.MustCompile(`^\+\+\+ killed by (SIG\w+)(?: \(core dumped\))? \+\+\+$`)
 	resultPart   = regexp.MustCompile(`^(.*)\)\s+=\s+(.*)$`)
-	fdWithPath   = regexp.MustCompile(`^(-?\d+|AT_FDCWD)(?:<(.*)>)?$`)
+	fdWithPath   = regexp.MustCompile(`^(-?\d+|AT_FDCWD)(?:<(.*)>)?(?:\(deleted\))?$`)
+	interrupted  = regexp.MustCompile(`^\?\s+(E[A-Z0-9]+)`)
+	iovecLen     = regexp.MustCompile(`iov_len=(\d+)`)
+	quotedString = regexp.MustCompile(`"(?:[^"\\]|\\.)*"`)
 	errnoResult  = regexp.MustCompile(`^-1 (E[A-Z0-9]+)`)
 	iovecBase    = regexp.MustCompile(`iov_base=("(?:[^"\\]|\\.)*")(\.\.\.)?`)
 	lockStruct   = regexp.MustCompile(`l_type=(\w+), l_whence=(\w+), l_start=(-?\d+), l_len=(-?\d+)`)
@@ -132,14 +135,14 @@ type pendingCall struct {
 type straceParser struct {
 	log     StraceLog
 	pending map[int]pendingCall
-	fdPaths map[int]map[int]string
+	fdPaths map[int]string
 }
 
 // ParseStrace reads strace output produced with "-f" (pid-prefixed lines,
 // optionally with "-y" path annotations), rejoining split unfinished/resumed
 // calls at their entry index and marking calls interrupted by a kill as Unfinished.
 func ParseStrace(r io.Reader) (*StraceLog, error) {
-	parser := &straceParser{pending: map[int]pendingCall{}, fdPaths: map[int]map[int]string{}}
+	parser := &straceParser{pending: map[int]pendingCall{}, fdPaths: map[int]string{}}
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 1<<20), 16<<20)
 	for scanner.Scan() {
@@ -194,13 +197,7 @@ func (p *straceParser) line(raw string) error {
 		if !ok {
 			return nil
 		}
-		joined := pending.args
-		if args != "" {
-			if joined != "" && !strings.HasSuffix(joined, ", ") {
-				joined += ", "
-			}
-			joined += strings.TrimPrefix(args, ", ")
-		}
+		joined := joinSplitArgs(pending.args, args)
 		call := &p.log.Calls[pending.index]
 		call.Raw += " | " + raw
 		p.fill(call, joined, result)
@@ -228,6 +225,18 @@ func (p *straceParser) line(raw string) error {
 	return nil
 }
 
+func joinSplitArgs(before, after string) string {
+	before = strings.TrimRight(before, ", ")
+	after = strings.TrimLeft(after, ", ")
+	switch {
+	case before == "":
+		return after
+	case after == "":
+		return before
+	}
+	return before + ", " + after
+}
+
 func (p *straceParser) finishKilled(pid int) {
 	if pending, ok := p.pending[pid]; ok {
 		p.log.Calls[pending.index].Unfinished = true
@@ -250,6 +259,11 @@ func (p *straceParser) fill(call *Syscall, args, result string) {
 		call.Unfinished = true
 		return
 	}
+	if m := interrupted.FindStringSubmatch(result); m != nil {
+		call.Result = -1
+		call.Errno = m[1]
+		return
+	}
 	if m := errnoResult.FindStringSubmatch(result); m != nil {
 		call.Result = -1
 		call.Errno = m[1]
@@ -269,38 +283,25 @@ func (p *straceParser) fill(call *Syscall, args, result string) {
 	case "openat", "open":
 		if call.Result >= 0 {
 			call.FD = int(call.Result)
-			p.setFD(call.PID, call.FD, call.Path)
+			p.setFD(call.FD, call.Path)
 		}
 	case "close":
 		if call.Result == 0 && call.FD >= 0 {
-			p.clearFD(call.PID, call.FD)
+			p.clearFD(call.FD)
 		}
 	}
 }
 
-func (p *straceParser) setFD(pid, fd int, path string) {
-	if p.fdPaths[pid] == nil {
-		p.fdPaths[pid] = map[int]string{}
-	}
-	p.fdPaths[pid][fd] = path
+func (p *straceParser) setFD(fd int, path string) {
+	p.fdPaths[fd] = path
 }
 
-func (p *straceParser) clearFD(pid, fd int) {
-	delete(p.fdPaths[pid], fd)
+func (p *straceParser) clearFD(fd int) {
+	delete(p.fdPaths, fd)
 }
 
-// pathForFD falls back across sibling threads' tables when -y annotations are
-// absent because threads in one process share file descriptors.
-func (p *straceParser) pathForFD(pid, fd int) string {
-	if path, ok := p.fdPaths[pid][fd]; ok {
-		return path
-	}
-	for _, table := range p.fdPaths {
-		if path, ok := table[fd]; ok {
-			return path
-		}
-	}
-	return ""
+func (p *straceParser) pathForFD(fd int) string {
+	return p.fdPaths[fd]
 }
 
 func (p *straceParser) parseFD(call *Syscall, arg string) {
@@ -315,7 +316,7 @@ func (p *straceParser) parseFD(call *Syscall, arg string) {
 	if m[2] != "" {
 		call.Path = m[2]
 	} else {
-		call.Path = p.pathForFD(call.PID, call.FD)
+		call.Path = p.pathForFD(call.FD)
 	}
 }
 
@@ -390,6 +391,13 @@ func (p *straceParser) fillArgs(call *Syscall, argText string) {
 			call.Truncated = true
 		}
 		call.Data = data.String()
+		if lengths := iovecLen.FindAllStringSubmatch(quotedString.ReplaceAllString(at(1), `""`), -1); lengths != nil {
+			call.Length = 0
+			for _, m := range lengths {
+				n, _ := strconv.ParseInt(m[1], 10, 64)
+				call.Length += n
+			}
+		}
 	case "ftruncate":
 		p.parseFD(call, at(0))
 		call.Length = parseInt(at(1))

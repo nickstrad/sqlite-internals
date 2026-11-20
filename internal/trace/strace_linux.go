@@ -99,7 +99,7 @@ func Run(ctx context.Context, options Options) (*Result, error) {
 	result.Killed = result.Log.KilledBy()
 	permissionProblem := strings.Contains(result.Stderr, "ptrace") || strings.Contains(result.Stderr, "Operation not permitted")
 	if len(result.Log.Calls) == 0 && permissionProblem {
-		return result, fmt.Errorf("strace could not trace (needs ptrace; in Docker add cap SYS_PTRACE): %s", strings.TrimSpace(result.Stderr))
+		return result, fmt.Errorf("%w: %s", ErrPtraceDenied, strings.TrimSpace(result.Stderr))
 	}
 	return result, nil
 }

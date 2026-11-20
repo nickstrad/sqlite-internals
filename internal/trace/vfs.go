@@ -31,7 +31,7 @@ type VFSCall struct {
 }
 
 var (
-	vfsCallLine = regexp.MustCompile(`^(\w+)\.(x\w+)\((.*)\)(?: -> (.*))?$`)
+	vfsCallHead = regexp.MustCompile(`^(\w+)\.(x\w+)\((.*)$`)
 	vfsNumber   = regexp.MustCompile(`^(\w+)=(-?\d+)$`)
 	vfsShmOfst  = regexp.MustCompile(`^ofst=(\d+)\((\w+)\)$`)
 )
@@ -58,18 +58,22 @@ func (c VFSCall) String() string {
 // (or without " -> ..." for void methods such as xShmBarrier and xRandomness).
 func ParseVFSLine(line string) (VFSCall, bool) {
 	line = strings.TrimRight(line, "\r\n")
-	m := vfsCallLine.FindStringSubmatch(line)
+	m := vfsCallHead.FindStringSubmatch(line)
 	if m == nil {
 		return VFSCall{}, false
 	}
+	argText, resultText, ok := splitVFSResult(m[3])
+	if !ok {
+		return VFSCall{}, false
+	}
 	call := VFSCall{Method: m[2], Amount: -1, Offset: -1, Raw: line, Complete: true}
-	call.Args = SplitArgs(m[3])
+	call.Args = SplitArgs(argText)
 	if len(call.Args) > 0 {
 		first, _ := Unquote(call.Args[0])
 		call.File = first
 	}
-	if m[4] != "" {
-		result, detail, _ := strings.Cut(m[4], ",")
+	if resultText != "" {
+		result, detail, _ := strings.Cut(resultText, ",")
 		call.Result = strings.TrimSpace(result)
 		call.Detail = strings.TrimSpace(detail)
 	}
@@ -109,6 +113,16 @@ func ParseVFSLine(line string) (VFSCall, bool) {
 		}
 	}
 	return call, true
+}
+
+func splitVFSResult(rest string) (string, string, bool) {
+	if args, result, found := strings.Cut(rest, ") -> "); found {
+		return args, result, true
+	}
+	if args, found := strings.CutSuffix(rest, ")"); found {
+		return args, "", true
+	}
+	return "", "", false
 }
 
 // VFSTrace separates the interleaved stdout of "sqlite3 -vfstrace" into VFS

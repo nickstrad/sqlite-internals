@@ -4,6 +4,7 @@ package trace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -69,7 +70,7 @@ func TestRunGoProcessUnderStrace(t *testing.T) {
 		Env:     append(os.Environ(), helperEnv+"="+filepath.Join(dir, "g.db")),
 	})
 	if err != nil {
-		t.Skipf("strace unusable here: %v", err)
+		skipIfPtraceDenied(t, err)
 	}
 	if result.ExitCode != 0 || result.Killed != "" {
 		t.Fatalf("exit %d killed %q stderr %s", result.ExitCode, result.Killed, result.Stderr)
@@ -104,7 +105,7 @@ func TestKillAtFirstSync(t *testing.T) {
 		KillAt:   &KillAt{Syscalls: []string{"fsync", "fdatasync"}, When: 1},
 	})
 	if err != nil {
-		t.Skipf("strace unusable here: %v", err)
+		skipIfPtraceDenied(t, err)
 	}
 	if result.Killed != "SIGKILL" || result.ExitCode != -1 {
 		t.Fatalf("killed %q exit %d", result.Killed, result.ExitCode)
@@ -138,7 +139,7 @@ func TestRunCLIMergedLive(t *testing.T) {
 	dir := t.TempDir()
 	merged, _, err := RunCLIMerged(ctx, cli, CLITrace{Dir: dir, DB: "m.db", SQL: "PRAGMA journal_mode=wal; CREATE TABLE t(x); INSERT INTO t VALUES(1);"}, Options{})
 	if err != nil {
-		t.Skipf("strace unusable here: %v", err)
+		skipIfPtraceDenied(t, err)
 	}
 	foundSync := false
 	for i, event := range merged.Events {
@@ -153,4 +154,12 @@ func TestRunCLIMergedLive(t *testing.T) {
 	if !foundSync {
 		t.Fatal("no xSync of the WAL in the merged stream")
 	}
+}
+
+func skipIfPtraceDenied(t *testing.T, err error) {
+	t.Helper()
+	if errors.Is(err, ErrPtraceDenied) {
+		t.Skipf("strace unusable here: %v", err)
+	}
+	t.Fatal(err)
 }

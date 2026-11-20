@@ -62,6 +62,16 @@ func (e Event) String() string {
 	return "?"
 }
 
+const vfsLinePrefix = "trace.x"
+
+type stdoutLineKind int
+
+const (
+	lineUndecided stdoutLineKind = iota
+	lineVFS
+	lineOther
+)
+
 // MergeStdoutVFS reconstructs one ordered stream from a strace log of
 // "sqlite3 -vfstrace". Because vfstrace flushes "trace.xName(args)" to stdout
 // before calling the real VFS method (ext/misc/vfstrace.c:420, shell.c.in:12911)
@@ -72,32 +82,52 @@ func MergeStdoutVFS(log *StraceLog, stdoutFD int, includeSyscall func(Syscall) b
 	merged := &Merged{Log: log}
 	var line strings.Builder
 	openEvent := -1
-	lineStartsVFS := false
+	lineKind := lineUndecided
+	classify := func() {
+		if lineKind != lineUndecided {
+			return
+		}
+		text := line.String()
+		if len(text) < len(vfsLinePrefix) && strings.HasPrefix(vfsLinePrefix, text) {
+			return
+		}
+		if strings.HasPrefix(text, vfsLinePrefix) {
+			lineKind = lineVFS
+			merged.Events = append(merged.Events, Event{Kind: EventVFS, VFS: &VFSCall{Complete: false}, Enclosed: -1})
+			openEvent = len(merged.Events) - 1
+			return
+		}
+		lineKind = lineOther
+	}
 	for i := range log.Calls {
 		call := &log.Calls[i]
 		if (call.Name == "write" || call.Name == "writev") && call.FD == stdoutFD {
+			if !call.Succeeded() {
+				continue
+			}
 			if call.Truncated {
 				return nil, fmt.Errorf("strace truncated a write to fd %d; raise the string limit: %s", stdoutFD, call.Raw)
 			}
 			data := call.Data
+			if call.Result < int64(len(data)) {
+				data = data[:call.Result]
+			}
 			for data != "" {
-				if line.Len() == 0 {
-					lineStartsVFS = strings.HasPrefix(data, "trace.x")
-					if lineStartsVFS {
-						merged.Events = append(merged.Events, Event{Kind: EventVFS, VFS: &VFSCall{Complete: false}, Enclosed: -1})
-						openEvent = len(merged.Events) - 1
-					}
-				}
 				newline := strings.IndexByte(data, '\n')
 				if newline < 0 {
 					line.WriteString(data)
+					classify()
 					break
 				}
 				line.WriteString(data[:newline])
 				data = data[newline+1:]
+				classify()
+				if lineKind == lineUndecided {
+					lineKind = lineOther
+				}
 				text := line.String()
 				line.Reset()
-				if lineStartsVFS {
+				if lineKind == lineVFS {
 					parsed, ok := ParseVFSLine(text)
 					if !ok {
 						parsed = VFSCall{Raw: text, Method: "?"}
@@ -107,6 +137,7 @@ func MergeStdoutVFS(log *StraceLog, stdoutFD int, includeSyscall func(Syscall) b
 				} else if !strings.HasPrefix(text, "trace.") {
 					merged.Events = append(merged.Events, Event{Kind: EventOutput, Output: text, Enclosed: -1})
 				}
+				lineKind = lineUndecided
 			}
 			continue
 		}

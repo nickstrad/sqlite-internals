@@ -11,6 +11,8 @@ import (
 // ErrLinuxOnly is returned by strace runners on non-Linux operating systems.
 var ErrLinuxOnly = errors.New("strace tracing needs Linux")
 
+var ErrPtraceDenied = errors.New("strace could not trace (needs ptrace; in Docker add cap SYS_PTRACE)")
+
 // LinuxOnlyMessage formats the standard skip line printed by strace-based
 // experiments when run outside Linux. cmd/course check evidence recognizes the
 // "LINUX-ONLY:" prefix on non-Linux hosts.
