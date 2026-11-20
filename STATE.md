@@ -48,6 +48,7 @@ Chunk status (build → Neon prose → Neon review → repair → re-review → 
 | --- | --- | --- | --- | --- |
 | 0 foundation | done | Neon FAIL → repair → PASS | 38 held / 0 broken | merged cf58cb8 |
 | 1 chapter 1 | done | Neon FAIL → one Opus repair → PASS | 48 held / 0 broken after repair (run 1: 11 broken; claims narrowed) | merged 2dcf743 |
+| 2 chapter 2 | done | Neon FAIL → one Opus repair → PASS | 36 held / 0 broken after repair (run 1: 14 broken) | merged 68afd03 |
 | 2, 3, 4, 5, 7, 6, 8, 9, 10a, 10b, publishing | not started | | | |
 
 In progress: Opus builds of chapter 2 (`chunk/ch02`) and chapter 7 (`chunk/ch07`), worktrees
