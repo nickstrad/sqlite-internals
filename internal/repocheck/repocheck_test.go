@@ -383,12 +383,12 @@ func TestCheckProse(t *testing.T) {
 	head := repo.commit("Claude Opus 5.5", "inline refresh", map[string]string{
 		"ch01-intro/ch01-intro.md": strings.Replace(chapter, "func main() {}\n```", "func main() {\n}\n```", 1),
 	})
-	problems, checked, err := CheckProse(repo.dir, base, head, ProseOptions{})
+	problems, counts, err := CheckProse(repo.dir, base, head, ProseOptions{})
 	if err != nil || len(problems) != 0 {
 		t.Fatalf("clean prose: %v %v", problems, err)
 	}
-	if checked < 10 {
-		t.Fatalf("only %d prose lines checked", checked)
+	if counts.InRange < 10 || counts.BeforeRange != 1 {
+		t.Fatalf("counts %+v", counts)
 	}
 	bad := repo.commit("Claude Opus 5.5", "opus writes prose", map[string]string{
 		"pkg/demo.go":              strings.Replace(codeCommented, "// Then print it.", "// Then print it, says Opus.", 1),

@@ -116,12 +116,12 @@ func runCheck(ctx context.Context, root string, args []string) error {
 		if err != nil {
 			return usageError("%v", err)
 		}
-		problems, count, err := repocheck.CheckProse(root, base, head, repocheck.ProseOptions{Exclude: excludes})
+		problems, counts, err := repocheck.CheckProse(root, base, head, repocheck.ProseOptions{Exclude: excludes})
 		if err != nil {
 			r.err("check prose", err)
 			break
 		}
-		r.result("check prose "+flags.Arg(0), problems, fmt.Sprintf("%d prose line(s) introduced in range, all by %s", count, repocheck.ProseAuthorPrefix))
+		r.result("check prose "+flags.Arg(0), problems, fmt.Sprintf("%d prose line(s) introduced in range, all by %s; %d line(s) predate %s and were not checked", counts.InRange, repocheck.ProseAuthorPrefix, counts.BeforeRange, base))
 	case "evidence":
 		only, extra := chapterArg(rest)
 		flags := flag.NewFlagSet("check evidence", flag.ContinueOnError)

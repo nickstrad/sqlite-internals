@@ -130,19 +130,24 @@ func ParseRange(spec string) (string, string, error) {
 	return base, head, nil
 }
 
-func CheckProse(root, base, head string, options ProseOptions) ([]Problem, int, error) {
+type ProseCounts struct {
+	InRange     int
+	BeforeRange int
+}
+
+func CheckProse(root, base, head string, options ProseOptions) ([]Problem, ProseCounts, error) {
 	prefix := options.AuthorPrefix
 	if prefix == "" {
 		prefix = ProseAuthorPrefix
 	}
 	exclude := append([]string{"kb"}, options.Exclude...)
+	var problems []Problem
+	var counts ProseCounts
 	files, err := FilesAtRevision(root, head)
 	if err != nil {
-		return nil, 0, err
+		return nil, counts, err
 	}
 	sort.Strings(files)
-	var problems []Problem
-	checked := 0
 	for _, name := range files {
 		if hasPathPrefix(name, exclude) {
 			continue
@@ -153,7 +158,7 @@ func CheckProse(root, base, head string, options ProseOptions) ([]Problem, int, 
 		}
 		src, err := FileAtRevision(root, head, name)
 		if err != nil {
-			return nil, 0, err
+			return nil, counts, err
 		}
 		var proseLines map[int]bool
 		if isGo {
@@ -170,18 +175,22 @@ func CheckProse(root, base, head string, options ProseOptions) ([]Problem, int, 
 		}
 		blame, err := Git(root, "blame", "--porcelain", "-w", "-M", "-C", base+".."+head, "--", name)
 		if err != nil {
-			return nil, 0, err
+			return nil, counts, err
 		}
 		blamed, err := ParseBlamePorcelain(blame)
 		if err != nil {
-			return nil, 0, err
+			return nil, counts, err
 		}
 		for _, line := range blamed {
 			if !proseLines[line.Line] {
 				continue
 			}
-			checked++
-			if line.Boundary || strings.HasPrefix(line.Author, prefix) {
+			if line.Boundary {
+				counts.BeforeRange++
+				continue
+			}
+			counts.InRange++
+			if strings.HasPrefix(line.Author, prefix) {
 				continue
 			}
 			problems = append(problems, Problem{
@@ -190,5 +199,5 @@ func CheckProse(root, base, head string, options ProseOptions) ([]Problem, int, 
 			})
 		}
 	}
-	return problems, checked, nil
+	return problems, counts, nil
 }
