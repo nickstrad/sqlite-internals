@@ -1,0 +1,64 @@
+sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
+INFO: work dir /root/Software/sqlite-internals-work/ch00/_work/ch00-smoke
+file settings: page_size=4096 auto_vacuum=NONE encoding=UTF-8 application_id=1397836120 user_version=0 journal_mode=wal
+connection settings: synchronous=FULL foreign_keys=ON secure_delete=OFF cache_size=-2000 wal_autocheckpoint=0 busy_timeout=5000ms
+check ok: the database is in WAL mode
+sqlite3 CLI sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
+baseline insert under strace: exit=0, 33 file syscalls on the database files:
+   open smoke.db O_RDWR|O_CREAT|O_LARGEFILE|O_NOFOLLOW|O_CLOEXEC = fd
+   pread64 smoke.db off=0 len=100 = 100
+   pread64 smoke.db off=0 len=4096 = 4096
+   open smoke.db-wal O_RDWR|O_CREAT|O_LARGEFILE|O_NOFOLLOW|O_CLOEXEC = fd
+   open smoke.db-shm O_RDWR|O_CREAT|O_LARGEFILE|O_NOFOLLOW|O_CLOEXEC = fd
+   ftruncate smoke.db-shm len=3 = 0
+   pwrite64 smoke.db-shm off=4095 len=1 = 1
+   pwrite64 smoke.db-shm off=8191 len=1 = 1
+   pwrite64 smoke.db-shm off=12287 len=1 = 1
+   pwrite64 smoke.db-shm off=16383 len=1 = 1
+   pwrite64 smoke.db-shm off=20479 len=1 = 1
+   pwrite64 smoke.db-shm off=24575 len=1 = 1
+   pwrite64 smoke.db-shm off=28671 len=1 = 1
+   pwrite64 smoke.db-shm off=32767 len=1 = 1
+   pread64 smoke.db off=0 len=4096 = 4096
+   pread64 smoke.db off=4096 len=4096 = 4096
+   pwrite64 smoke.db-wal off=0 len=32 = 32
+   fsync smoke.db-wal = 0
+   open . O_RDONLY|O_LARGEFILE|O_CLOEXEC = fd
+   fsync . = 0
+   close . = 0
+   pwrite64 smoke.db-wal off=32 len=24 = 24
+   pwrite64 smoke.db-wal off=56 len=4096 = 4096
+   fsync smoke.db-wal = 0
+   fsync smoke.db-wal = 0
+   pread64 smoke.db-wal off=56 len=4096 = 4096
+   pwrite64 smoke.db off=4096 len=4096 = 4096
+   ftruncate smoke.db len=8192 = 0
+   fsync smoke.db = 0
+   unlink smoke.db-shm = 0
+   close smoke.db-wal = 0
+   unlink smoke.db-wal = 0
+   close smoke.db = 0
+baseline sync calls: 5: fsync(smoke.db-wal) fsync(.) fsync(smoke.db-wal) fsync(smoke.db-wal) fsync(smoke.db)
+check ok: baseline: rows after the insert = 2 (want 2), integrity ok
+kill at the first sync: process killed by SIGKILL; last sync call: fsync smoke.db-wal = ? (process killed)
+check ok: the child was killed on entry to its first sync call
+check ok: the child never reported the commit
+WAL writes before the kill: 1
+check ok: after the kill and reopen: rows = 1 (want 1, the insert is lost), integrity ok
+INFO: CLI used for the twin preview: /root/Software/sqlite-internals-work/ch00/_tools/bin/sqlite3
+twin preview, same insert by the C CLI: sync calls: fdatasync(smoke.db-wal) fdatasync(.) fdatasync(smoke.db-wal) fdatasync(smoke.db-wal) fdatasync(smoke.db)
+twin preview, Go writes:  smoke.db-shm@4095+1 smoke.db-shm@8191+1 smoke.db-shm@12287+1 smoke.db-shm@16383+1 smoke.db-shm@20479+1 smoke.db-shm@24575+1 smoke.db-shm@28671+1 smoke.db-shm@32767+1 smoke.db-wal@0+32 smoke.db-wal@32+24 smoke.db-wal@56+4096 smoke.db@4096+4096
+twin preview, CLI writes: smoke.db-shm@4095+1 smoke.db-shm@8191+1 smoke.db-shm@12287+1 smoke.db-shm@16383+1 smoke.db-shm@20479+1 smoke.db-shm@24575+1 smoke.db-shm@28671+1 smoke.db-shm@32767+1 smoke.db-wal@0+32 smoke.db-wal@32+24 smoke.db-wal@56+4096 smoke.db@4096+4096
+check ok: the Go driver and the C CLI write the same byte ranges for this insert
+check ok: the Go driver and the C CLI sync the same files in the same order (sync call name ignored)
+CLI -vfstrace of SELECT count(*): 57 VFS calls (xAccess=2 xClose=2 xDelete=1 xDeviceCharacteristics=5 xFileControl=8 xFileSize=4 xFullPathname=1 xLock=2 xOpen=2 xRead=4 xShmBarrier=6 xShmLock=16 xShmMap=2 xShmUnmap=1 xUnlock=1); output ["2"]
+   xOpen(smoke.db,flags=0x106) -> SQLITE_OK, outFlags=0x106
+   xRead(smoke.db,n=100,ofst=0) -> SQLITE_OK
+   xRead(smoke.db,n=4096,ofst=0) -> SQLITE_OK
+   xOpen(smoke.db-wal,flags=0x80006) -> SQLITE_OK, outFlags=0x80006
+   xShmMap(smoke.db,iRegion=0,szRegion=32768,isWrite=0,*) -> SQLITE_OK
+   xShmMap(smoke.db,iRegion=0,szRegion=32768,isWrite=2,*) -> SQLITE_OK
+   xRead(smoke.db,n=4096,ofst=0) -> SQLITE_OK
+   xRead(smoke.db,n=4096,ofst=4096) -> SQLITE_OK
+check ok: the CLI reads the rows the Go side left
+SMOKE OK
