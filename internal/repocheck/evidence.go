@@ -95,6 +95,10 @@ func (o EvidenceOutcome) Passed() bool {
 // comparing stdout (minus INFO: lines) against experiment.Evidence.
 func CheckEvidence(ctx context.Context, root string, experiment Experiment, runs int) EvidenceOutcome {
 	outcome := EvidenceOutcome{Experiment: experiment}
+	if runs < 1 {
+		outcome.Status, outcome.Detail = "ERROR", fmt.Sprintf("runs must be at least 1, got %d", runs)
+		return outcome
+	}
 	expected, err := os.ReadFile(experiment.Evidence)
 	if err != nil {
 		outcome.Status, outcome.Detail = "MISSING", "no evidence file "+relativeTo(root, experiment.Evidence)

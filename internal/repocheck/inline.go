@@ -13,6 +13,22 @@ var includeMarker = regexp.MustCompile(`^<!-- include: (\S+)(?: lines=(\d+)-(\d+
 
 var fenceOpen = regexp.MustCompile("^(`{3,})(\\S*)\\s*$")
 
+var outerFenceOpen = regexp.MustCompile("^(`{3,}|~{3,})")
+
+func outerFenceEnd(lines []string, start int) int {
+	open := outerFenceOpen.FindString(lines[start])
+	if open == "" {
+		return -1
+	}
+	for j := start + 1; j < len(lines); j++ {
+		closing := strings.TrimRight(lines[j], " \t\r\n")
+		if len(closing) >= len(open) && strings.Trim(closing, open[:1]) == "" {
+			return j
+		}
+	}
+	return len(lines) - 1
+}
+
 // Include describes one "<!-- include: rel/path [lines=A-B] -->" marker and
 // the fenced code block immediately following it in a chapter markdown file.
 type Include struct {
@@ -100,6 +116,10 @@ func FindIncludeBlocks(text string) []Include {
 	lines := splitKeepingNewlines(text)
 	var blocks []Include
 	for i := 0; i < len(lines); i++ {
+		if end := outerFenceEnd(lines, i); end >= 0 {
+			i = end
+			continue
+		}
 		m := includeMarker.FindStringSubmatch(strings.TrimRight(lines[i], "\r\n"))
 		if m == nil || i+1 >= len(lines) {
 			continue
@@ -128,6 +148,11 @@ func ProcessInline(markdownPath string, text string) InlineResult {
 	var result InlineResult
 	var out strings.Builder
 	for i := 0; i < len(lines); i++ {
+		if end := outerFenceEnd(lines, i); end >= 0 {
+			out.WriteString(strings.Join(lines[i:end+1], ""))
+			i = end
+			continue
+		}
 		line := lines[i]
 		out.WriteString(line)
 		m := includeMarker.FindStringSubmatch(strings.TrimRight(line, "\r\n"))

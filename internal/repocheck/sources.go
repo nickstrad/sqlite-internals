@@ -67,7 +67,9 @@ func CheckSources(chapter Chapter, tree string) ([]Problem, int, error) {
 	sourcesFile := filepath.Join(chapter.Path, "SOURCES.sha256")
 	listed := map[string]bool{}
 	data, err := os.ReadFile(sourcesFile)
-	if err != nil && !os.IsNotExist(err) {
+	if os.IsNotExist(err) {
+		problems = append(problems, Problem{chapter.Dir + "/SOURCES.sha256", "missing SOURCES.sha256 (every chapter lists its copied SQLite files, even when there are none)"})
+	} else if err != nil {
 		return nil, 0, err
 	}
 	entries, parseProblems := ParseSources(string(data))

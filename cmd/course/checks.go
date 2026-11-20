@@ -53,16 +53,16 @@ func runInline(root string, args []string) error {
 	}
 	var r report
 	for _, name := range flags.Args() {
-		inlineOne(&r, name, *check)
+		inlineOne(&r, name, name, *check)
 	}
 	return r.exit()
 }
 
-func inlineOne(r *report, name string, check bool) {
+func inlineOne(r *report, name, display string, check bool) {
 	result, err := repocheck.InlineFile(name, check)
-	label := "inline " + name
+	label := "inline " + display
 	if check {
-		label = "inline -check " + name
+		label = "inline -check " + display
 	}
 	if err != nil {
 		r.err(label, err)
@@ -135,6 +135,9 @@ func runCheck(ctx context.Context, root string, args []string) error {
 		if err := flags.Parse(extra); err != nil {
 			return exitError{2}
 		}
+		if *runs < 1 {
+			return usageError("check evidence -runs must be at least 1, got %d", *runs)
+		}
 		if only == "" && flags.NArg() == 1 {
 			only = flags.Arg(0)
 		}
@@ -160,6 +163,9 @@ func runCheck(ctx context.Context, root string, args []string) error {
 		if err := flags.Parse(rest); err != nil {
 			return exitError{2}
 		}
+		if *runs < 1 {
+			return usageError("check all -runs must be at least 1, got %d", *runs)
+		}
 		checkTree(&r, root, "sources", "")
 		checkTree(&r, root, "spans", "")
 		chapters, err := repocheck.Chapters(root, "")
@@ -168,7 +174,7 @@ func runCheck(ctx context.Context, root string, args []string) error {
 		}
 		for _, chapter := range chapters {
 			if _, err := os.Stat(chapter.Markdown()); err == nil {
-				inlineOne(&r, relative(root, chapter.Markdown()), true)
+				inlineOne(&r, chapter.Markdown(), relative(root, chapter.Markdown()), true)
 			}
 		}
 		if !*skipEvidence {

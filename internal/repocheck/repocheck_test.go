@@ -222,6 +222,13 @@ func TestIsDirective(t *testing.T) {
 		"// TODO: something":   false,
 		"//":                   false,
 		"//http://example.com": false,
+		"//note:unauthorized prose disguised with a colon": false,
+		"//todo:fix this later":                            false,
+		"//go:this is prose":                               false,
+		"//go:noinline":                                    true,
+		"//go:linkname local remote":                       true,
+		"//nolint:errcheck,gosec":                          true,
+		"//nolint:errcheck because the error is ignored":   false,
 	} {
 		if got := IsDirective(comment); got != want {
 			t.Errorf("IsDirective(%q) = %v, want %v", comment, got, want)
