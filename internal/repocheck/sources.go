@@ -1,0 +1,127 @@
+package repocheck
+
+import (
+	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"path"
+	"path/filepath"
+	"regexp"
+	"strings"
+)
+
+type SourceEntry struct {
+	SHA256 string
+	Path   string
+	Line   int
+}
+
+var sourceLine = regexp.MustCompile(`^([0-9a-f]{64}) [ *]?(\S+)$`)
+
+func ParseSources(text string) ([]SourceEntry, []Problem) {
+	var entries []SourceEntry
+	var problems []Problem
+	seen := map[string]bool{}
+	for i, line := range strings.Split(text, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		m := sourceLine.FindStringSubmatch(line)
+		if m == nil {
+			problems = append(problems, Problem{fmt.Sprintf("SOURCES.sha256:%d", i+1), fmt.Sprintf("not '<sha256>  <path>': %q", line)})
+			continue
+		}
+		base := path.Base(m[2])
+		if seen[base] {
+			problems = append(problems, Problem{fmt.Sprintf("SOURCES.sha256:%d", i+1), "two entries copy to the same file name " + base})
+		}
+		seen[base] = true
+		entries = append(entries, SourceEntry{SHA256: m[1], Path: m[2], Line: i + 1})
+	}
+	return entries, problems
+}
+
+func fileSHA256(name string) (string, error) {
+	data, err := os.ReadFile(name)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+var chapterRootAllowed = map[string]bool{"SOURCES.sha256": true, "SPANS.txt": true, "answers.md": true}
+
+func CheckSources(chapter Chapter, tree string) ([]Problem, int, error) {
+	var problems []Problem
+	sourcesFile := filepath.Join(chapter.Path, "SOURCES.sha256")
+	listed := map[string]bool{}
+	data, err := os.ReadFile(sourcesFile)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, 0, err
+	}
+	entries, parseProblems := ParseSources(string(data))
+	for _, p := range parseProblems {
+		p.Where = chapter.Dir + "/" + p.Where
+		problems = append(problems, p)
+	}
+	for _, entry := range entries {
+		where := fmt.Sprintf("%s/SOURCES.sha256:%d", chapter.Dir, entry.Line)
+		base := path.Base(entry.Path)
+		listed[base] = true
+		pinned, err := fileSHA256(filepath.Join(tree, filepath.FromSlash(entry.Path)))
+		if err != nil {
+			problems = append(problems, Problem{where, fmt.Sprintf("%s is not in the pinned tree: %v", entry.Path, err)})
+			continue
+		}
+		if pinned != entry.SHA256 {
+			problems = append(problems, Problem{where, fmt.Sprintf("%s: listed sha256 %s, pinned tree has %s", entry.Path, entry.SHA256, pinned)})
+		}
+		copied, err := fileSHA256(filepath.Join(chapter.Path, base))
+		if err != nil {
+			problems = append(problems, Problem{where, fmt.Sprintf("copy %s missing from the chapter directory", base)})
+			continue
+		}
+		if copied != pinned {
+			problems = append(problems, Problem{where, fmt.Sprintf("copy %s differs from the pinned %s", base, entry.Path)})
+		}
+	}
+	rootEntries, err := os.ReadDir(chapter.Path)
+	if err != nil {
+		return nil, 0, err
+	}
+	for _, entry := range rootEntries {
+		name := entry.Name()
+		if entry.IsDir() || listed[name] || chapterRootAllowed[name] || name == chapter.Dir+".md" {
+			continue
+		}
+		if strings.HasSuffix(name, ".go") {
+			problems = append(problems, Problem{chapter.Dir + "/" + name, "a chapter root holds no Go files (it would make the copied C a Go package)"})
+			continue
+		}
+		problems = append(problems, Problem{chapter.Dir + "/" + name, "file at the chapter root is not listed in SOURCES.sha256"})
+	}
+	return problems, len(entries), nil
+}
+
+func SourcesLine(sha, treePath string) string {
+	return sha + "  " + treePath
+}
+
+func ReadLines(name string) ([]string, error) {
+	file, err := os.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	var lines []string
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 1<<20), 16<<20)
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+	return lines, scanner.Err()
+}
