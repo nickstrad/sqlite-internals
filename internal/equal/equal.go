@@ -22,7 +22,9 @@ type Level int
 // Equality levels supported by this package.
 const (
 	// E1Bytes checks exact byte-for-byte equality via SHA-256 and locates the first differing page.
-	E1Bytes Level = 1
+	E1Bytes   Level = 1
+	E2Pages   Level = 2
+	E3Logical Level = 3
 )
 
 // String returns the human-readable label for equality level l.
@@ -30,6 +32,10 @@ func (l Level) String() string {
 	switch l {
 	case E1Bytes:
 		return "E1 bytes"
+	case E2Pages:
+		return "E2 pages"
+	case E3Logical:
+		return "E3 logical"
 	}
 	return fmt.Sprintf("E%d", int(l))
 }
@@ -46,10 +52,15 @@ type Result struct {
 	PageSize           int
 	FirstDifferingPage int
 	DifferingPages     int
+	Ignored            []ByteRange
+	IgnoredDiffering   []int
 }
 
 // String formats r as a single-line equality verdict for experiment output.
 func (r Result) String() string {
+	if r.Equal && len(r.IgnoredDiffering) > 0 {
+		return fmt.Sprintf("%s: equal ignoring header bytes %s (bytes differ only at %s)", r.Level, FormatRanges(r.Ignored), formatOffsets(r.IgnoredDiffering))
+	}
 	if r.Equal {
 		return fmt.Sprintf("%s: equal (sha256 %s)", r.Level, r.SHA256A)
 	}
