@@ -101,7 +101,7 @@ func (c Call) String() string {
 	case "xLock", "xUnlock":
 		args = "level=" + LockLevelString(c.Flags)
 	case "xFileControl":
-		args = fmt.Sprintf("op=%d", c.Flags)
+		args = "op=" + FileControlName(c.Flags)
 	case "xShmMap":
 		args = fmt.Sprintf("region=%d size=%d extend=%d", c.Offset, c.Amount, c.Flags)
 	case "xShmLock":
@@ -255,4 +255,24 @@ func Methods(names ...string) func(Call) bool {
 		}
 		return false
 	}
+}
+
+var fileControlNames = map[int64]string{
+	1: "LOCKSTATE", 2: "GET_LOCKPROXYFILE", 3: "SET_LOCKPROXYFILE", 4: "LAST_ERRNO", 5: "SIZE_HINT",
+	6: "CHUNK_SIZE", 7: "FILE_POINTER", 8: "SYNC_OMITTED", 9: "WIN32_AV_RETRY", 10: "PERSIST_WAL",
+	11: "OVERWRITE", 12: "VFSNAME", 13: "POWERSAFE_OVERWRITE", 14: "PRAGMA", 15: "BUSYHANDLER",
+	16: "TEMPFILENAME", 18: "MMAP_SIZE", 19: "TRACE", 20: "HAS_MOVED", 21: "SYNC",
+	22: "COMMIT_PHASETWO", 23: "WIN32_SET_HANDLE", 24: "WAL_BLOCK", 25: "ZIPVFS", 26: "RBU",
+	27: "VFS_POINTER", 28: "JOURNAL_POINTER", 29: "WIN32_GET_HANDLE", 30: "PDB",
+	31: "BEGIN_ATOMIC_WRITE", 32: "COMMIT_ATOMIC_WRITE", 33: "ROLLBACK_ATOMIC_WRITE",
+	34: "LOCK_TIMEOUT", 35: "DATA_VERSION", 36: "SIZE_LIMIT", 37: "CKPT_DONE", 38: "RESERVE_BYTES",
+	39: "CKPT_START", 40: "EXTERNAL_READER", 41: "CKSM_FILE", 42: "RESET_CACHE", 43: "NULL_IO",
+	44: "BLOCK_ON_CONNECT", 45: "FILESTAT",
+}
+
+func FileControlName(op int64) string {
+	if name, ok := fileControlNames[op]; ok {
+		return name
+	}
+	return fmt.Sprintf("%d", op)
 }
