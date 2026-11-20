@@ -8,8 +8,9 @@ can be remade as needed; state capture and deterministic rebuild is the through-
 Plan: OUTLINE.md (revision 2). What changed from revision 1: OUTLINE-CHANGES.md.
 
 Status: **Phase 2 (build) IN PROGRESS** since 2026-11-20. Nick signed off OUTLINE.md revision 2
-with rulings (OUTLINE.md section 8). Chunks 0, 1 and 2 have landed; chapter 7 is in repair;
-chapters 3, 4 and 5 are building.
+with rulings (OUTLINE.md section 8). Chunks 0, 1 and 2 have landed. **BLOCKED on Neon credit since
+2026-11-20 23:07 UTC** (see blockers): no prose, review or adversarial run can start. Opus-only
+work continues.
 
 Rulings applied (details: OUTLINE.md section 8):
 - Upstream github.com/nickstrad/sqlite-internals (public); every chunk lands on main and is pushed.
@@ -63,6 +64,12 @@ Next steps: after 5 lands, build 6 and 8 (8 also needs 4); then 9; 10a; 10b; pub
 written (build machine: briefs directory `sqlite-p2/chunkNN-build.md`).
 
 Open decisions / blockers:
+- **Nick: Neon has no credit on either route.** OpenRouter key: $0.15 left of the $50 monthly
+  limit, resets 2026-12-01. Direct Gemini key: "Your prepayment credits are depleted" (AI Studio
+  prepay). Measured need: about $9–10 of Neon per chunk; 11 chunks still need Neon passes
+  (3, 4, 5, 6, 7, 8, 9, 10a, 10b, publishing prose, plus finishing 4/5/7) — roughly $100–120.
+  Either raise the OpenRouter key limit or top up the AI Studio prepay; nothing else is needed.
+  Per ruling 12 no other model may write prose, review or adversarial tests, so those steps wait.
 - Nick or Twin: the Claude sign-in on the build VM ends between 2026-11-25 and 2026-11-28.
 - Neon budget: the OpenRouter key (shared with other projects) had $44.14 at Phase 2 start and
   was spent by the middle of chapter 7's first round (about $9 of Neon per chunk). Since then
