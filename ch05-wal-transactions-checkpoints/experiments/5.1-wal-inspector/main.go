@@ -166,7 +166,7 @@ func describeIndex(r run) {
 func crossCheckShowwal(r run) {
 	tool, err := sqlitex.LocateTool("showwal")
 	if err != nil {
-		fmt.Printf("NO-SHOWWAL: %v; build it with: go run ./cmd/course build-tools; cross-check skipped\n", err)
+		fmt.Printf("NO-SHOWWAL: %v; cross-check skipped\n", err)
 		return
 	}
 	out, err := exec.Command(tool, filepath.Join(r.databaseDir, "copy", "r.db-wal")).Output()
