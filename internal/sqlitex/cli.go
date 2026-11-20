@@ -137,8 +137,12 @@ func (c CLI) Run(ctx context.Context, run CLIRun) (CLIResult, error) {
 	return result, nil
 }
 
+func OpenScript(dbPath, sql string) string {
+	return ".open --normal '" + strings.ReplaceAll(dbPath, "'", "''") + "'\n" + sql
+}
+
 func (c CLI) Exec(ctx context.Context, dbPath, sql string) (string, error) {
-	result, err := c.Run(ctx, CLIRun{Args: []string{dbPath}, Stdin: strings.NewReader(sql)})
+	result, err := c.Run(ctx, CLIRun{Stdin: strings.NewReader(OpenScript(dbPath, sql))})
 	return result.Stdout, err
 }
 

@@ -102,7 +102,7 @@ func RunCLIMerged(ctx context.Context, cli sqlitex.CLI, request CLITrace, option
 	options.Command = cli.Command(ctx, sqlitex.CLIRun{Args: request.args()}).Args
 	options.Command[0] = cli.Path
 	options.Dir = request.Dir
-	options.Stdin = strings.NewReader(request.SQL)
+	options.Stdin = strings.NewReader(request.script())
 	if len(options.Syscalls) == 0 {
 		options.Syscalls = DefaultSyscalls
 	}

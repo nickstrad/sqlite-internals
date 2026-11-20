@@ -173,11 +173,15 @@ type CLITrace struct {
 }
 
 func (c CLITrace) args() []string {
-	return []string{"-vfstrace", c.DB}
+	return []string{"-vfstrace"}
+}
+
+func (c CLITrace) script() string {
+	return sqlitex.OpenScript(c.DB, c.SQL)
 }
 
 func RunCLIVFSTrace(ctx context.Context, cli sqlitex.CLI, request CLITrace) (*VFSTrace, error) {
-	result, err := cli.Run(ctx, sqlitex.CLIRun{Args: request.args(), Stdin: strings.NewReader(request.SQL), Dir: request.Dir})
+	result, err := cli.Run(ctx, sqlitex.CLIRun{Args: request.args(), Stdin: strings.NewReader(request.script()), Dir: request.Dir})
 	if err != nil {
 		return nil, err
 	}
