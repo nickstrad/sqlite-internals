@@ -450,3 +450,112 @@ builds under six connection settings. It found correction 1 and backs correction
 - `recipe` has no option for `synchronous` or other connection settings: callers who need them
   open their own handle with modified `SQLiteOptions()` and call `ApplyStep`. Settings other than
   `secure_delete` did not change the at-rest bytes in the probe.
+
+## Repair round 1 addendum (2026-11-20)
+
+Full table and commands: `agent_work/ch01/REPAIR-REPORT.md`. Facts Neon needs:
+
+### Correction 1, restated (review finding 4, DET-06)
+- In WAL mode the change counter (bytes 24–27, copied to 92–95) is written only when a frame
+  for page 1 is written: `if( pList->pgno==1 ) pager_write_changecounter(pList);`
+  (pager.c:3264). The value is `dbFileVers + 1` (pager.c:3135). `dbFileVers` is refreshed only
+  when page 1 is read through `readDbPage` (pager.c:3109-3110): a new connection, or page 1
+  evicted from the cache and read again.
+- So "the WAL counter counts connection sessions" is too broad. It counts sessions (and page-1
+  re-reads) *whose commits write page 1*. Every recipe step writes page 1 (`PRAGMA
+  user_version = k`), which is why the recipe shows one increment per session.
+- Shown in 1.3 (new line under variant 6): recipe to step 6, then 3 commits of
+  `UPDATE accounts SET balance = balance + 1 WHERE id = 1`, one connection per commit vs one
+  connection for all three: `identical`. Also visible in 1.2: in WAL mode the INSERT changes only
+  page 2 (new check line).
+- Eviction also counts: with `cache_size=0` (and only 0 among 0, 1, 10, -2000) a WAL build
+  differs from the canonical one in the counter alone, from step 0 on (step 0 counter 3 instead
+  of 2), deterministically over 3 runs (`agent_work/ch01/repair-probe`, adversarial DET-02 run 2).
+  In the session that creates the file, page 1 is re-read between the identity-pragma commit and
+  the step-0 commit. Before the foundation repair (identity pragmas ran in rollback mode before
+  the switch to WAL) DET-02 held. So `cache_size` is part of the recipe contract. The old note
+  "settings other than secure_delete did not change the at-rest bytes" holds only for the values
+  the probe tried.
+
+### Foundation merge changed the bytes (no ch01 code involved)
+- After merging main, sqlitex.Open on a new file runs layout pragmas, then `journal_mode`, then
+  `application_id`/`user_version`. In WAL this removes one rollback-mode commit, so the WAL
+  recipe's change counter is 2 lower at every step (byte 27: 0x20 instead of 0x22 at step 30;
+  no other byte differs). All WAL recipe hashes changed: step 30 is now
+  `24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74` (was `365695c2…`), step 0
+  `7470585af706eb3de499f126d74bdc98396e1e9853ee11643e2e85f61ef0cdb9` (was `bc7ece7b…`).
+  1.2 WAL base `5de4f3aefd26bcea` (was `d0cb3c980847e49e`), WAL after-INSERT `1afce8154bf3124c`
+  (was `6b96a8a5533900b8`). Rollback-mode hashes are unchanged (`0b5b4111…`, `47bae5ed…`).
+- The old step-hash cache key did not change across that foundation change, so an old cache
+  would have answered with stale hashes. The cache is now checked (below).
+
+### secure_delete must be exactly ON (DET-05d, DET-08a)
+- btree.c:6865-6876: a freed page is zeroed only under `BTS_SECURE_DELETE` (full ON). FAST sets
+  `BTS_OVERWRITE` only (btree.c:3186-3191), which zeroes freed cell space inside b-tree pages
+  (btree.c:1992, 2282, 8372) but not freed pages.
+- 1.3 new line under variant 4: steps 0–6, one transaction per step, FAST vs ON:
+  `differ: first differing page 29, 3 page(s) differ [29 36 37]` — page 29: 4079 bytes (freelist
+  leaf), page 36: 4067 bytes (freelist trunk, bytes after the leaf list), page 37: 4078 bytes
+  (freelist leaf). All in unused space.
+- FAST batching in that small variant (steps 2+3 and 4+5 merged) came out *identical*, so 1.3
+  does not show FAST batching variance; DET-05d shows it at full scale (30 steps, 1 tx vs 31 tx:
+  differ, 2 pages, first 29). I did not keep that line in 1.3 to avoid showing a misleading
+  "identical".
+
+### Rolled-back SAVEPOINT leaves bytes behind (DET-08b) — new source of variation, rule 7
+- 1.3 new section, variant 7: recipe to step 6, one transaction committing one INSERT; run 2
+  first inserts 10 documents of 12000 bytes (each 0xAB) inside `SAVEPOINT`, then
+  `ROLLBACK TO` + `RELEASE`, then the same INSERT.
+  - WAL, secure_delete=ON: differ, pages [1 29 37]; page 1 bytes 27 and 95 (counter);
+    pages 29 and 37 are freelist leaf pages, 4092 and 4093 bytes differ.
+  - rollback, secure_delete=ON: differ, pages [29 37], freelist leaves only.
+- Why: a freelist leaf reused by an allocation is fetched with `PAGER_GET_NOCONTENT`
+  (btree.c:6740), so its old content is not journaled; `ROLLBACK TO` puts the page back on the
+  freelist but cannot restore bytes it never saved. In WAL the aborted allocation also dirtied
+  page 1 (freelist count), so the commit writes the counter.
+- A whole-transaction rollback (failed `ApplyStep`) leaves the file byte-identical (attack API-05).
+
+### Twin-check limit: compile options (TWIN-10, DET-08c)
+- 1.2 new section "a limit of the twin check": a 100-row table with an index, built twice by the
+  Go driver (byte-identical); then `ANALYZE` in the driver and in the CLI.
+  `ENABLE_STAT4 compiled in: Go driver 1, CLI 0`; driver file gets `sqlite_stat1` and
+  `sqlite_stat4`, CLI file only `sqlite_stat1`; files differ. The twin claim holds for statements
+  whose behaviour does not depend on compile options that differ between the two builds; 1.1's
+  "file-format and I/O options" list does not include ENABLE_STAT4, but STAT4 does change file
+  contents (via ANALYZE).
+
+### Other sources, statement only (not demonstrated in an experiment)
+- Pool churn (DET-08d): with `sqlitex.DefaultOptions()` (SingleConnection=false) a concurrent read
+  that forces a second pooled connection changes the WAL counter (page 1 bytes 27, 95). Same
+  mechanism as variant 6 (a second connection has its own `dbFileVers`). The recipe already sets
+  `SingleConnection=true`; the rule is "build on one connection per session".
+- Time zone (DET-08e): a fixed timestamp literal with the `'localtime'` modifier under TZ=UTC vs
+  TZ=America/New_York gives different bytes (page 59). Same class as `current_timestamp`: no
+  environment-dependent SQL functions/modifiers.
+- Attack output for both: `agent_work/ch01/adversarial/results.txt`.
+
+### 1.2 behaviour changes
+- WAL write check now compares the full list: `0+32` (WAL header of the new -wal) then each
+  frame's `24`-byte header and `4096`-byte page; nothing else allowed.
+- The portable path (no strace) no longer looks for the CLI, closes with error check, checks the
+  database is at rest, and checks the changed pages ([1 2] rollback, [2] WAL). New check lines
+  print on Linux too (evidence lines 28 and 182).
+- Normalized syscalls now carry `= ERRNO` when a call failed and `= N` when a read/write
+  transferred fewer bytes than asked; `read`/`write` show `len=`. Visible change in evidence:
+  `pread64 t.db-journal off=9216 len=8 = 0` (the hot-journal probe reads past end of file).
+- The twin check now also requires at least one sync, a file that differs from the base, and
+  `CheckAtRest` after the Go child, the CLI run and the split run.
+- On darwin the `LINUX-ONLY:` line now reads "…the twin check, its ANALYZE limit and the
+  measured call path". darwin: cross-built only.
+
+### Recipe API changes
+- `Step(k)` and `BuildEach` (hence `Build`) call `Validate` first.
+- New exported `ChangeCountersAgree(image []byte) bool` (bytes 24–27 equal 92–95). `MatchStep`
+  returns Step -1 for a masked-only match whose two counters disagree.
+- Cache file format v2 (`FormatVersion = 2`): hash lines, then `checksum <sha256>` over the cache
+  key, file and connection settings, every planned statement (SQL and args) and every hash line.
+  Before trusting a cache, `StepHashes` checks the checksum and rebuilds step 0 in a temp dir and
+  compares its hash (a few ms). A cache without checksum, with a wrong checksum, or with a wrong
+  step 0 is rebuilt. Not detected: a cache whose later lines were changed *and* whose checksum
+  was recomputed (deliberate forgery) — the checksum is for corruption and stale foundations.
+- `writeHashCache` removes the temp file when the rename fails.

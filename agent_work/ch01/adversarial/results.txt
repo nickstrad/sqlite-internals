@@ -1,17 +1,17 @@
 # Chapter 1 adversarial suite (Gemini 4 Neon)
-# Started: 2026-11-20T20:35:35Z
+# Started: 2026-11-20T20:51:38Z
 # Scratch: _work/adv-ch01/
 
 ## group: pin-falsify
 ATTACK PIN-01 | run 1.1-pin-check against scratch repo with mutated sqlite/PIN fossil_id | EXPECT non-zero exit and line 1 reports sqlite_source_id NOT the pin | GOT exit=1 line1="sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (NOT the pin 3.53.4, want 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcd)" | HELD
 ATTACK PIN-02 | run 1.2-one-insert against scratch repo with mutated sqlite/PIN fossil_id | EXPECT non-zero exit and line 1 reports sqlite_source_id NOT the pin | GOT exit=1 line1="sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (NOT the pin 3.53.4, want 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcd)" | HELD
 ATTACK PIN-03 | run 1.3-recipe-rebuild against scratch repo with mutated sqlite/PIN fossil_id | EXPECT non-zero exit and line 1 reports sqlite_source_id NOT the pin | GOT exit=1 line1="sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (NOT the pin 3.53.4, want 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcd)" | HELD
-ATTACK PIN-04 | run 1.1-pin-check with matching source_id but mismatched driver_version=v1.99.9 in scratch sqlite/PIN | EXPECT non-zero exit and linked driver version check FAILED | GOT exit=1 hasFailedCheck=true | HELD
+ATTACK PIN-04 | run 1.1-pin-check with matching source_id but mismatched driver_version=v1.99.9 in scratch sqlite/PIN | EXPECT non-zero exit and linked driver version check FAILED | GOT exit=1 hasFailedCheck=false | BROKEN
 ATTACK PIN-05 | run 1.1 and 1.2 with SQLITE3_BIN returning a wrong sqlite_source_id() | EXPECT both 1.1 and 1.2 exit non-zero and report FAILED | GOT 1.1 exit=1 failed=true; 1.2 exit=1 failed=true | HELD
 ATTACK PIN-06 | run 1.1 with fake CLI matching source_id/version but missing ENABLE_DBPAGE_VTAB | EXPECT non-zero exit detecting missing required CLI compile option | GOT exit=1 detected=true | HELD
 ATTACK PIN-07 | run 1.1 with fake CLI reporting DEFAULT_PAGE_SIZE=8192 instead of 4096 | EXPECT non-zero exit marking DEFAULT_PAGE_SIZE DIFFERENT | GOT exit=1 markedDifferent=true | HELD
 ATTACK PIN-08 | open WAL database via raw sql.Open("sqlite", ...) with no PRAGMAs | EXPECT upstream defaults preserved: journal_mode=wal synchronous=2(FULL) busy_timeout=0 foreign_keys=0 page_size=4096 | GOT journal_mode=wal synchronous=2 busy_timeout=0 foreign_keys=0 page_size=4096 | HELD
-# pin-falsify finished in 3s
+# pin-falsify finished in 7s
 
 ## group: twin-io
 ATTACK TWIN-01 | WAL steady-state 2nd commit (synchronous=FULL) | EXPECT 0 db writes, WAL writes at 4152+24 & 4176+4096, 1 sync, Go==CLI syscalls & sha256 | GOT dbWrites=0 goWrites=[pwrite64 t.db-wal off=4152 len=24 pwrite64 t.db-wal off=4176 len=4096] syncs=1 writesEq=true syncsEq=true allEq=true hashEq=true | HELD
@@ -26,15 +26,15 @@ ATTACK TWIN-09 | rollback mode VACUUM on fragmented 100-row table | EXPECT Go dr
 ATTACK TWIN-10 | rollback mode ANALYZE on indexed 100-row table (hunting ENABLE_STAT4 divergence) | EXPECT Go driver and C CLI issue identical writes, syncs, non-F_SETFD syscalls and leave byte-identical DB | GOT goWrites=8 cliWrites=7 goSyncs=4 cliSyncs=4 writesEq=false syncsEq=true allEq=false hashEq=false writeDiff(#8 Go="pwrite64 t.db off=28672 len=4096" CLI="") | BROKEN
 ATTACK TWIN-11 | rollback mode PRAGMA mmap_size=268435456 + SELECT + INSERT (hunting mmap divergence) | EXPECT Go driver and C CLI issue identical writes, syncs, non-F_SETFD syscalls and leave byte-identical DB | GOT goWrites=10 cliWrites=10 goSyncs=4 cliSyncs=4 writesEq=true syncsEq=true allEq=true hashEq=true | HELD
 ATTACK TWIN-12 | must-be-able-to-fail: Go synchronous=FULL vs CLI synchronous=NORMAL on rollback INSERT | EXPECT twin check detects sync mismatch between Go(FULL) and CLI(NORMAL) | GOT goSyncs=4 cliSyncs=3 mismatchDetected=true | HELD
-# twin-io finished in 17s
+# twin-io finished in 10s
 
 ## group: recipe-determinism
-ATTACK DET-01 | 50 full 30-step WAL builds across varied cwds/paths/spaces/unicode/symlinks under CPU+IO load | EXPECT all 50 runs match canonical sha256 365695c2ef73fee6 at every step 0..30 | GOT finalMismatches=0 stepMismatches=0 elapsed=41.15s | HELD
-ATTACK DET-02 | full 30-step recipe across 10 cache_size values [1 2 5 10 50 0 -10 -100 -2000 -64000] in both WAL and DELETE modes | EXPECT every cache_size yields exact canonical sha256 in both modes | GOT walDiffs=[] delDiffs=[] | HELD
+ATTACK DET-01 | 50 full 30-step WAL builds across varied cwds/paths/spaces/unicode/symlinks under CPU+IO load | EXPECT all 50 runs match canonical sha256 24aa158fdf713808 at every step 0..30 | GOT finalMismatches=0 stepMismatches=0 elapsed=26.805s | HELD
+ATTACK DET-02 | full 30-step recipe across 10 cache_size values [1 2 5 10 50 0 -10 -100 -2000 -64000] in both WAL and DELETE modes | EXPECT every cache_size yields exact canonical sha256 in both modes | GOT walDiffs=[cs=0(exact=false,masked=true)] delDiffs=[] | BROKEN
 ATTACK DET-03a | full 30-step WAL recipe (secure_delete=ON) across synchronous/autockpt/mmap_size/temp_store/threads variations | EXPECT exact canonical sha256 across all 11 per-connection pragma variations | GOT diffs=[] | HELD
 ATTACK DET-03b | full 30-step WAL recipe with PRAGMA locking_mode=EXCLUSIVE per session | EXPECT database closes cleanly at rest and matches canonical sha256 | GOT exact=true masked=true | HELD
 ATTACK DET-03c | full 30-step recipe in journal_mode=truncate and journal_mode=persist vs journal_mode=delete | EXPECT database file bytes equal rollback delete canonical sha256 | GOT diffs=[] | HELD
-ATTACK DET-04 | build full 30-step recipe (steps 0..30) via pinned C sqlite3 CLI in WAL and DELETE modes | EXPECT all 31 per-step sha256 hashes match Go driver (modernc) in both modes | GOT walMatch=true(firstDiffStep=-1) delMatch=true(firstDiffStep=-1) | HELD
+ATTACK DET-04 | build full 30-step recipe (steps 0..30) via pinned C sqlite3 CLI in WAL and DELETE modes | EXPECT all 31 per-step sha256 hashes match Go driver (modernc) in both modes | GOT walMatch=false(firstDiffStep=0) delMatch=true(firstDiffStep=-1) | BROKEN
 ATTACK DET-05a | full 30-step WAL recipe on 1 connection (secure_delete=ON): 1 merged transaction vs 31 transactions | EXPECT byte-identical files (per 1.3 Finding 2: WAL + one connection + secure_delete=ON) | GOT identical (exact=true masked=true) | HELD
 ATTACK DET-05b | full 30-step WAL recipe on 1 connection (secure_delete=ON): autocommit per statement (~1700 tx) vs 31 tx | EXPECT byte-identical files (per 1.3 Finding 2) | GOT identical (exact=true masked=true) | HELD
 ATTACK DET-05c | full 30-step WAL recipe on 1 connection (secure_delete=ON, wal_autocheckpoint=1): autocommit vs 31 tx | EXPECT byte-identical files despite hundreds of mid-recipe WAL checkpoints | GOT identical (exact=true masked=true) | HELD
@@ -42,24 +42,24 @@ ATTACK DET-05d | full 30-step WAL recipe on 1 connection with PRAGMA secure_dele
 ATTACK DET-06 | WAL mode: 5 connection sessions vs 1 connection each inserting a row on page 2 WITHOUT dirtying page 1 | EXPECT file change counter (bytes 24-27, 92-95) differs (per unqualified claim 'WAL change counter counts connection sessions') | GOT identical | BROKEN
 ATTACK DET-07a | WAL 1-conn 30-step build (secure_delete=ON, autockpt=1) with concurrent reader pinning WAL steps 5..25 | EXPECT exact byte match despite reader blocking WAL checkpoints across steps 5..25 | GOT identical (exact=true masked=true) | HELD
 ATTACK DET-07b | WAL 1-conn 30-step build (secure_delete=OFF, autockpt=1) with concurrent reader pinning WAL steps 5..25 | EXPECT exact byte match even with secure_delete=OFF under reader-pinned WAL | GOT identical (exact=true masked=true) | HELD
-ATTACK DET-08a | 30-step WAL recipe with PRAGMA secure_delete=FAST vs canonical secure_delete=ON | EXPECT exact canonical sha256 (FAST equivalent to ON) | GOT exact=false masked=false fast=06bd88149d516257 canon=365695c2ef73fee6 | BROKEN
+ATTACK DET-08a | 30-step WAL recipe with PRAGMA secure_delete=FAST vs canonical secure_delete=ON | EXPECT exact canonical sha256 (FAST equivalent to ON) | GOT exact=false masked=false fast=aae57bf155e1d8d2 canon=24aa158fdf713808 | BROKEN
 ATTACK DET-08b | same committed statements with secure_delete=ON, but run 2 performs SAVEPOINT + 10x12KB inserts + ROLLBACK TO | EXPECT identical database files since aborted savepoint leaves same committed rows | GOT differ(3 pages, first=1, p1Bytes=[27 95]) | BROKEN
 ATTACK DET-08c | ANALYZE on step-10 recipe DB: Go twice (ENABLE_STAT4) and Go vs pinned C CLI (no STAT4) | EXPECT Go run 1 == Go run 2 AND Go == pinned C CLI byte-for-byte | GOT go1_vs_go2=identical; go_vs_cli=differ(2 pages, first=1, sizes=417792 vs 413696, p1Bytes=[31 104 106 118 119 3397 3398 3399 3400 3401]...(97 total)) | BROKEN
 ATTACK DET-08d | WAL recipe steps 0..10 using sqlitex.DefaultOptions() (SingleConnection=false) with vs without concurrent read forcing a 2nd pooled conn | EXPECT identical database files regardless of database/sql connection pool churn | GOT differ(1 pages, first=1, p1Bytes=[27 95]) | BROKEN
 ATTACK DET-08e | fixed timestamp literal with SQL 'localtime' modifier under TZ=UTC vs TZ=America/New_York | EXPECT fixed timestamp literal produces identical bytes across timezones (not listed in §4.2) | GOT differ(1 pages, first=59) | BROKEN
-# recipe-determinism finished in 140s
+# recipe-determinism finished in 94s
 
 ## group: recipe-api-abuse
 ATTACK API-01 | flip 1 bit in header byte 68 (user_version) and 1 bit in page 10, then call recipe.MatchStep | EXPECT MatchStep rejects both tampered files (Found=false, Step=-1) | GOT hdrMatch=no recipe step pageMatch=no recipe step | HELD
-ATTACK API-02 | corrupt header bytes 24..27=0xDEADBEEF and 92..95=0x00000001 (disagreeing counters), call recipe.MatchStep | EXPECT MatchStep rejects a file whose change_counter and version_valid_for disagree | GOT Step=10 Exact=false (step 10 (equal except the change counter at bytes 24-27 and 92-95)) | BROKEN
+ATTACK API-02 | corrupt header bytes 24..27=0xDEADBEEF and 92..95=0x00000001 (disagreeing counters), call recipe.MatchStep | EXPECT MatchStep rejects a file whose change_counter and version_valid_for disagree | GOT Step=-1 Exact=false (no recipe step) | HELD
 ATTACK API-03 | call CheckAtRest and MatchStep on an open WAL DB (with -wal/-shm) and a DB with an orphan -journal | EXPECT all four calls return errors refusing non-at-rest databases | GOT live(atRestErr=true,matchErr=true) orphan(atRestErr=true,matchErr=true) | HELD
 ATTACK API-04a | write malformed (bad-hex, out-of-order, truncated) files to recipe-cache and call recipe.StepHashes | EXPECT StepHashes discards corrupt/short cache, rebuilds, and returns canonical hashes | GOT recovered=true failures=[] | HELD
-ATTACK API-04b | write syntactically valid all-zero SHA-256 hashes to recipe-cache and call recipe.StepHashes | EXPECT StepHashes detects tampered cache rather than returning bogus all-zero hashes | GOT returnedCanonical=false step0=0000000000000000 | BROKEN
+ATTACK API-04b | write syntactically valid all-zero SHA-256 hashes to recipe-cache and call recipe.StepHashes | EXPECT StepHashes detects tampered cache rather than returning bogus all-zero hashes | GOT returnedCanonical=true step0=7470585af706eb3d | HELD
 ATTACK API-05 | re-apply step 1 (triggering PK constraint failure) in WAL and DELETE modes, then close | EXPECT ApplyStep fails, CurrentStep stays 1, and closed DB file stays byte-identical | GOT issues=[] | HELD
 ATTACK API-06 | open existing recipe DB via sqlitex.Open with mismatched page_size, auto_vacuum, and application_id | EXPECT sqlitex.Open rejects all three mismatched file settings with errors | GOT bypassed=[] | HELD
 ATTACK API-07 | CurrentStep on empty DB and partial schema (2/3 tables), plus ApplyNext past last step | EXPECT empty=-1, partial schema errors, ApplyNext past last step errors | GOT empty=-1(err=<nil>) partialErr=true pastEndErr=true | HELD
 ATTACK API-08 | Recipe.Validate on out-of-range steps/mode, and Step(8) equality between 8-step and 30-step recipes | EXPECT invalid recipes rejected and Step(8) completely independent of r.Steps | GOT invalidRejected=true step8Equal=true | HELD
-ATTACK API-09 | call Step(0) and Build(..., 0) on invalid Recipe with Steps=MaxSteps+1 | EXPECT both Step(0) and Build(..., 0) reject an invalid Recipe via Validate() | GOT step0Err=false build0Err=true | BROKEN
-# recipe-api-abuse finished in 2s
+ATTACK API-09 | call Step(0) and Build(..., 0) on invalid Recipe with Steps=MaxSteps+1 | EXPECT both Step(0) and Build(..., 0) reject an invalid Recipe via Validate() | GOT step0Err=true build0Err=true | HELD
+# recipe-api-abuse finished in 4s
 
-# Total elapsed: 162s
+# Total elapsed: 115s
