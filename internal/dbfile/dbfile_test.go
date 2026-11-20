@@ -2,7 +2,6 @@ package dbfile
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/binary"
 	"errors"
@@ -49,11 +48,14 @@ func newDatabase(t *testing.T, edit func(*sqlitex.Options), statements ...string
 
 func openParsed(t *testing.T, path string) *File {
 	t.Helper()
-	f, err := Open(path)
+	image, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { f.Close() })
+	f, err := FromBytes(image)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return f
 }
 
@@ -171,6 +173,9 @@ func readDBStat(t *testing.T, path string) map[int]dbstatRow {
 		}
 		out[n] = r
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
 	return out
 }
 
@@ -271,7 +276,10 @@ func TestRowsMatchSQLite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	db, _ := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer db.Close()
 	rows, err := db.Query("SELECT id, typeof(a), quote(a), typeof(b), quote(b), typeof(c), quote(c) FROM v ORDER BY id")
 	if err != nil {
@@ -286,6 +294,9 @@ func TestRowsMatchSQLite(t *testing.T) {
 			t.Fatal(err)
 		}
 		theirs = append(theirs, fmt.Sprintf("%d|%s:%s|%s:%s|%s:%s", id, cols[0], cols[1], cols[2], cols[3], cols[4], cols[5]))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
 	}
 	if strings.Join(ours, "\n") != strings.Join(theirs, "\n") {
 		t.Fatalf("ours:\n%s\ntheirs:\n%s", strings.Join(ours, "\n"), strings.Join(theirs, "\n"))
@@ -420,13 +431,20 @@ func buildSparseLockByteFile(t *testing.T) (string, int) {
 // TestLockBytePageInLargeSparseFile verifies the 1 GiB lock-byte page is classified rather than reported lost in a sparse > 1 GiB file.
 func TestLockBytePageInLargeSparseFile(t *testing.T) {
 	path, lock := buildSparseLockByteFile(t)
-	f := openParsed(t, path)
-	if f.FileSize() <= LockByteOffset || f.LockBytePage() != lock {
-		t.Fatalf("size %d lock %d", f.FileSize(), f.LockBytePage())
-	}
-	c, err := f.Census()
+	f, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
+	}
+	fileSize, lockPage := f.FileSize(), f.LockBytePage()
+	c, err := f.Census()
+	if closeErr := f.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fileSize <= LockByteOffset || lockPage != lock {
+		t.Fatalf("size %d lock %d", fileSize, lockPage)
 	}
 	if err := c.Complete(); err != nil {
 		t.Fatal(err)
@@ -434,7 +452,10 @@ func TestLockBytePageInLargeSparseFile(t *testing.T) {
 	if c.Page(lock).Role != RoleLockByte || c.FreelistLength() != int(queryInt(t, path, "PRAGMA freelist_count")) {
 		t.Fatal("lock byte page or freelist")
 	}
-	db, _ := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer db.Close()
 	var result string
 	if err := db.QueryRow("PRAGMA integrity_check").Scan(&result); err != nil || result != "ok" {
@@ -480,7 +501,9 @@ func TestRejectsMalformedFiles(t *testing.T) {
 		t.Fatalf("disagreeing counters: %v %d", err, f.PageCount())
 	}
 	badType := mutate(func(b []byte) []byte { b[4096] = 0x07; return b })
-	f, _ = FromBytes(badType)
+	if f, err = FromBytes(badType); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := f.Census(); !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), "page 2") {
 		t.Fatalf("bad page type: %v", err)
 	}
@@ -489,7 +512,9 @@ func TestRejectsMalformedFiles(t *testing.T) {
 		binary.BigEndian.PutUint32(b[36:], 1)
 		return b
 	})
-	f, _ = FromBytes(loop)
+	if f, err = FromBytes(loop); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := f.Census(); !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), "claimed twice") {
 		t.Fatalf("freelist over a table page: %v", err)
 	}
@@ -623,7 +648,6 @@ func TestHeaderFieldsCoverEveryByte(t *testing.T) {
 	if f, ok := HeaderFieldAt(27); !ok || f.Name != "file change counter" {
 		t.Fatal(f)
 	}
-	_ = sha256.Size
 }
 
 // TestDecodeValueEdgeCases verifies NaN-as-NULL, reserved serial types 10 and 11, signed integer widths, and record overrun rejection.
@@ -657,5 +681,190 @@ func TestDecodeValueEdgeCases(t *testing.T) {
 	}
 	if _, err := DecodeRecord([]byte{0x09, 0x00}); err == nil {
 		t.Fatal("record header larger than payload accepted")
+	}
+}
+
+func integrityCheckImage(t *testing.T, image []byte) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "check.db")
+	if err := os.WriteFile(path, image, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := db.Query("PRAGMA integrity_check")
+	if err != nil {
+		return "error: " + err.Error()
+	}
+	defer rows.Close()
+	var lines []string
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			t.Fatal(err)
+		}
+		lines = append(lines, line)
+	}
+	if err := rows.Err(); err != nil {
+		return "error: " + err.Error()
+	}
+	return strings.Join(lines, " / ")
+}
+
+func TestWithoutRowidTableCensus(t *testing.T) {
+	path := newDatabase(t, nil,
+		"CREATE TABLE kv(k TEXT PRIMARY KEY, v BLOB) WITHOUT ROWID",
+		"CREATE INDEX kv_v ON kv(length(v))",
+		"CREATE TABLE plain(id INTEGER PRIMARY KEY, x)",
+		"WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 200) INSERT INTO kv SELECT printf('key-%05d', i), zeroblob(i * 30) FROM n",
+		"INSERT INTO plain VALUES(1, 'x')")
+	c := checkCensusAgainstSQLite(t, path)
+	var kv *Tree
+	for i := range c.Trees {
+		if c.Trees[i].Name == "kv" {
+			kv = &c.Trees[i]
+		}
+	}
+	if kv == nil || kv.Type != "table" || kv.Overflow == 0 {
+		t.Fatalf("kv tree %+v", kv)
+	}
+	if root := c.Page(kv.RootPage).Role; root != RoleIndexInterior && root != RoleIndexLeaf {
+		t.Fatalf("kv root role %s", root)
+	}
+}
+
+func TestRejectsIndexEntryWithTableRoot(t *testing.T) {
+	path := newDatabase(t, nil, "CREATE TABLE t(a INTEGER PRIMARY KEY, b)", "CREATE INDEX t_b ON t(b)", "INSERT INTO t VALUES(1, 'x')")
+	f := openParsed(t, path)
+	c, err := f.Census()
+	if err != nil {
+		t.Fatal(err)
+	}
+	image, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tableRoot, indexRoot int
+	for _, tr := range c.Trees {
+		switch tr.Name {
+		case "t":
+			tableRoot = tr.RootPage
+		case "t_b":
+			indexRoot = tr.RootPage
+		}
+	}
+	indexPage := image[(indexRoot-1)*4096 : indexRoot*4096]
+	copy(indexPage, image[(tableRoot-1)*4096:tableRoot*4096])
+	f, err = FromBytes(image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Census(); !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), `root of index "t_b" is a table-leaf page`) {
+		t.Fatalf("index with a table root: %v", err)
+	}
+}
+
+func TestRejectsPageHeaderCorruptionLikeIntegrityCheck(t *testing.T) {
+	path := newDatabase(t, nil,
+		"CREATE TABLE t(a INTEGER PRIMARY KEY, b)",
+		"INSERT INTO t VALUES(1, randomblob(100))",
+		"INSERT INTO t VALUES(2, randomblob(100))",
+		"INSERT INTO t VALUES(3, randomblob(100))",
+		"DELETE FROM t WHERE a = 2")
+	good, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := integrityCheckImage(t, good); got != "ok" {
+		t.Fatal(got)
+	}
+	const base = 4096
+	page, err := ParseBTreePage(good[base:2*base], 2, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Freeblocks) != 1 || page.CellCount != 2 || page.FragmentedBytes != 0 {
+		t.Fatalf("setup: freeblocks %v cells %d fragmented %d", page.Freeblocks, page.CellCount, page.FragmentedBytes)
+	}
+	block := page.Freeblocks[0]
+	mutate := func(edit func(p []byte)) []byte {
+		image := append([]byte(nil), good...)
+		edit(image[base : 2*base])
+		return image
+	}
+	cases := []struct {
+		name  string
+		image []byte
+	}{
+		{"fragmented bytes 200", mutate(func(p []byte) { p[7] = 200 })},
+		{"first freeblock pointer zeroed", mutate(func(p []byte) { binary.BigEndian.PutUint16(p[1:], 0) })},
+		{"content start lowered by 20", mutate(func(p []byte) { binary.BigEndian.PutUint16(p[5:], uint16(page.CellContentStart-20)) })},
+		{"freeblock split with no gap", mutate(func(p []byte) {
+			binary.BigEndian.PutUint16(p[block.Offset:], uint16(block.Offset+8))
+			binary.BigEndian.PutUint16(p[block.Offset+2:], 8)
+			binary.BigEndian.PutUint16(p[block.Offset+8:], 0)
+			binary.BigEndian.PutUint16(p[block.Offset+10:], uint16(block.Size-8))
+		})},
+		{"duplicate cell pointer", mutate(func(p []byte) { copy(p[10:12], p[8:10]) })},
+	}
+	for _, c := range cases {
+		if got := integrityCheckImage(t, c.image); got == "ok" {
+			t.Fatalf("%s: integrity_check accepts it, the test is wrong", c.name)
+		}
+		f, err := FromBytes(c.image)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if _, err := f.Census(); !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), "page 2") {
+			t.Errorf("%s: got %v, want ErrCorrupt naming page 2", c.name, err)
+		}
+	}
+}
+
+func TestRejectsNonZeroNextOnLastOverflowPage(t *testing.T) {
+	path := newDatabase(t, nil, "CREATE TABLE t(a INTEGER PRIMARY KEY, b)", "INSERT INTO t VALUES(1, zeroblob(5000))")
+	good, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := checkCensusAgainstSQLite(t, path)
+	last := 0
+	for _, p := range c.Pages {
+		if p.Role == RoleOverflow {
+			last = p.Number
+		}
+	}
+	if c.RoleCounts()[RoleOverflow] != 1 {
+		t.Fatalf("setup: %v", c.RoleCounts())
+	}
+	for _, next := range []uint32{uint32(last), 2, 9999} {
+		image := append([]byte(nil), good...)
+		binary.BigEndian.PutUint32(image[(last-1)*4096:], next)
+		if got := integrityCheckImage(t, image); got == "ok" {
+			t.Fatalf("next %d: integrity_check accepts it", next)
+		}
+		f, err := FromBytes(image)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.Census(); !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), "non-zero next pointer") {
+			t.Errorf("next %d: got %v", next, err)
+		}
+	}
+}
+
+func TestWALModeFollowsReadVersion(t *testing.T) {
+	for _, c := range []struct {
+		write, read int
+		wal         bool
+	}{{1, 1, false}, {2, 2, true}, {1, 2, true}, {2, 1, false}} {
+		var h Header
+		h.WriteVersion, h.ReadVersion = c.write, c.read
+		if h.WALMode() != c.wal {
+			t.Errorf("write %d read %d: WALMode %v", c.write, c.read, h.WALMode())
+		}
 	}
 }

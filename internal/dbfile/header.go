@@ -158,8 +158,7 @@ func (h Header) InHeaderSizeValid() bool {
 	return h.DatabaseSize != 0 && h.ChangeCountersAgree()
 }
 
-// WALMode reports whether both format version bytes (18 and 19) are set to 2.
-func (h Header) WALMode() bool { return h.ReadVersion == 2 && h.WriteVersion == 2 }
+func (h Header) WALMode() bool { return h.ReadVersion == 2 }
 
 // AutoVacuum reports whether auto-vacuum (FULL or INCREMENTAL) is enabled,
 // indicated by a non-zero largest-root-page field at offset 52 (src/btree.c:3423).

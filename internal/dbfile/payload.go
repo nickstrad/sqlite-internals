@@ -61,10 +61,11 @@ func (f *File) OverflowChain(sourcePage int, c Cell) ([]OverflowPage, error) {
 		remaining -= uint64(take)
 		from = next
 		next = int(page.Next)
-		// Only interior links must be non-zero; the last overflow page's next
-		// field is normally 0 and is not followed past count pages.
 		if i < count-1 && next == 0 {
 			return nil, corruptPage(from, "overflow chain of cell %d ends after %d of %d pages", c.Index, i+1, count)
+		}
+		if i == count-1 && next != 0 {
+			return nil, corruptAt(from, 0, "last overflow page of cell %d on page %d has non-zero next pointer %d", c.Index, sourcePage, next)
 		}
 	}
 	return chain, nil

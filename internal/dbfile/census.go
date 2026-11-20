@@ -230,7 +230,7 @@ func (b *censusBuilder) walkTree(t *Tree) error {
 	f := b.file
 	walker := TreeWalker{File: f}
 	walker.OnPage = func(p *BTreePage, parent, depth int) error {
-		if depth == 0 && p.Type.IsTable() != (t.Type == "table") {
+		if depth == 0 && p.Type.IsTable() && t.Type != "table" {
 			return corruptPage(p.Number, "root of %s %q is a %s page", t.Type, t.Name, p.Type)
 		}
 		t.Pages++

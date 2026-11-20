@@ -1,6 +1,9 @@
 package dbfile
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // PageType is the 1-byte flag at offset 0 of a B-tree page header
 // (decodeFlags, src/btree.c:2028-2085).
@@ -141,8 +144,8 @@ func ParseBTreePage(data []byte, number int, usableSize int) (*BTreePage, error)
 		if next < p.CellContentStart || next > usableSize-4 {
 			return nil, corruptAt(number, next, "freeblock at %d is outside the cell content area %d..%d", next, p.CellContentStart, usableSize-4)
 		}
-		if next < previousEnd {
-			return nil, corruptAt(number, next, "freeblock at %d overlaps or precedes the freeblock ending at %d", next, previousEnd)
+		if previousEnd > 0 && next < previousEnd+4 {
+			return nil, corruptAt(number, next, "freeblock at %d is less than 4 bytes after the freeblock ending at %d", next, previousEnd)
 		}
 		size := be16(data[next+2:])
 		if size < 4 || next+size > usableSize {
@@ -152,7 +155,49 @@ func ParseBTreePage(data []byte, number int, usableSize int) (*BTreePage, error)
 		previousEnd = next + size
 		next = be16(data[next:])
 	}
+	if free := p.CellContentStart + p.FragmentedBytes + p.FreeblockBytes(); free > usableSize {
+		return nil, corruptAt(number, offset+7, "content start %d + fragmented bytes %d + freeblock bytes %d = %d exceeds the usable size %d", p.CellContentStart, p.FragmentedBytes, p.FreeblockBytes(), free, usableSize)
+	}
+	if err := p.checkCoverage(); err != nil {
+		return nil, err
+	}
 	return p, nil
+}
+
+type byteRange struct{ first, last int }
+
+func (p *BTreePage) checkCoverage() error {
+	ranges := make([]byteRange, 0, p.CellCount+len(p.Freeblocks))
+	for i := range p.CellCount {
+		c, err := p.Cell(i)
+		if err != nil {
+			return err
+		}
+		ranges = append(ranges, byteRange{c.Offset, c.Offset + c.Size - 1})
+	}
+	for _, b := range p.Freeblocks {
+		ranges = append(ranges, byteRange{b.Offset, b.Offset + b.Size - 1})
+	}
+	sort.Slice(ranges, func(i, j int) bool {
+		if ranges[i].first != ranges[j].first {
+			return ranges[i].first < ranges[j].first
+		}
+		return ranges[i].last < ranges[j].last
+	})
+	fragmented := 0
+	previousLast := p.CellContentStart - 1
+	for _, r := range ranges {
+		if r.first <= previousLast {
+			return corruptAt(p.Number, r.first, "byte %d is used twice (by two cells, or a cell and a freeblock)", r.first)
+		}
+		fragmented += r.first - previousLast - 1
+		previousLast = r.last
+	}
+	fragmented += p.UsableSize - previousLast - 1
+	if fragmented != p.FragmentedBytes {
+		return corruptAt(p.Number, p.HeaderOffset+7, "%d bytes of the cell content area belong to no cell or freeblock, the header reports %d fragmented bytes", fragmented, p.FragmentedBytes)
+	}
+	return nil
 }
 
 // BTreePage reads page n from f and parses it as a B-tree page.
