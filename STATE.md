@@ -8,7 +8,8 @@ can be remade as needed; state capture and deterministic rebuild is the through-
 Plan: OUTLINE.md (revision 2). What changed from revision 1: OUTLINE-CHANGES.md.
 
 Status: **Phase 2 (build) IN PROGRESS** since 2026-11-20. Nick signed off OUTLINE.md revision 2
-with rulings (OUTLINE.md section 8). Chunks 0 and 1 have landed; chapters 2 and 7 are building.
+with rulings (OUTLINE.md section 8). Chunks 0, 1 and 2 have landed; chapter 7 is in repair;
+chapters 3, 4 and 5 are building.
 
 Rulings applied (details: OUTLINE.md section 8):
 - Upstream github.com/nickstrad/sqlite-internals (public); every chunk lands on main and is pushed.
@@ -51,18 +52,22 @@ Chunk status (build → Neon prose → Neon review → repair → re-review → 
 | 2 chapter 2 | done | Neon FAIL → one Opus repair → PASS | 36 held / 0 broken after repair (run 1: 14 broken) | merged 68afd03 |
 | 2, 3, 4, 5, 7, 6, 8, 9, 10a, 10b, publishing | not started | | | |
 
-In progress: Opus builds of chapter 2 (`chunk/ch02`) and chapter 7 (`chunk/ch07`), worktrees
-`../sqlite-internals-work/ch02` and `ch07`, both branched from the repaired chapter 1 branch.
+In progress (worktrees `../sqlite-internals-work/chNN`, branches `chunk/chNN`): chapter 7 — Opus
+repair round, then Neon re-review (`agent_work/orch/rereview.sh`), `finalize.sh`, `land.sh`;
+chapters 3, 4, 5 — Opus builds (branched from chapter 2's repaired branch; merge main before
+their repair rounds), then `neon-trio.sh`, `post-neon.sh`, `repair.sh`, `rereview.sh`,
+`finalize.sh`, `land.sh` each.
 
-Next steps: Neon passes, repair, acceptance and landing for 2 and 7; then builds of 3, 4, 5
-(need chapter 2); then 6, 8; 9; 10a; 10b; publishing. Per-chunk flow and the scripts for it
-(`launch.sh`, `mkbrief.sh`, `accept.sh`, `land.sh`) are in `agent_work/orch/`.
+Next steps: after 5 lands, build 6 and 8 (8 also needs 4); then 9; 10a; 10b; publishing
+(GitHub Pages workflow, README, self-contained sweep). Build briefs for every chunk are already
+written (build machine: briefs directory `sqlite-p2/chunkNN-build.md`).
 
 Open decisions / blockers:
 - Nick or Twin: the Claude sign-in on the build VM ends between 2026-11-25 and 2026-11-28.
 - Neon budget: the OpenRouter key (shared with other projects) had $44.14 at Phase 2 start and
-  $24 after chunk 0 (about $9 per chunk); when it runs out `agent_work/neon/neon-run.sh` falls
-  back to the direct Gemini key (smoke-tested 2026-11-20).
+  was spent by the middle of chapter 7's first round (about $9 of Neon per chunk). Since then
+  `agent_work/neon/neon-run.sh` runs Neon on the direct Gemini key (Nick's designated
+  fallback); that spend is billed to Nick's Google project and is not visible from here.
 
 Resume: read this file, OUTLINE.md (section 8 first), then `git log` and `git worktree list`.
 Each run is launched with `agent_work/orch/launch.sh <name> <worktree> <opus|neon> <brief>`;
