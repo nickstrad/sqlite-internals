@@ -4,3 +4,6 @@
 *.db-shm
 *.db-journal
 /bin/
+/_work/
+/_src/
+/_tools/
