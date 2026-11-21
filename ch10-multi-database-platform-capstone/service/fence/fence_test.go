@@ -219,3 +219,94 @@ func TestNewRejectsBadIdentity(t *testing.T) {
 		t.Error("epoch 0 accepted")
 	}
 }
+
+func TestListAfterFencedRefreshStaysFenced(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+	if err := adapter(t, store, 1).PutIfAbsent(ctx, walship.SnapshotKey(1), snapshotObject(t, 1)); err != nil {
+		t.Fatal(err)
+	}
+	newer := adapter(t, store, 2)
+	if _, err := newer.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := newer.PutIfAbsent(ctx, walship.SnapshotKey(2), snapshotObject(t, 2)); err != nil {
+		t.Fatal(err)
+	}
+	old := adapter(t, store, 1)
+	if _, err := old.Refresh(ctx); !errors.Is(err, ErrFenced) {
+		t.Fatalf("refresh: %v", err)
+	}
+	if keys, err := old.List(ctx, ""); !errors.Is(err, ErrFenced) {
+		t.Fatalf("list after fenced refresh: %v %v", keys, err)
+	}
+	if err := old.PutIfAbsent(ctx, walship.SegmentKey(2), segmentObject(t, 2, 2)); !errors.Is(err, ErrFenced) {
+		t.Fatalf("put after fenced refresh: %v", err)
+	}
+}
+
+func TestMalformedPutNeverReachesTheStore(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+	a := adapter(t, store, 1)
+	if err := a.PutIfAbsent(ctx, walship.SnapshotKey(1), snapshotObject(t, 1)[:100]); !errors.Is(err, ErrDamaged) {
+		t.Fatalf("truncated snapshot: %v", err)
+	}
+	if err := a.PutIfAbsent(ctx, walship.SnapshotKey(1), snapshotObject(t, 7)); !errors.Is(err, ErrDamaged) {
+		t.Fatalf("snapshot for another position: %v", err)
+	}
+	if err := a.PutIfAbsent(ctx, walship.SnapshotKey(1), snapshotObject(t, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.PutIfAbsent(ctx, walship.SegmentKey(2), segmentObject(t, 3, 3)); !errors.Is(err, ErrDamaged) {
+		t.Fatalf("segment for another position: %v", err)
+	}
+	keys, err := store.List(ctx, SlotPrefix("db-1"))
+	if err != nil || len(keys) != 1 {
+		t.Fatalf("store holds %v %v", keys, err)
+	}
+	if end, err := adapter(t, store, 1).Refresh(ctx); end != 1 || err != nil {
+		t.Fatalf("chain end %d %v", end, err)
+	}
+}
+
+func TestDecodeRejectsMalformedKeys(t *testing.T) {
+	data := Encode(1, KindSnapshot, 1, 1, snapshotObject(t, 1))
+	for _, key := range []string{"dbs//log/000000000001", "x/db-1/log/000000000001", "dbs/db-1/seg/000000000001", "dbs/DB/log/000000000001"} {
+		if _, err := Decode(key, data); !errors.Is(err, ErrDamaged) {
+			t.Errorf("%s: %v", key, err)
+		}
+	}
+}
+
+func TestAdapterKeepsNoObjectBytes(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+	a := adapter(t, store, 1)
+	if err := a.PutIfAbsent(ctx, walship.SnapshotKey(1), snapshotObject(t, 1)); err != nil {
+		t.Fatal(err)
+	}
+	for p := int64(2); p <= 20; p++ {
+		if err := a.PutIfAbsent(ctx, walship.SegmentKey(p), segmentObject(t, p, p)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reopened := adapter(t, store, 1)
+	if _, err := reopened.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, cached := range []*Adapter{a, reopened} {
+		if len(cached.slots) != 20 {
+			t.Fatalf("%d slots", len(cached.slots))
+		}
+		for position, slot := range cached.slots {
+			if slot.Object != nil || slot.raw != nil {
+				t.Fatalf("slot %d keeps %d object bytes", position, len(slot.Object))
+			}
+		}
+		object, err := cached.Get(ctx, walship.SegmentKey(7))
+		if err != nil || !bytes.Equal(object, segmentObject(t, 7, 7)) {
+			t.Fatalf("get: %v", err)
+		}
+	}
+}

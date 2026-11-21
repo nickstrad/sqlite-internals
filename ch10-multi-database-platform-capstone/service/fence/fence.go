@@ -49,6 +49,11 @@ type Slot struct {
 	raw    []byte
 }
 
+func (s Slot) withoutBytes() Slot {
+	s.Object, s.raw = nil, nil
+	return s
+}
+
 func SlotPrefix(database string) string { return "dbs/" + database + "/log/" }
 
 func SlotKey(database string, position int64) string {
@@ -70,7 +75,7 @@ func Decode(key string, data []byte) (Slot, error) {
 	if err != nil || string(Encode(slot.Epoch, slot.Kind, slot.First, slot.Last, nil)) != string(line)+"\n" {
 		return slot, fmt.Errorf("%w: %s envelope %q", ErrDamaged, key, line)
 	}
-	if slot.Epoch == 0 || slot.First < 1 || slot.Last < slot.First || key != SlotKey(keyDatabase(key), slot.First) {
+	if slot.Epoch == 0 || slot.First < 1 || slot.Last < slot.First || keyDatabase(key) == "" || key != SlotKey(keyDatabase(key), slot.First) {
 		return slot, fmt.Errorf("%w: %s envelope %q does not fit its key", ErrDamaged, key, line)
 	}
 	switch slot.Kind {
@@ -92,7 +97,7 @@ func Decode(key string, data []byte) (Slot, error) {
 
 func keyDatabase(key string) string {
 	parts := strings.Split(key, "/")
-	if len(parts) != 4 {
+	if len(parts) != 4 || parts[0] != "dbs" || parts[2] != "log" || parts[1] == "" || walship.ValidateKey("dbs/"+parts[1]) != nil {
 		return ""
 	}
 	return parts[1]
@@ -171,14 +176,15 @@ func (a *Adapter) refreshLocked(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	a.slots, a.end, a.listed = map[int64]Slot{}, 0, true
+	slots, end := map[int64]Slot{}, int64(0)
 	for _, slot := range chain {
 		if slot.Epoch > a.Epoch {
 			return 0, &FencedError{Database: a.Database, Epoch: a.Epoch, Holder: slot.Epoch, Position: slot.First}
 		}
-		a.slots[slot.First] = slot
-		a.end = slot.Last
+		slots[slot.First] = slot.withoutBytes()
+		end = slot.Last
 	}
+	a.slots, a.end, a.listed = slots, end, true
 	return a.end, nil
 }
 
@@ -210,16 +216,21 @@ func (a *Adapter) Get(ctx context.Context, key string) ([]byte, error) {
 		return nil, err
 	}
 	a.mu.Lock()
-	slot, ok := a.slots[position]
+	known, ok := a.slots[position]
 	a.mu.Unlock()
-	if !ok {
-		data, err := a.Base.Get(ctx, SlotKey(a.Database, position))
-		if err != nil {
-			return nil, err
-		}
-		if slot, err = Decode(SlotKey(a.Database, position), data); err != nil {
-			return nil, err
-		}
+	if ok && known.Kind != kind {
+		return nil, fmt.Errorf("%w: %s", walship.ErrNotFound, key)
+	}
+	data, err := a.Base.Get(ctx, SlotKey(a.Database, position))
+	if err != nil {
+		return nil, err
+	}
+	slot, err := Decode(SlotKey(a.Database, position), data)
+	if err != nil {
+		return nil, err
+	}
+	if ok && (slot.Epoch != known.Epoch || slot.Last != known.Last) {
+		return nil, fmt.Errorf("%w: %s changed after it was listed", ErrDamaged, slot.Key)
 	}
 	if slot.Kind != kind {
 		return nil, fmt.Errorf("%w: %s", walship.ErrNotFound, key)
@@ -252,6 +263,10 @@ func (a *Adapter) PutIfAbsent(ctx context.Context, key string, data []byte) erro
 	}
 	slotKey := SlotKey(a.Database, first)
 	envelope := Encode(a.Epoch, kind, first, last, data)
+	slot, err := Decode(slotKey, envelope)
+	if err != nil {
+		return err
+	}
 	if err := a.Base.PutIfAbsent(ctx, slotKey, envelope); err != nil {
 		if !errors.Is(err, walship.ErrExists) {
 			return err
@@ -271,11 +286,7 @@ func (a *Adapter) PutIfAbsent(ctx context.Context, key string, data []byte) erro
 			return fmt.Errorf("%w: %s position %d is held by epoch %d", walship.ErrExists, a.Database, first, holder.Epoch)
 		}
 	}
-	slot, err := Decode(slotKey, envelope)
-	if err != nil {
-		return err
-	}
-	a.slots[first], a.end = slot, last
+	a.slots[first], a.end = slot.withoutBytes(), last
 	return nil
 }
 
