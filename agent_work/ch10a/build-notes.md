@@ -186,7 +186,10 @@ of matching calls)}`; the rule fires once, on the Nth matching call. `ParseRule(
 
 The store underneath stays real. 10.1 uses `stale-list:/log/:1` on node b; the others are for 10b
 (10.2–10.4) and are covered by `TestPutFaults`, `TestCrashFaultsCallTheHook`,
-`TestStaleListHidesTheNewestKeyOnce`, `TestParseRule`.
+`TestStaleListHidesTheNewestKeyOnce`, `TestParseRule`. A `stale-list` rule counts only non-empty
+listings (an empty listing has nothing to hide, so it neither consumes the Nth count nor appears
+in `Fired()`; test `TestStaleListSkipsEmptyListings`). `s3store.List` validates a non-empty prefix
+like the other methods.
 
 ### `fence` — the fencing scheme (object keys and conditional put)
 
@@ -211,9 +214,19 @@ be written once. Nothing is ever overwritten or deleted by a writer (`Adapter.De
   `last + 1`; epochs never decrease; a slot whose epoch is higher than its predecessor's must be a
   snapshot, i.e. every epoch begins with a fence). If any slot has an epoch higher than the
   adapter's → `*FencedError{Database, Epoch, Holder, Position}` (`errors.Is(err, ErrFenced)`).
-  Otherwise the adapter remembers the chain end.
+  Otherwise the adapter remembers the chain end. The adapter's cached view is replaced only after
+  the whole chain passed: a fenced `Refresh` leaves the adapter unlisted, so a later `List`/`Put`
+  re-lists and is fenced again (repair: before, a fenced refresh left a truncated pre-fence view
+  that `List` returned with no error). The cache keeps only each slot's metadata (epoch, kind,
+  first, last), never the object bytes: `Get` reads the object from the store and decodes it each
+  time, and refuses (`ErrDamaged`) an object whose epoch or range differ from the listing
+  (repair: before, every shipped segment stayed in RAM for as long as the database was open —
+  attack CAT-05b measured 37 MB of growth for 180 × 256 KiB commits on a 276 KiB database).
 - `PutIfAbsent(walship key, object)` (called by walship's shipper or by the claim): the object must
-  start at exactly `end + 1` (else `ErrOutOfOrder`, nothing sent). Then the conditional put of the
+  start at exactly `end + 1` (else `ErrOutOfOrder`, nothing sent). The envelope is decoded and
+  validated (`Decode`: snapshot object decodes and its position matches; segment range matches)
+  **before** anything is sent, so a malformed object is refused with `ErrDamaged` and never
+  becomes an immutable slot. Then the conditional put of the
   envelope. On "exists": read the holder; identical bytes → success (own retried put); holder epoch
   higher → `FencedError`; otherwise `walship.ErrExists` with the holder's epoch (a lower or equal
   epoch got there first — the caller re-lists).
@@ -243,7 +256,9 @@ overlapping put at 4 refused; list keys; get by kind; refresh end 4; delete refu
 `TestNewerEpochFencesTheOlderWriter` (put refused with `Holder 2, Epoch 1, Position 2`; restarted
 epoch-1 adapter fenced at refresh; epoch 2 fenced by epoch 3), `TestRetriedIdenticalPutSucceeds`,
 `TestLowerEpochHolderIsReportedAsExists`, `TestCheckLineage` (5 broken lineages),
-`TestNewRejectsBadIdentity`.
+`TestNewRejectsBadIdentity`; added in repair: `TestListAfterFencedRefreshStaysFenced`,
+`TestMalformedPutNeverReachesTheStore`, `TestDecodeRejectsMalformedKeys` (a slot key must be
+`dbs/<valid id>/log/<12 digits>`: `dbs//log/…` is damaged), `TestAdapterKeepsNoObjectBytes`.
 
 ### `catalog` — the control plane (one SQLite database, WAL)
 
@@ -288,8 +303,14 @@ meant to call the same helper. Tests: `TestLimits`, `TestCheckFailsWhenDescripto
 
 `Start(Config{Name, Dir, Catalog, Store, Capacity, File, Create})`. One `sync.Mutex` serialises
 every public call (simple; a throughput limit, like connmgr's). Ownership beliefs are files
-`<Dir>/<id>.owner` holding `epoch N\n` (strictly parsed at start), so a restarted node believes what
-it believed before the crash.
+`<Dir>/<id>.owner` holding `epoch N\n` (strictly parsed at start; epoch 0 is refused), so a
+restarted node believes what it believed before the crash. At-rest records are files
+`<Dir>/<id>.atrest` holding the 64-hex sha256 of the file a clean eviction or close left (strictly
+parsed at start), so the changed-while-shut check also covers a node restart after a clean close
+(repair: before, the record lived only in memory and an offline change made between a clean close
+and a restart was published to the store as a discontinuity snapshot — attack CAT-04b). The record
+is deleted once the reopen check passes (before the shipper opens), so a crash while open leaves no
+record and the next start treats the file as post-crash (ships what is unshipped).
 
 - **Router**: `Write(ctx, id, mode, apply)`, `Ship(ctx, id)`, `Read(ctx, id, read)` route by
   database id to the connmgr handle, after checking this node's ownership table (not owner →
@@ -318,13 +339,29 @@ it believed before the crash.
 - **Capture**: `internal/walship` per open database, `SnapshotEvery = 0` (no periodic snapshots in
   this chunk; the fence snapshots are the only snapshots). The writer's `wal_autocheckpoint` is 0
   in the platform settings: only the shipper checkpoints.
-- **Ownership**: `Claim(ctx, id)`: evict if open; catalog `Claim` → epoch e; adapter(e); up to 3
+- **Catalog after every ship**: every place that ships updates the catalog row
+  (`RecordShipped(id, epoch, position, user_version)`, ignoring `ErrStaleEpoch`): a store-durable
+  write and `Ship` (as before), and — repair — the `Cycle` in `openDatabase` when it shipped a
+  segment or snapshot (user_version read on the new writer connection) and the final `Cycle` at
+  eviction/close (user_version read from the closed file's header, bytes 60–64). Before, a
+  local-durable write shipped at eviction, close or post-crash reopen left the catalog at the older
+  position and schema version (review finding 2, attacks CAT-01, CAT-02).
+- **Ownership**: `Claim(ctx, id)`: evict if open; forget the old ownership both in memory and on
+  disk (delete `<id>.owner` and `<id>.atrest` — repair: before, the in-memory belief was dropped but
+  the file stayed, so a failed re-claim followed by a restart resurrected the old epoch, attack
+  CAT-03a; and a stale at-rest record from an earlier eviction made the next open after a
+  re-claim of a database another node had advanced fail with `ErrChangedWhileShut`, review
+  finding 1); catalog `Claim` → epoch e; adapter(e); up to 3
   attempts of: `Refresh` (fenced → fail); the image at the chain end (empty chain → `Create` builds
   it in a scratch file, which must be at rest); a fence snapshot = walship snapshot object with
   `Position end+1`, reason `fence`, no WAL position, the image; `PutIfAbsent` through the adapter
   ("exists" → next attempt; fenced → fail). On success: remove local files, `walship.WriteDatabase`
   the image (fsynced), write the belief file, `RecordShipped(id, e, end+1, user_version,
-  "<node>:<id>.db")`. Returns `ClaimResult{Epoch, RestoredFrom, Fence, Attempts}`. A crash between
+  "<node>:<id>.db")` — `ErrStaleEpoch` here is ignored: once the store accepted the fence this node
+  is the owner until a newer fence is accepted (correction 3); before the repair `Claim` returned
+  the error while keeping the ownership and belief file (review finding 4, attacks FENCE-03a/b).
+  The fence snapshot's page size is validated (power of two in 512–65536 dividing the image
+  length) before it is used. Returns `ClaimResult{Epoch, RestoredFrom, Fence, Attempts}`. A crash between
   the fence put and the belief file leaves the database fenced by an epoch nobody believes in; the
   next claim recovers it (liveness, not safety). When a node learns it is fenced
   (`FencedError` from a put or a listing) it records it, drops the epoch, deletes the belief file
@@ -357,7 +394,11 @@ it believed before the crash.
 State: catalog epoch; store slots (position → `{epoch, first, last, snapshot}`); per node `{up,
 role (idle|claiming|owner|fenced|stuck), epoch (volatile), belief (persisted epoch), local
 (persisted local commit count), shipped (volatile)}`; the ordered list of accepted puts. Bounds:
-2 nodes, ≤ 3 epochs, ≤ 5 local commits per node, ≤ 16 accepted puts. Actions per node (16 in all):
+2 nodes, ≤ 3 epochs, local commits only up to stream position 5 (`MaxLocal` bounds the node's
+`local` position, which a fence sets to the fence position — so it counts positions across all
+epochs and fences, not commits per node; e.g. a node that fences at 5 cannot write at all), ≤ 16
+accepted puts. `ParseMutant` refuses any name but the three models (10.1 exits 1 on an unknown
+`-mutant`; before the repair a typo silently ran `correct`). Actions per node (16 in all):
 
 | Action | Enabled when | Effect (mirrors the real code) |
 | --- | --- | --- |
@@ -650,3 +691,23 @@ cross-built and cross-vetted only, never run; the container route was not run in
 - connmgr's at-rest check is harmless but blind inside the node (the shipper's `-shm` makes every
   eviction "not at rest" before the file is opened); the node's own check after the shipper closes
   is the one that proves local = stored.
+
+## Repair round 1 (facts that changed; details are folded into the sections above)
+
+- 10.1 output changed in three EXACT lines (evidence re-captured, two runs identical):
+  line 4 now reads `… at most 3 epochs, and a node's local commits stop at stream position 5 (the
+  bound counts positions across all epochs and fences, not commits per node)` (was `at most 3
+  epochs and 5 local commits per node`, which was wrong: see the `model` section); the two
+  `check ok: db-000N: the store holds exactly the slots the model predicts …` lines end with
+  `, no damaged object` (the check now also requires `fence.Audit`'s walship catalog to have no
+  damaged object). All other EXACT lines are unchanged.
+- 10.1 now exits 1 with `FATAL -mutant: model: unknown mutant "<name>" …` on an unknown `-mutant`,
+  exits 1 (`FATAL parse acknowledgement`) if an `ok write` reply cannot be parsed, and prints each
+  node problem (`problem: …`) and over-bounds line (`over bounds: …`) before the corresponding check
+  (none are printed in a passing run).
+- A node process's `close` with extra arguments is now just an unknown command; `Serve` keeps running
+  (before, it returned without closing the node).
+- New node files in the node directory: `<id>.atrest` (see `node`). A node directory after a clean
+  close holds `<id>.db`, `<id>.owner` and `<id>.atrest` per owned, closed database.
+- Adversarial run after the repair: 26 HELD, 1 BROKEN (MOD-05b — the attack's expectation was the
+  old, wrong description of the bound; the code is unchanged and the description is corrected).
