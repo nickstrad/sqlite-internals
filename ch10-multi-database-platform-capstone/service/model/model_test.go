@@ -5,6 +5,7 @@ import (
 	"testing"
 )
 
+// TestCorrectModelHasNoViolation verifies that Explore finds zero violations across exhaustive depth-10 interleavings and 200 random walks.
 func TestCorrectModelHasNoViolation(t *testing.T) {
 	report := Explore(Correct, 10, 1, 200, 40)
 	if report.Violating != 0 || report.WalkViolating != 0 || report.Shortest != nil {
@@ -15,6 +16,7 @@ func TestCorrectModelHasNoViolation(t *testing.T) {
 	}
 }
 
+// TestMutantsAreCaught verifies that both broken fencing mutants produce violations and shortest counterexamples.
 func TestMutantsAreCaught(t *testing.T) {
 	for _, m := range []Mutant{StoreAcceptsEveryPut, ResumeFromGlobalEnd} {
 		report := Explore(m, 10, 1, 0, 0)
@@ -24,6 +26,7 @@ func TestMutantsAreCaught(t *testing.T) {
 	}
 }
 
+// TestCountsDoNotDependOnSeed verifies that changing the PCG seed leaves exhaustive interleaving and distinct-state counts identical.
 func TestCountsDoNotDependOnSeed(t *testing.T) {
 	a, b := Explore(Correct, 9, 1, 0, 0), Explore(Correct, 9, 77, 0, 0)
 	if a.Interleavings != b.Interleavings || a.States != b.States {
@@ -40,6 +43,7 @@ func run(t *testing.T, mutant Mutant, script string) ([]string, State) {
 	return Replay(mutant, actions)
 }
 
+// TestStaleOwnerIsRefusedAfterTheFence replays a takeover and checks that the old owner's next ship is refused and transitions it to Fenced.
 func TestStaleOwnerIsRefusedAfterTheFence(t *testing.T) {
 	lines, s := run(t, Correct, "A claim, A fence, A write, A ship, B claim, B fence, A write, A ship, A write")
 	if !strings.Contains(lines[7], "refused: position 3 holds epoch 2") || !strings.Contains(lines[8], "not enabled (fenced)") {
@@ -53,6 +57,7 @@ func TestStaleOwnerIsRefusedAfterTheFence(t *testing.T) {
 	}
 }
 
+// TestStaleListingRetriesThenFencesAfterTheEnd replays a stale listing during Claim and confirms the node retries and fences at the real end.
 func TestStaleListingRetriesThenFencesAfterTheEnd(t *testing.T) {
 	lines, s := run(t, Correct, "A claim, A fence, A write, A ship, B claim, B fence-with-stale-list, B fence")
 	if !strings.HasSuffix(lines[5], "retry") || !strings.HasSuffix(lines[6], "ok: fence at 3") || s.Nodes[1].Role != Owner {
@@ -60,6 +65,7 @@ func TestStaleListingRetriesThenFencesAfterTheEnd(t *testing.T) {
 	}
 }
 
+// TestRestartedStaleOwnerIsFenced contrasts Correct (restarted stale owner fenced) against ResumeFromGlobalEnd (stale owner violates ordering).
 func TestRestartedStaleOwnerIsFenced(t *testing.T) {
 	_, s := run(t, Correct, "A claim, A fence, B claim, B fence, A crash, A restart")
 	if s.Nodes[0].Role != Fenced || s.Nodes[0].Belief != 0 {
@@ -71,6 +77,7 @@ func TestRestartedStaleOwnerIsFenced(t *testing.T) {
 	}
 }
 
+// TestViolationDetectsEachInvariant directly constructs states breaking each of the three invariants and verifies Violation reports each.
 func TestViolationDetectsEachInvariant(t *testing.T) {
 	var s State
 	s.Accepted[0], s.Accepted[1], s.NAccepted = Object{Epoch: 1, First: 1, Last: 2}, Object{Epoch: 2, First: 2, Last: 2}, 2
@@ -90,6 +97,7 @@ func TestViolationDetectsEachInvariant(t *testing.T) {
 	}
 }
 
+// TestParseScriptRejectsBadActions verifies ParseScript refuses malformed node letters, unknown action kinds, and extra tokens.
 func TestParseScriptRejectsBadActions(t *testing.T) {
 	for _, bad := range []string{"", "A", "C claim", "A jump", "AA claim", "A claim extra"} {
 		if _, err := ParseScript(bad); err == nil {
@@ -98,6 +106,7 @@ func TestParseScriptRejectsBadActions(t *testing.T) {
 	}
 }
 
+// TestParseMutant checks that ParseMutant accepts only the three exact Mutant names.
 func TestParseMutant(t *testing.T) {
 	for _, m := range []Mutant{Correct, StoreAcceptsEveryPut, ResumeFromGlobalEnd} {
 		if got, err := ParseMutant(string(m)); got != m || err != nil {

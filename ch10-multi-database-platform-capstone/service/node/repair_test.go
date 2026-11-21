@@ -66,6 +66,7 @@ func outsideWrite(t *testing.T, path string) {
 	}
 }
 
+// TestReclaimAfterAnotherOwnerAdvancedTheDatabase verifies that re-claiming a previously evicted database clears its stale at-rest digest so reopening the newer state succeeds.
 func TestReclaimAfterAnotherOwnerAdvancedTheDatabase(t *testing.T) {
 	ctx := context.Background()
 	c := newCluster(t, "db-1", "db-2")
@@ -92,6 +93,7 @@ func TestReclaimAfterAnotherOwnerAdvancedTheDatabase(t *testing.T) {
 	}
 }
 
+// TestShipsOnEvictionCloseAndReopenUpdateTheCatalog verifies that shipping during LRU eviction, Node.Close, and post-crash reopen all update catalog last_shipped and schema_version.
 func TestShipsOnEvictionCloseAndReopenUpdateTheCatalog(t *testing.T) {
 	ctx := context.Background()
 	c := newCluster(t, "db-1", "db-2")
@@ -128,6 +130,7 @@ func TestShipsOnEvictionCloseAndReopenUpdateTheCatalog(t *testing.T) {
 	}
 }
 
+// TestClaimSucceedsOnceTheStoreAcceptedItsFence confirms Claim ignores catalog.ErrStaleEpoch after its fence put lands in the store, matching shipLocked.
 func TestClaimSucceedsOnceTheStoreAcceptedItsFence(t *testing.T) {
 	ctx := context.Background()
 	c := newCluster(t, "db-1")
@@ -155,6 +158,7 @@ func TestClaimSucceedsOnceTheStoreAcceptedItsFence(t *testing.T) {
 	}
 }
 
+// TestFailedReclaimForgetsTheBeliefOnDisk checks that clearing ownership at the start of Claim removes <id>.owner so a failed re-claim does not resurrect the old epoch on restart.
 func TestFailedReclaimForgetsTheBeliefOnDisk(t *testing.T) {
 	ctx := context.Background()
 	c := newCluster(t, "db-1")
@@ -183,6 +187,7 @@ func TestFailedReclaimForgetsTheBeliefOnDisk(t *testing.T) {
 	}
 }
 
+// TestStartRejectsBadRecords verifies Start rejects epoch 0 belief files and malformed at-rest digests while accepting valid records.
 func TestStartRejectsBadRecords(t *testing.T) {
 	for name, file := range map[string][2]string{
 		"good":             {"db-1.owner", "epoch 1\n"},
@@ -212,6 +217,7 @@ func TestStartRejectsBadRecords(t *testing.T) {
 	}
 }
 
+// TestRestartRefusesAFileChangedWhileShut verifies that persisted .atrest digests catch offline modification across a node restart without publishing the tampered file to the store.
 func TestRestartRefusesAFileChangedWhileShut(t *testing.T) {
 	ctx := context.Background()
 	c := newCluster(t, "db-1")
@@ -253,6 +259,7 @@ func TestRestartRefusesAFileChangedWhileShut(t *testing.T) {
 	}
 }
 
+// TestPageSizeOfRejectsBadImages checks valid 4096 and 65536 (encoded as 1) page headers and rejection of truncated, zeroed, non-power-of-two, too-small, or non-dividing images.
 func TestPageSizeOfRejectsBadImages(t *testing.T) {
 	image := func(size int, field uint16) []byte {
 		b := make([]byte, size)

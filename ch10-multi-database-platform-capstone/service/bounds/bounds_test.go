@@ -7,6 +7,7 @@ import (
 	"testing"
 )
 
+// TestLimits verifies DescriptorLimit, MemoryLimit, and CacheBytes arithmetic for negative KiB and positive page counts.
 func TestLimits(t *testing.T) {
 	b := Bounds{OpenDatabases: 4, ConnectionsPerDatabase: 3, CacheBytes: CacheBytes(-256, 4096), ReserveDescriptors: 32}
 	if b.DescriptorLimit() != 68 {
@@ -20,6 +21,7 @@ func TestLimits(t *testing.T) {
 	}
 }
 
+// TestCheckFailsWhenDescriptorsExceedTheBound opens extra files to trigger ErrExceeded and verifies Check passes again once they close.
 func TestCheckFailsWhenDescriptorsExceedTheBound(t *testing.T) {
 	a, err := Start(Bounds{OpenDatabases: 1, ConnectionsPerDatabase: 1, ReserveDescriptors: 0})
 	if err != nil {

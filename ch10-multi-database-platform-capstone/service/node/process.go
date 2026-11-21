@@ -21,11 +21,17 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/walship"
 )
 
+// Standing-bound constants used by RunProcess for each node child process.
 const (
+	// ConnectionsPerDatabase is 3: the connmgr writer connection plus walship's
+	// control and pin connections.
 	ConnectionsPerDatabase = 3
-	ReserveDescriptors     = 32
+	// ReserveDescriptors covers non-database descriptors (pipes, catalog, S3
+	// HTTP sockets, and runtime overhead).
+	ReserveDescriptors = 32
 )
 
+// Process drives a node child process over its stdin/stdout line protocol.
 type Process struct {
 	Name  string
 	cmd   *exec.Cmd
@@ -33,6 +39,7 @@ type Process struct {
 	lines *bufio.Scanner
 }
 
+// Reply holds the lines returned by a node Process for one command.
 type Reply struct {
 	Line     string
 	Problems []string
@@ -40,8 +47,11 @@ type Reply struct {
 	Summary  string
 }
 
+// WithinBounds reports whether the node's bounds check after the command passed.
 func (r Reply) WithinBounds() bool { return strings.HasSuffix(r.Bounds, " ok") }
 
+// StartProcess re-executes the current binary with args, waits for its "ready"
+// line, and returns a handle for sending commands.
 func StartProcess(ctx context.Context, name string, args ...string) (*Process, error) {
 	self, err := os.Executable()
 	if err != nil {
@@ -67,6 +77,8 @@ func StartProcess(ctx context.Context, name string, args ...string) (*Process, e
 	return p, nil
 }
 
+// Send writes one command line to p and reads lines until the trailing "bounds"
+// line completes the reply.
 func (p *Process) Send(command string) (Reply, error) {
 	if _, err := fmt.Fprintln(p.stdin, command); err != nil {
 		return Reply{}, err
@@ -87,6 +99,7 @@ func (p *Process) Send(command string) (Reply, error) {
 	return reply, fmt.Errorf("node %s: output ended after %q: %v", p.Name, command, p.lines.Err())
 }
 
+// Kill terminates the child process with SIGKILL and reaps it.
 func (p *Process) Kill() error {
 	if err := p.cmd.Process.Kill(); err != nil {
 		return err
@@ -97,6 +110,8 @@ func (p *Process) Kill() error {
 	return nil
 }
 
+// Close sends "close", captures the trailing standing-assertion summary line,
+// closes stdin, and waits for the child process to exit cleanly.
 func (p *Process) Close() (Reply, error) {
 	reply, err := p.Send("close")
 	if err != nil {
@@ -108,6 +123,7 @@ func (p *Process) Close() (Reply, error) {
 	return reply, errors.Join(p.stdin.Close(), p.cmd.Wait())
 }
 
+// ProcessConfig carries the command-line parameters for a node child process.
 type ProcessConfig struct {
 	Name     string
 	Work     string
@@ -117,10 +133,16 @@ type ProcessConfig struct {
 	Capacity int
 }
 
+// Args renders c into the flag slice expected by an experiment's "-role node"
+// entry point.
 func (c ProcessConfig) Args() []string {
 	return []string{"-role", "node", "-name", c.Name, "-work", c.Work, "-fault", c.Fault, "-bucket", c.Bucket, "-prefix", c.Prefix, "-capacity", fmt.Sprint(c.Capacity)}
 }
 
+// RunProcess is the entry point for a node child process: it connects to
+// SeaweedFS S3 (optionally wrapped in faultstore), opens the shared catalog,
+// starts a Node with the course recipe workload and standing bounds assertion,
+// and serves commands on stdin/stdout.
 func RunProcess(ctx context.Context, c ProcessConfig) error {
 	s3, err := s3store.Connect(ctx, rangefs.S3ConfigFromEnv(), c.Bucket, c.Prefix)
 	if err != nil {

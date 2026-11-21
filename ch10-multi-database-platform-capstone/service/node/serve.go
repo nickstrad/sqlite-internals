@@ -13,6 +13,9 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
 )
 
+// Explain formats err into stable, reader-facing text for line-protocol
+// replies: FencedError's message verbatim, "not the owner" for ErrNotOwner, or
+// "error: <err>" otherwise.
 func Explain(err error) string {
 	var fenced *fence.FencedError
 	switch {
@@ -24,6 +27,10 @@ func Explain(err error) string {
 	return "error: " + err.Error()
 }
 
+// Serve runs the node's stdin/stdout line protocol. It writes "ready", then
+// for each command line emits any recorded "problem …" lines, one "ok …" or
+// "refused …" reply, and one "bounds …" line checked against assertion. A bare
+// "close" command also writes assertion.Summary() and returns nil.
 func Serve(ctx context.Context, n *Node, assertion *bounds.Assertion, apply func(context.Context, *sqlitex.DB) error, in io.Reader, out io.Writer) error {
 	lines := bufio.NewScanner(in)
 	fmt.Fprintln(out, "ready")
@@ -43,6 +50,8 @@ func Serve(ctx context.Context, n *Node, assertion *bounds.Assertion, apply func
 			status = "EXCEEDED: " + err.Error()
 		}
 		fmt.Fprintf(out, "bounds descriptors=%d memory=%d %s\n", sample.Descriptors, sample.MemoryGrowth, status)
+		// Exit only on a bare "close"; "close" with extra arguments is handled
+		// as an unknown command without closing n.
 		if fields[0] == "close" && len(fields) == 1 {
 			fmt.Fprintln(out, assertion.Summary())
 			return nil

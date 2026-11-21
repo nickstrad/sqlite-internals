@@ -1,3 +1,11 @@
+// Package s3store implements walship.Store on an S3-compatible object store
+// (SeaweedFS from compose.yaml) using aws-sdk-go-v2.
+//
+// It owns the thin translation between walship keys and S3 requests under one
+// bucket and key prefix. It relies only on three S3 behaviors probed against
+// SeaweedFS: atomic conditional put via If-None-Match: "*", read-after-write
+// visibility, and list-after-write visibility. It does not rely on listing
+// order (callers sort keys themselves) or on If-Match.
 package s3store
 
 import (
@@ -17,8 +25,11 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/walship"
 )
 
+// ErrUnreachable reports that the configured S3 endpoint did not answer the
+// bucket check within Connect's deadline.
 var ErrUnreachable = errors.New("the S3 store is unreachable")
 
+// Store is a walship.Store backed by one S3 bucket and normalized key prefix.
 type Store struct {
 	Client   *s3.Client
 	Bucket   string
@@ -26,6 +37,8 @@ type Store struct {
 	Endpoint string
 }
 
+// Connect builds a path-style S3 client for config, ensures bucket exists
+// within a 10-second probe deadline, and returns a Store scoped to prefix.
 func Connect(ctx context.Context, config rangefs.S3Config, bucket, prefix string) (*Store, error) {
 	if err := walship.ValidateKey(strings.TrimSuffix(prefix, "/")); err != nil {
 		return nil, err
@@ -47,6 +60,13 @@ func errorCode(err error) string {
 	return ""
 }
 
+// PutIfAbsent creates key only if it does not already exist in the bucket by
+// sending PutObject with If-None-Match: "*". A 412 PreconditionFailed response
+// is mapped to walship.ErrExists.
+//
+// If the SDK retries a PUT after a transient error and the first attempt
+// succeeded, the retry receives PreconditionFailed for the caller's own bytes;
+// fence.Adapter handles that by reading the existing slot and comparing bytes.
 func (s *Store) PutIfAbsent(ctx context.Context, key string, data []byte) error {
 	if err := walship.ValidateKey(key); err != nil {
 		return err
@@ -63,6 +83,8 @@ func (s *Store) PutIfAbsent(ctx context.Context, key string, data []byte) error 
 	return err
 }
 
+// Get fetches key and returns its bytes, mapping NoSuchKey or NotFound to
+// walship.ErrNotFound and rejecting a truncated body shorter than Content-Length.
 func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 	if err := walship.ValidateKey(key); err != nil {
 		return nil, err
@@ -85,6 +107,9 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 	return data, nil
 }
 
+// List returns every key under prefix with the store's own prefix stripped.
+// Keys are returned in whatever order the server lists them; walship and fence
+// sort keys themselves.
 func (s *Store) List(ctx context.Context, prefix string) ([]string, error) {
 	if prefix != "" {
 		if err := walship.ValidateKey(strings.TrimSuffix(prefix, "/")); err != nil {
@@ -109,6 +134,8 @@ func (s *Store) List(ctx context.Context, prefix string) ([]string, error) {
 	return keys, nil
 }
 
+// Delete removes key from the bucket. S3 DeleteObject is idempotent, so
+// deleting a missing key returns nil.
 func (s *Store) Delete(ctx context.Context, key string) error {
 	if err := walship.ValidateKey(key); err != nil {
 		return err
@@ -117,6 +144,8 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 	return err
 }
 
+// Wipe deletes every object under s.Prefix and returns how many objects were
+// deleted. Experiments call it at startup so each run begins from an empty prefix.
 func (s *Store) Wipe(ctx context.Context) (int, error) {
 	keys, err := s.List(ctx, "")
 	if err != nil {

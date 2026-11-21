@@ -1,3 +1,21 @@
+// Experiment 10.1 tests the single-writer ownership invariant in two parts.
+//
+// Part A runs the finite-state ownership model (service/model) exhaustively up
+// to a bounded depth plus seeded random walks, checking that slot exclusivity
+// in the store combined with the writer's epoch/append rule prevents any fenced
+// epoch from getting a commit accepted. It also runs two broken mutants
+// (store-accepts-every-put and resume-from-global-end) as self-tests to show
+// each half of the fencing rule is necessary and that the checker catches
+// violations.
+//
+// Part B drives two real node child processes (a and b) sharing a WAL catalog
+// and a SeaweedFS S3 store through a 15-step stale-owner scenario: a stale
+// listing during takeover (fault stale-list:/log/:1), an active stale owner
+// fenced on ship, a killed stale owner restarting with its persisted .owner
+// belief file and getting fenced on open, and the contrast between
+// store-durable acknowledgements (kept) and an unshipped local-durable
+// acknowledgement (lost on takeover). Every command step is cross-checked
+// against the model and against the standing descriptor and memory bounds.
 package main
 
 import (
@@ -69,6 +87,8 @@ func partA() {
 	fmt.Printf("seeded random walks: %d walks, %d steps, %d reached a violation\n", report.Walks, report.WalkSteps, report.WalkViolating)
 	printTrace(report)
 	check(report.Violating == 0 && report.WalkViolating == 0 && report.Shortest == nil, fmt.Sprintf("model %s: no interleaving up to depth %d and no random walk lets a fenced epoch get a commit accepted", report.Mutant, *depth))
+	// Self-tests: disable each half of the fencing rule in turn so the
+	// experiment proves the checker can fail when either guarantee is missing.
 	for _, m := range []model.Mutant{model.StoreAcceptsEveryPut, model.ResumeFromGlobalEnd} {
 		if m == under {
 			continue
@@ -95,6 +115,11 @@ type step struct {
 	model         map[string]string
 }
 
+// scenario scripts two real nodes alongside the model actions for each step:
+// steps 1-7 exercise stale-list retry, active stale-owner fencing, and loss of
+// an unshipped local-durable commit on db-0001; steps 8-15 exercise SIGKILL and
+// restart of a stale owner holding a persisted belief file on db-0002 while
+// keeping ownership of db-0001.
 var scenario = []step{
 	{"a", "claim db-0001", map[string]string{"db-0001": "A claim, A fence"}},
 	{"a", "write db-0001 store-durable", map[string]string{"db-0001": "A write, A ship"}},
@@ -297,6 +322,9 @@ func verify(ctx context.Context, store *s3store.Store, cat *catalog.Catalog, wor
 			slots = append(slots, fmt.Sprintf("positions %d-%d epoch %d %s", slot.First, slot.Last, slot.Epoch, slot.Kind))
 		}
 		fmt.Printf("%s store: %s\n%s model: %s\n", id, strings.Join(slots, "; "), id, strings.Join(states[id].ChainLines(), "; "))
+		// Require len(restorable.Damaged) == 0 in addition to RestoreAt(last):
+		// a damaged segment before a newer snapshot would not affect restoring
+		// the latest position, but would break point-in-time auditability.
 		check(strings.Join(slots, "; ") == strings.Join(states[id].ChainLines(), "; ") && len(restorable.Damaged) == 0, id+": the store holds exactly the slots the model predicts: one lineage, epochs never decreasing, no damaged object")
 		restoreAt := func(position int64) []byte {
 			image, err := fence.RestoreAt(restorable, position)
@@ -346,6 +374,8 @@ func verify(ctx context.Context, store *s3store.Store, cat *catalog.Catalog, wor
 func main() {
 	flag.Parse()
 	ctx := context.Background()
+	// Dispatch child-node role before printing the pin line so the child's
+	// stdout begins cleanly with "ready" for node.StartProcess.
 	if *role == "node" {
 		if err := node.RunProcess(ctx, process); err != nil {
 			fatal("node "+process.Name, err)

@@ -55,6 +55,7 @@ func adapter(t *testing.T, store walship.Store, epoch uint64) *Adapter {
 	return a
 }
 
+// TestEnvelopeRoundTripAndStrictDecode verifies valid slot encoding and checks that 12 malformed envelopes are rejected as ErrDamaged.
 func TestEnvelopeRoundTripAndStrictDecode(t *testing.T) {
 	ctx := context.Background()
 	key := SlotKey("db-1", 1)
@@ -91,6 +92,7 @@ func TestEnvelopeRoundTripAndStrictDecode(t *testing.T) {
 	}
 }
 
+// TestAdapterAppendsOnlyAtTheEnd checks contiguous appending, rejection of out-of-order or overlapping puts, key translation on List/Get, and refusal of Delete.
 func TestAdapterAppendsOnlyAtTheEnd(t *testing.T) {
 	ctx := context.Background()
 	store := newStore(t)
@@ -126,6 +128,7 @@ func TestAdapterAppendsOnlyAtTheEnd(t *testing.T) {
 	}
 }
 
+// TestNewerEpochFencesTheOlderWriter verifies that a higher epoch's fence blocks both active and restarted older-epoch adapters with FencedError.
 func TestNewerEpochFencesTheOlderWriter(t *testing.T) {
 	ctx := context.Background()
 	store := newStore(t)
@@ -157,6 +160,7 @@ func TestNewerEpochFencesTheOlderWriter(t *testing.T) {
 	}
 }
 
+// TestRetriedIdenticalPutSucceeds checks that an ErrExists collision with byte-identical content is treated as success and advances the adapter's chain.
 func TestRetriedIdenticalPutSucceeds(t *testing.T) {
 	ctx := context.Background()
 	store := newStore(t)
@@ -173,6 +177,7 @@ func TestRetriedIdenticalPutSucceeds(t *testing.T) {
 	}
 }
 
+// TestLowerEpochHolderIsReportedAsExists checks that colliding with an older epoch returns walship.ErrExists rather than ErrFenced so a claim can re-list and retry.
 func TestLowerEpochHolderIsReportedAsExists(t *testing.T) {
 	ctx := context.Background()
 	store := newStore(t)
@@ -186,6 +191,7 @@ func TestLowerEpochHolderIsReportedAsExists(t *testing.T) {
 	}
 }
 
+// TestCheckLineage verifies valid lineages pass and five malformed chain shapes fail with ErrBadChain.
 func TestCheckLineage(t *testing.T) {
 	snap := func(epoch uint64, p int64) Slot { return Slot{Epoch: epoch, Kind: KindSnapshot, First: p, Last: p} }
 	seg := func(epoch uint64, first, last int64) Slot {
@@ -208,6 +214,7 @@ func TestCheckLineage(t *testing.T) {
 	}
 }
 
+// TestNewRejectsBadIdentity checks that New refuses invalid database ids and epoch 0.
 func TestNewRejectsBadIdentity(t *testing.T) {
 	store := newStore(t)
 	for _, id := range []string{"", "a/b", "DB", "../x"} {
@@ -220,6 +227,7 @@ func TestNewRejectsBadIdentity(t *testing.T) {
 	}
 }
 
+// TestListAfterFencedRefreshStaysFenced verifies that a fenced Refresh does not cache a partial pre-fence view that subsequent List or Put calls would accept.
 func TestListAfterFencedRefreshStaysFenced(t *testing.T) {
 	ctx := context.Background()
 	store := newStore(t)
@@ -245,6 +253,7 @@ func TestListAfterFencedRefreshStaysFenced(t *testing.T) {
 	}
 }
 
+// TestMalformedPutNeverReachesTheStore confirms PutIfAbsent validates envelopes locally so corrupt objects are never written into immutable slots.
 func TestMalformedPutNeverReachesTheStore(t *testing.T) {
 	ctx := context.Background()
 	store := newStore(t)
@@ -270,6 +279,7 @@ func TestMalformedPutNeverReachesTheStore(t *testing.T) {
 	}
 }
 
+// TestDecodeRejectsMalformedKeys checks that Decode rejects empty, uppercase, or wrongly prefixed slot keys.
 func TestDecodeRejectsMalformedKeys(t *testing.T) {
 	data := Encode(1, KindSnapshot, 1, 1, snapshotObject(t, 1))
 	for _, key := range []string{"dbs//log/000000000001", "x/db-1/log/000000000001", "dbs/db-1/seg/000000000001", "dbs/DB/log/000000000001"} {
@@ -279,6 +289,7 @@ func TestDecodeRejectsMalformedKeys(t *testing.T) {
 	}
 }
 
+// TestAdapterKeepsNoObjectBytes verifies that Adapter caches slot metadata only and reads object bytes from the underlying store on demand.
 func TestAdapterKeepsNoObjectBytes(t *testing.T) {
 	ctx := context.Background()
 	store := newStore(t)

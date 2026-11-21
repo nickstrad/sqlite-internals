@@ -9,6 +9,7 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
 )
 
+// TestClaimBumpsTheEpochAndFencesOldRecords exercises idempotent registration, concurrent handles claiming distinct epochs, stale RecordShipped rejection, unknown ids, and strict settings validation.
 func TestClaimBumpsTheEpochAndFencesOldRecords(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "catalog.db")

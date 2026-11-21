@@ -1,3 +1,19 @@
+// Package node owns a single service node's runtime: database routing, bounded
+// LRU connection management (internal/connmgr), continuous WAL capture per open
+// database (internal/walship over fence.Adapter), local ownership and at-rest
+// state files, takeover claims, and the two explicit acknowledgement modes
+// (LocalDurable and StoreDurable). It also provides the line-protocol server
+// (Serve) and child-process driver (Process) used by multi-process experiments.
+//
+// Ownership state on disk lives in two per-database sidecar files in Config.Dir:
+//   - <id>.owner holds "epoch N\n" so a restarted node retains its pre-crash
+//     ownership belief until the store proves a newer epoch fenced it.
+//   - <id>.atrest holds the 64-hex sha256 recorded after a clean eviction or
+//     close so offline tampering between runs is rejected before shipping.
+//
+// Each open database holds 3 SQLite connections (the writer plus walship's
+// control and pin connections) and opens 7 file descriptors (3 .db, 3 -wal,
+// and 1 process-shared -shm via unixInodeInfo, src/os_unix.c:1323-1342).
 package node
 
 import (
@@ -20,24 +36,41 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/walship"
 )
 
+// AckMode selects when Node.Write acknowledges a committed transaction.
 type AckMode string
 
+// Acknowledgement modes and claim constants.
 const (
-	LocalDurable  AckMode = "local-durable"
-	StoreDurable  AckMode = "store-durable"
-	ReasonFence           = "fence"
-	claimAttempts         = 3
+	// LocalDurable acknowledges immediately after the local SQLite commit at
+	// synchronous=FULL; unshipped commits can be lost if another node takes over.
+	LocalDurable AckMode = "local-durable"
+	// StoreDurable acknowledges only after the shipper puts the segment holding
+	// the commit into the object store.
+	StoreDurable AckMode = "store-durable"
+	// ReasonFence is the walship snapshot reason recorded on a takeover fence.
+	ReasonFence   = "fence"
+	claimAttempts = 3
 )
 
+// Sentinel errors returned by Node ownership, durability, and reopen checks.
 var (
-	ErrNotOwner          = errors.New("this node does not own the database")
+	// ErrNotOwner reports that this node has no ownership belief for the database.
+	ErrNotOwner = errors.New("this node does not own the database")
+	// ErrNotLocallyDurable reports a LocalDurable write against a database whose
+	// catalog settings do not specify synchronous=FULL.
 	ErrNotLocallyDurable = errors.New("local-durable acknowledgement needs synchronous=FULL")
-	ErrMissingLocalFile  = errors.New("the local database file is missing; claim the database again to restore it")
-	ErrChangedWhileShut  = errors.New("the local database file changed while it was closed")
-	idPattern            = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
-	sha256Pattern        = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	// ErrMissingLocalFile reports that an owned database's local file is absent.
+	ErrMissingLocalFile = errors.New("the local database file is missing; claim the database again to restore it")
+	// ErrChangedWhileShut reports that a database closed cleanly no longer
+	// matches its recorded at-rest sha256 (or still has WAL sidecars).
+	ErrChangedWhileShut = errors.New("the local database file changed while it was closed")
+	idPattern           = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+	sha256Pattern       = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
+// Config configures a Node: its identity, local working directory, shared
+// catalog, object store, open-database LRU capacity, persistent SQLite file
+// settings, and initializer for a brand-new database (empty store chain).
 type Config struct {
 	Name     string
 	Dir      string
@@ -48,6 +81,9 @@ type Config struct {
 	Create   func(ctx context.Context, path string) error
 }
 
+// Ack describes an acknowledged write: the durability mode, the owning epoch,
+// the last shipped stream position (0 for LocalDurable), and the database's
+// user_version after the write.
 type Ack struct {
 	Mode        AckMode
 	Epoch       uint64
@@ -55,6 +91,9 @@ type Ack struct {
 	UserVersion int
 }
 
+// ClaimResult summarizes a completed Node.Claim: the new catalog epoch, the
+// stream position restored from the store (0 when newly created), the position
+// of the accepted fence snapshot, and how many listing/put attempts were needed.
 type ClaimResult struct {
 	Epoch        uint64
 	RestoredFrom int64
@@ -68,6 +107,8 @@ type capture struct {
 	broken  bool
 }
 
+// Node serves databases it owns on one host, bounding open handles through
+// internal/connmgr and serializing public calls with a single mutex.
 type Node struct {
 	config   Config
 	mu       sync.Mutex
@@ -79,6 +120,9 @@ type Node struct {
 	problems []string
 }
 
+// PlatformSettings returns the per-connection SQLite settings registered in
+// the catalog for platform databases: WAL mode's default recipe settings with
+// wal_autocheckpoint=0 (so only walship checkpoints) and a 256 KiB cache.
 func PlatformSettings() sqlitex.ConnSettings {
 	settings := recipe.Default().SQLiteOptions().Conn
 	settings.WALAutocheckpoint = 0
@@ -86,6 +130,8 @@ func PlatformSettings() sqlitex.ConnSettings {
 	return settings
 }
 
+// Start initializes a Node in config.Dir, strictly loading any persisted
+// *.owner belief files (rejecting epoch 0) and *.atrest digests from prior runs.
 func Start(config Config) (*Node, error) {
 	if config.Name == "" || config.Catalog == nil || config.Store == nil || config.Create == nil {
 		return nil, errors.New("node: Name, Catalog, Store and Create are required")
@@ -145,6 +191,8 @@ func (n *Node) openDatabase(ctx context.Context, path string) (*sqlitex.DB, erro
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrNotOwner, id)
 	}
+	// Refuse a missing local file explicitly: otherwise SQLite would create an
+	// empty database and walship would publish it as a discontinuity snapshot.
 	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrMissingLocalFile, err)
 	}
@@ -156,6 +204,10 @@ func (n *Node) openDatabase(ctx context.Context, path string) (*sqlitex.DB, erro
 		if !status.AtRest || status.SHA256 != recorded {
 			return nil, fmt.Errorf("%w: %s: %s", ErrChangedWhileShut, id, status)
 		}
+		// Remove the on-disk at-rest digest once the reopen check passes, before
+		// opening the shipper: if the node crashes while the database is open,
+		// the next restart sees no .atrest file and treats it as post-crash
+		// (shipping any unshipped local commits instead of rejecting the file).
 		if err := n.removeFile(id, ".atrest"); err != nil {
 			return nil, err
 		}
@@ -169,6 +221,8 @@ func (n *Node) openDatabase(ctx context.Context, path string) (*sqlitex.DB, erro
 		return nil, err
 	}
 	options := n.options(record.Settings)
+	// Opening walship lists the fenced slot chain through adapter, which fences
+	// a restarted stale owner before any local write or upload can happen.
 	shipper, err := walship.Open(ctx, walship.Config{Database: path, Store: adapter, Options: options})
 	if err != nil {
 		return nil, err
@@ -176,6 +230,8 @@ func (n *Node) openDatabase(ctx context.Context, path string) (*sqlitex.DB, erro
 	if _, err := shipper.AdoptAtRest(ctx); err != nil {
 		return nil, errors.Join(err, shipper.Close())
 	}
+	// Ship any commits left unshipped on disk (for example, local-durable writes
+	// committed before a process crash) before admitting new requests.
 	report, err := shipper.Cycle(ctx)
 	if err != nil {
 		return nil, errors.Join(err, shipper.Close())
@@ -204,6 +260,9 @@ func shipped(report walship.CycleReport) bool {
 
 func (n *Node) recordShipped(ctx context.Context, id string, epoch uint64, position int64, userVersion int) error {
 	err := n.config.Catalog.RecordShipped(ctx, id, epoch, position, userVersion, n.config.Name+":"+id+".db")
+	// Ignore ErrStaleEpoch: the store already accepted this put into the one
+	// lineage, and another node bumping the catalog epoch before fencing does
+	// not invalidate an already-accepted slot.
 	if errors.Is(err, catalog.ErrStaleEpoch) {
 		return nil
 	}
@@ -240,6 +299,8 @@ func (n *Node) evicted(eviction connmgr.Eviction) {
 	if !fenced && !c.broken {
 		report, shipErr = c.shipper.Cycle(context.Background())
 	}
+	// Closing the shipper closes the last SQLite connections to the database,
+	// so sqlite3WalClose (src/wal.c:2507-2571) checkpoints and deletes -wal/-shm.
 	closeErr := c.shipper.Close()
 	if errors.Is(shipErr, fence.ErrFenced) {
 		n.markFenced(eviction.ID, shipErr)
@@ -252,6 +313,10 @@ func (n *Node) evicted(eviction connmgr.Eviction) {
 	if fenced || c.broken {
 		return
 	}
+	// Verify at-rest state here rather than relying on connmgr's own check:
+	// connmgr ran while the shipper still held -wal/-shm (returning early
+	// without opening the file, avoiding src/os_unix.c:1189-1342 lock loss).
+	// Now that all connections are closed, prove local bytes == last shipped state.
 	status, err := connmgr.CheckAtRest(eviction.Path)
 	switch {
 	case err != nil:
@@ -285,6 +350,7 @@ func userVersionOf(path string) (int, error) {
 	if _, err := io.ReadFull(file, header); err != nil {
 		return 0, err
 	}
+	// Bytes 60..63 of the SQLite database header store the big-endian user_version.
 	return int(binary.BigEndian.Uint32(header[60:64])), nil
 }
 
@@ -310,6 +376,7 @@ func pageSizeOf(image []byte) (int, error) {
 	if len(image) < 100 {
 		return 0, fmt.Errorf("node: image of %d bytes", len(image))
 	}
+	// Header bytes 16..17 store page size in big-endian; value 1 encodes 65536.
 	size := int(binary.BigEndian.Uint16(image[16:18]))
 	if size == 1 {
 		size = 65536
@@ -320,6 +387,12 @@ func pageSizeOf(image []byte) (int, error) {
 	return size, nil
 }
 
+// Claim takes ownership of id for this node: it clears any local belief and
+// at-rest digest, bumps the catalog epoch, restores the store's latest state
+// (or creates an empty database when the chain is empty), writes a fence
+// snapshot at end+1 with put-if-absent (retrying on ErrExists from a stale
+// listing), writes the local database and <id>.owner belief file, and updates
+// the catalog.
 func (n *Node) Claim(ctx context.Context, id string) (ClaimResult, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -331,6 +404,9 @@ func (n *Node) Claim(ctx context.Context, id string) (ClaimResult, error) {
 	delete(n.fenced, id)
 	delete(n.owned, id)
 	delete(n.atRest, id)
+	// Remove both sidecars on disk before claiming so a failed re-claim cannot
+	// resurrect the old epoch on restart, and an older at-rest digest cannot
+	// reject a reclaimed database that another node advanced.
 	if err := errors.Join(n.removeFile(id, ".owner"), n.removeFile(id, ".atrest")); err != nil {
 		return ClaimResult{}, err
 	}
@@ -347,6 +423,8 @@ func (n *Node) Claim(ctx context.Context, id string) (ClaimResult, error) {
 		if err != nil {
 			return ClaimResult{Epoch: epoch, Attempts: attempt}, err
 		}
+		// imageAt reads through adapter's already-cached listing so the restored
+		// image and the fence position end+1 come from the same listing.
 		image, err := n.imageAt(ctx, adapter, path, end)
 		if err != nil {
 			return ClaimResult{Epoch: epoch, Attempts: attempt}, err
@@ -365,6 +443,8 @@ func (n *Node) Claim(ctx context.Context, id string) (ClaimResult, error) {
 		}
 		err = adapter.PutIfAbsent(ctx, walship.SnapshotKey(end+1), object)
 		if errors.Is(err, walship.ErrExists) {
+			// A lower or equal epoch occupies end+1 (stale listing or a last
+			// pre-fence ship by the old owner); re-list and try again.
 			continue
 		}
 		if err != nil {
@@ -428,6 +508,12 @@ func (n *Node) acquire(ctx context.Context, id string) (*connmgr.Handle, uint64,
 	return h, epoch, err
 }
 
+// Write runs apply against database id under mode. LocalDurable requires
+// synchronous=FULL in the catalog settings and acknowledges after the local
+// commit. StoreDurable acknowledges only after shipping the new WAL frames to
+// the store; if shipping fails (including FencedError), the write is committed
+// locally on this node's orphaned file but not acknowledged, and the database is
+// evicted so the next use reopens from the store.
 func (n *Node) Write(ctx context.Context, id string, mode AckMode, apply func(context.Context, *sqlitex.DB) error) (Ack, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -480,6 +566,8 @@ func (n *Node) afterShip(id string, err error) {
 	}
 }
 
+// Ship runs one walship Cycle for database id, updates the catalog, and returns
+// the latest shipped stream position.
 func (n *Node) Ship(ctx context.Context, id string) (int64, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -498,6 +586,8 @@ func (n *Node) Ship(ctx context.Context, id string) (int64, error) {
 	return position, err
 }
 
+// Read acquires database id (opening and fencing-checking it if not open) and
+// runs read against its SQLite connection.
 func (n *Node) Read(ctx context.Context, id string, read func(context.Context, *sqlitex.DB) error) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -509,6 +599,8 @@ func (n *Node) Read(ctx context.Context, id string, read func(context.Context, *
 	return read(ctx, h.DB)
 }
 
+// Owned reports whether this node currently believes it owns id, and if so at
+// what epoch.
 func (n *Node) Owned(id string) (uint64, bool) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -516,8 +608,11 @@ func (n *Node) Owned(id string) (uint64, bool) {
 	return epoch, ok
 }
 
+// Stats returns the underlying connmgr statistics (open count, evictions, etc.).
 func (n *Node) Stats() connmgr.Stats { return n.manager.Stats() }
 
+// TakeProblems returns and clears any background problems recorded during
+// evictions or ownership cleanup (such as a failed final ship or at-rest check).
 func (n *Node) TakeProblems() []string {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -526,6 +621,8 @@ func (n *Node) TakeProblems() []string {
 	return problems
 }
 
+// Close closes every open database (shipping and verifying at-rest state via
+// evicted) and returns any close errors joined with recorded problems.
 func (n *Node) Close() error {
 	n.mu.Lock()
 	defer n.mu.Unlock()

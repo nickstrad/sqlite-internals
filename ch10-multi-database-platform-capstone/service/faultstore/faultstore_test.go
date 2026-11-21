@@ -18,6 +18,7 @@ func base(t *testing.T) *walship.DirStore {
 	return store
 }
 
+// TestPutFaults verifies FailBeforePut, FailAfterPut, and PartialPut fire once on the Nth matching put and leave the expected bytes in the underlying store.
 func TestPutFaults(t *testing.T) {
 	ctx := context.Background()
 	data := []byte("0123456789")
@@ -53,6 +54,7 @@ func TestPutFaults(t *testing.T) {
 	}
 }
 
+// TestCrashFaultsCallTheHook checks that CrashBeforePut and CrashAfterPut invoke the Crash hook on the expected side of the underlying put.
 func TestCrashFaultsCallTheHook(t *testing.T) {
 	ctx := context.Background()
 	for _, fault := range []Fault{CrashBeforePut, CrashAfterPut} {
@@ -70,6 +72,7 @@ func TestCrashFaultsCallTheHook(t *testing.T) {
 	}
 }
 
+// TestStaleListHidesTheNewestKeyOnce verifies that a StaleList rule omits the lexicographically last key once and ignores puts.
 func TestStaleListHidesTheNewestKeyOnce(t *testing.T) {
 	ctx := context.Background()
 	dir := base(t)
@@ -92,6 +95,7 @@ func TestStaleListHidesTheNewestKeyOnce(t *testing.T) {
 	}
 }
 
+// TestParseRule checks valid rule round-tripping and rejection of malformed fault specifications.
 func TestParseRule(t *testing.T) {
 	rule, err := ParseRule("stale-list:/log/:1")
 	if err != nil || rule != (Rule{Fault: StaleList, Match: "/log/", Nth: 1}) || rule.String() != "stale-list:/log/:1" {
@@ -104,6 +108,7 @@ func TestParseRule(t *testing.T) {
 	}
 }
 
+// TestStaleListSkipsEmptyListings verifies that empty listings do not consume a StaleList rule's Nth counter.
 func TestStaleListSkipsEmptyListings(t *testing.T) {
 	ctx := context.Background()
 	dir := base(t)

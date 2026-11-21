@@ -32,6 +32,7 @@ func commitStep(t *testing.T, path string, step int) {
 	}
 }
 
+// TestAdoptAtRestSkipsTheReopenSnapshot verifies that AdoptAtRest avoids a discontinuity snapshot after a clean close while keeping every position restorable byte for byte.
 func TestAdoptAtRestSkipsTheReopenSnapshot(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -117,6 +118,7 @@ func mustRestore(t *testing.T, catalog *Catalog, position int64) []byte {
 	return image
 }
 
+// TestAdoptAtRestRefusesAChangedFileOrUnshippedFrames checks that AdoptAtRest declines an offline-modified file and a WAL holding committed frames, leaving Cycle to snapshot.
 func TestAdoptAtRestRefusesAChangedFileOrUnshippedFrames(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

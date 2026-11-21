@@ -70,6 +70,7 @@ func mustWrite(t *testing.T, n *Node, id string, mode AckMode) Ack {
 	return ack
 }
 
+// TestTakeoverFencesTheOldOwner verifies that a second node's Claim restores the last shipped position, fences the old owner's writes, removes its belief file, and leaves the new owner's closed file equal to RestoreAt.
 func TestTakeoverFencesTheOldOwner(t *testing.T) {
 	ctx := context.Background()
 	c := newCluster(t, "db-1")
@@ -124,6 +125,7 @@ func TestTakeoverFencesTheOldOwner(t *testing.T) {
 	}
 }
 
+// TestRestartedNodeBelievesItsClaimUntilTheStoreSaysOtherwise checks that a restarted stale owner loads its .owner file and is fenced on its first write when walship lists the store.
 func TestRestartedNodeBelievesItsClaimUntilTheStoreSaysOtherwise(t *testing.T) {
 	ctx := context.Background()
 	c := newCluster(t, "db-1")
@@ -150,6 +152,7 @@ func TestRestartedNodeBelievesItsClaimUntilTheStoreSaysOtherwise(t *testing.T) {
 	}
 }
 
+// TestEvictionShipsAndVerifiesTheFileAtRest verifies LRU eviction ships local-durable writes, AdoptAtRest skips a reopen snapshot, and offline tampering or deletion is rejected until re-claimed.
 func TestEvictionShipsAndVerifiesTheFileAtRest(t *testing.T) {
 	ctx := context.Background()
 	c := newCluster(t, "db-1", "db-2")
@@ -204,6 +207,7 @@ func TestEvictionShipsAndVerifiesTheFileAtRest(t *testing.T) {
 	}
 }
 
+// TestLocalDurableNeedsSynchronousFull verifies LocalDurable refuses synchronous=NORMAL while StoreDurable succeeds, and unknown modes or unowned ids are rejected.
 func TestLocalDurableNeedsSynchronousFull(t *testing.T) {
 	ctx := context.Background()
 	c := newCluster(t)

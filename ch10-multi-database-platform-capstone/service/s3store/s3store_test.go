@@ -10,6 +10,7 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/walship"
 )
 
+// TestS3StoreSemantics exercises PutIfAbsent, Get, List, Delete, Wipe, key validation, and ErrUnreachable against live SeaweedFS.
 func TestS3StoreSemantics(t *testing.T) {
 	ctx := context.Background()
 	s, err := Connect(ctx, rangefs.S3ConfigFromEnv(), "course-ch10a", "test-s3store")
