@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -21,20 +22,44 @@ import (
 )
 
 const (
-	childMode       = "child-writer"
-	baseStep        = 3
-	lastStep        = 11
-	checkpointAfter = 7
-	pwriteKills     = 6
-	packagePath     = "ch09-backup-crash-recovery-integrity/experiments/9.2-crash-versus-power-loss"
+	childMode              = "child-writer"
+	baseStep               = 3
+	lastStep               = 11
+	checkpointAfter        = 7
+	pwriteKills            = 6
+	readerFromStep         = 5
+	beforeCheckpointSuffix = ".before-checkpoint"
+	packagePath            = "ch09-backup-crash-recovery-integrity/experiments/9.2-crash-versus-power-loss"
 )
 
 var levels = []string{"OFF", "NORMAL", "FULL"}
+
+type variant struct {
+	level      string
+	readerFrom int
+}
+
+func (v variant) String() string {
+	if v.readerFrom == 0 {
+		return "synchronous=" + v.level
+	}
+	return fmt.Sprintf("synchronous=%s with a second connection holding a read transaction from step %d", v.level, v.readerFrom)
+}
+
+func (v variant) dirName() string {
+	if v.readerFrom == 0 {
+		return strings.ToLower(v.level)
+	}
+	return fmt.Sprintf("%s-reader-%d", strings.ToLower(v.level), v.readerFrom)
+}
+
+var modelVariants = []variant{{"OFF", 0}, {"NORMAL", 0}, {"FULL", 0}, {"NORMAL", readerFromStep}}
 
 func runChild(args []string) error {
 	flags := flag.NewFlagSet(childMode, flag.ContinueOnError)
 	db := flags.String("db", "", "")
 	level := flags.String("sync", "", "")
+	readerFrom := flags.Int("reader-from", 0, "")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -48,6 +73,7 @@ func runChild(args []string) error {
 	if err != nil {
 		return err
 	}
+	var reader *sql.Conn
 	for k := baseStep + 1; k <= lastStep; k++ {
 		if err := r.ApplyStep(ctx, handle, k); err != nil {
 			return err
@@ -58,7 +84,18 @@ func runChild(args []string) error {
 		}
 		fmt.Printf("commit %d end=%d generation=%d\n", k, walfile.HeaderSize+wal.LastCommitFrame*wal.FrameSize(), wal.Header.Salt1)
 		fmt.Printf("ack %d\n", k)
+		if k == *readerFrom {
+			if reader, err = openReader(ctx, *db, options); err != nil {
+				return err
+			}
+			fmt.Printf("reader %d\n", k)
+		}
 		if k == checkpointAfter {
+			if reader != nil {
+				if err := copyFile(*db, *db+beforeCheckpointSuffix, -1); err != nil {
+					return err
+				}
+			}
 			result, err := sqlitex.Checkpoint(ctx, handle, "", sqlitex.CheckpointPassive)
 			if err != nil {
 				return err
@@ -66,16 +103,41 @@ func runChild(args []string) error {
 			fmt.Printf("checkpoint %d %s\n", k, result)
 		}
 	}
+	if reader != nil {
+		fmt.Println("reader still open")
+	}
 	os.Exit(0)
 	return nil
 }
 
+func openReader(ctx context.Context, path string, options sqlitex.Options) (*sql.Conn, error) {
+	handle, err := sqlitex.Open(ctx, path, options)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := handle.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := conn.ExecContext(ctx, "BEGIN"); err != nil {
+		return nil, err
+	}
+	var tables int
+	if err := conn.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema").Scan(&tables); err != nil {
+		return nil, err
+	}
+	return conn, nil
+}
+
 type writerRun struct {
-	lastAck    int
-	commitEnd  map[int]int64
-	generation map[int]uint32
-	checkpoint string
-	lastEvent  string
+	lastAck      int
+	commitEnd    map[int]int64
+	generation   map[int]uint32
+	checkpoint   string
+	checkpointed int
+	logFrames    int
+	readerFrom   int
+	lastEvent    string
 }
 
 func parseRun(stdout string) (writerRun, error) {
@@ -98,7 +160,18 @@ func parseRun(stdout string) (writerRun, error) {
 			}
 			run.commitEnd[k], run.generation[k] = end, generation
 		case strings.HasPrefix(line, "checkpoint "):
+			var busy int
+			if _, err := fmt.Sscanf(line, "checkpoint %d busy=%d log=%d checkpointed=%d", &k, &busy, &run.logFrames, &run.checkpointed); err != nil || k != checkpointAfter {
+				return run, fmt.Errorf("bad checkpoint line %q", line)
+			}
 			run.checkpoint, run.lastEvent = line, "checkpoint"
+		case strings.HasPrefix(line, "reader "):
+			if line == "reader still open" {
+				continue
+			}
+			if _, err := fmt.Sscanf(line, "reader %d", &run.readerFrom); err != nil {
+				return run, fmt.Errorf("bad reader line %q", line)
+			}
 		default:
 			return run, fmt.Errorf("unexpected child output %q", line)
 		}
@@ -106,20 +179,31 @@ func parseRun(stdout string) (writerRun, error) {
 	return run, scanner.Err()
 }
 
-func ruleCut(level string, run writerRun) (cut int64, hasCut bool, outside string) {
+type syncRule struct {
+	cut              int64
+	hasCut           bool
+	outside          string
+	databaseUnsynced bool
+}
+
+func ruleCut(level string, run writerRun) syncRule {
+	partialCheckpoint := run.checkpointed > 0 && run.checkpointed < run.logFrames
 	switch level {
 	case "OFF":
 		if run.checkpoint != "" {
-			return 0, true, "the checkpoint wrote the database file and nothing was ever synced"
+			return syncRule{cut: 0, hasCut: true, outside: "the checkpoint wrote the database file and nothing was ever synced", databaseUnsynced: true}
 		}
-		return 0, true, ""
+		return syncRule{cut: 0, hasCut: true}
 	case "NORMAL":
 		if run.lastEvent == "checkpoint" {
-			return 0, false, ""
+			return syncRule{databaseUnsynced: partialCheckpoint}
 		}
-		return walfile.HeaderSize, true, ""
+		if run.checkpointed > 0 && run.generation[run.lastAck] == run.generation[checkpointAfter] {
+			return syncRule{cut: run.commitEnd[checkpointAfter], hasCut: true, databaseUnsynced: partialCheckpoint}
+		}
+		return syncRule{cut: walfile.HeaderSize, hasCut: true}
 	}
-	return 0, false, ""
+	return syncRule{databaseUnsynced: partialCheckpoint}
 }
 
 type lab struct {
@@ -169,12 +253,12 @@ func (x *lab) recover(path string) (string, recipe.Match) {
 	return integrity, match
 }
 
-func (x *lab) runWriter(dir, level string, kill *trace.KillAt) (string, *trace.Result) {
+func (x *lab) runWriter(dir string, v variant, kill *trace.KillAt) (string, *trace.Result) {
 	db := filepath.Join(dir, "r.db")
 	if err := copyFile(x.base, db, -1); err != nil {
 		x.lab.Fatal("copy base", err)
 	}
-	args := []string{childMode, "-db", db, "-sync", level}
+	args := []string{childMode, "-db", db, "-sync", v.level, "-reader-from", fmt.Sprint(v.readerFrom)}
 	if !x.traced {
 		self, err := os.Executable()
 		if err != nil {
@@ -200,15 +284,24 @@ func (x *lab) runWriter(dir, level string, kill *trace.KillAt) (string, *trace.R
 	return result.Stdout, result
 }
 
-func (x *lab) model(level string) *trace.Result {
-	dir := filepath.Join(x.dir, "model-"+strings.ToLower(level))
-	stdout, result := x.runWriter(dir, level, nil)
+func (x *lab) model(v variant) *trace.Result {
+	level := v.level
+	dir := filepath.Join(x.dir, "model-"+v.dirName())
+	stdout, result := x.runWriter(dir, v, nil)
 	run, err := parseRun(stdout)
 	if err != nil {
 		x.lab.Fatal("parse", err)
 	}
 	db := filepath.Join(dir, "r.db")
-	fmt.Printf("-- synchronous=%s: the writer acknowledged steps %d-%d; %s; it exited without closing\n", level, baseStep+1, run.lastAck, run.checkpoint)
+	fmt.Printf("-- %s: the writer acknowledged steps %d-%d; %s; it exited without closing\n", v, baseStep+1, run.lastAck, run.checkpoint)
+	sameGeneration := run.generation[run.lastAck] == run.generation[checkpointAfter]
+	if v.readerFrom != 0 {
+		fmt.Printf("   the checkpoint copied %d of %d frames; the commits after it stayed in the same WAL generation: %t\n", run.checkpointed, run.logFrames, sameGeneration)
+		x.lab.Check(run.readerFrom == v.readerFrom && run.checkpointed > 0 && run.checkpointed < run.logFrames && sameGeneration,
+			fmt.Sprintf("%s: the reader stopped the checkpoint short of the end and the WAL did not restart", v))
+	} else {
+		fmt.Printf("   the checkpoint copied %d of %d frames; the commits after it stayed in the same WAL generation: %t\n", run.checkpointed, run.logFrames, sameGeneration)
+	}
 	for _, suffix := range []string{"", "-wal"} {
 		if err := copyFile(db+suffix, filepath.Join(dir, "crash", "r.db"+suffix), -1); err != nil {
 			x.lab.Fatal("copy", err)
@@ -216,9 +309,10 @@ func (x *lab) model(level string) *trace.Result {
 	}
 	integrity, match := x.recover(filepath.Join(dir, "crash", "r.db"))
 	fmt.Printf("   process crash (files as the kernel holds them): integrity_check %s, recovered %s\n", integrity, match)
-	x.lab.Check(integrity == "ok" && match.Step == run.lastAck, fmt.Sprintf("%s: a process crash keeps every acknowledged step (%d)", level, run.lastAck))
+	x.lab.Check(integrity == "ok" && match.Step == run.lastAck, fmt.Sprintf("%s: a process crash keeps every acknowledged step (%d)", v, run.lastAck))
 
-	cut, hasCut, outside := ruleCut(level, run)
+	rule := ruleCut(level, run)
+	cut, hasCut, outside := rule.cut, rule.hasCut, rule.outside
 	if result != nil {
 		real, err := filepath.EvalSymlinks(db)
 		if err != nil {
@@ -228,9 +322,8 @@ func (x *lab) model(level string) *trace.Result {
 		dbSyncs := trace.SyncsOf(result.Log.Calls, real)
 		fmt.Printf("   strace: -wal %s\n", walSyncs)
 		fmt.Printf("   strace: database file %s\n", dbSyncs)
-		traceOutside := dbSyncs.HasUnsynced
-		x.lab.Check(walSyncs.HasUnsynced == hasCut && (!hasCut || walSyncs.FirstUnsynced == cut) && traceOutside == (outside != ""),
-			fmt.Sprintf("%s: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced", level))
+		x.lab.Check(walSyncs.HasUnsynced == hasCut && (!hasCut || walSyncs.FirstUnsynced == cut) && dbSyncs.HasUnsynced == rule.databaseUnsynced,
+			fmt.Sprintf("%s: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced", v))
 	} else {
 		fmt.Println(trace.LinuxOnlyMessage("the strace confirmation of the synced bytes (the model below uses the rule read from wal.c and pager.c)", packagePath))
 	}
@@ -260,9 +353,19 @@ func (x *lab) model(level string) *trace.Result {
 	integrity, match = x.recover(power)
 	fmt.Printf("   power-cut model: -wal kept up to byte %d of %d (everything after the last sync removed), no -shm: integrity_check %s, recovered %s; acknowledged commits past the cut: %d\n",
 		keep, len(walData), integrity, match, lost)
-	x.lab.Check(integrity == "ok" && match.Step == run.lastAck-lost, fmt.Sprintf("%s: the model recovers step %d, the last acknowledged step minus the %d commit(s) written after the last sync", level, run.lastAck-lost, lost))
+	x.lab.Check(integrity == "ok" && match.Step == run.lastAck-lost, fmt.Sprintf("%s: the model recovers step %d, the last acknowledged step minus the %d commit(s) written after the last sync", v, run.lastAck-lost, lost))
+	if rule.databaseUnsynced {
+		before := filepath.Join(dir, "power-before-checkpoint", "r.db")
+		if err := errors.Join(copyFile(db+beforeCheckpointSuffix, before, -1), copyFile(db+"-wal", before+"-wal", keep)); err != nil {
+			x.lab.Fatal("copy", err)
+		}
+		beforeIntegrity, beforeMatch := x.recover(before)
+		fmt.Printf("   the checkpoint copied only part of the WAL, so it did not sync the database file; the same model with the database file as it was before the checkpoint (none of those writes kept): integrity_check %s, recovered %s\n", beforeIntegrity, beforeMatch)
+		x.lab.Check(beforeIntegrity == "ok" && beforeMatch.Step == match.Step,
+			fmt.Sprintf("%s: with or without the checkpoint's unsynced database writes the model recovers step %d, because the WAL frames they came from were synced before the checkpoint wrote them", v, match.Step))
+	}
 	if level == "NORMAL" {
-		x.lab.Check(lost > 0 && match.Step < run.lastAck && match.Step == checkpointAfter, fmt.Sprintf("NORMAL: the acknowledged commits after the checkpoint at step %d are lost in the model, yet the database is consistent", checkpointAfter))
+		x.lab.Check(lost > 0 && match.Step < run.lastAck && match.Step == checkpointAfter, fmt.Sprintf("%s: the acknowledged commits after the checkpoint at step %d are lost in the model, yet the database is consistent", v, checkpointAfter))
 	}
 	if level == "FULL" {
 		x.lab.Check(lost == 0 && match.Step == run.lastAck, "FULL: no acknowledged commit is lost in the model")
@@ -310,7 +413,7 @@ func (x *lab) killSweep(level string, uninterrupted *trace.Result) {
 	}
 	for i, point := range points {
 		dir := filepath.Join(x.dir, fmt.Sprintf("kill-%s-%02d", strings.ToLower(level), i))
-		stdout, result := x.runWriter(dir, level, &point)
+		stdout, result := x.runWriter(dir, variant{level, 0}, &point)
 		run, err := parseRun(stdout)
 		if err != nil {
 			x.lab.Fatal("parse", err)
@@ -352,9 +455,9 @@ func main() {
 	fmt.Printf("== recipe built to step %d; a writer child commits steps %d-%d on one connection (wal_autocheckpoint=0) and runs one PASSIVE checkpoint after step %d\n", baseStep, baseStep+1, lastStep, checkpointAfter)
 	fmt.Println()
 	fmt.Println("== part B: what a process crash keeps, and what the simplest power cut keeps")
-	traces := map[string]*trace.Result{}
-	for _, level := range levels {
-		traces[level] = x.model(level)
+	traces := map[variant]*trace.Result{}
+	for _, v := range modelVariants {
+		traces[v] = x.model(v)
 	}
 	fmt.Println()
 	fmt.Println("== part A: kill the writer at chosen syscalls, reopen, identify the state")
@@ -362,7 +465,7 @@ func main() {
 		fmt.Println(trace.LinuxOnlyMessage("killing the writer at a chosen syscall with strace", packagePath))
 	} else {
 		for _, level := range levels {
-			x.killSweep(level, traces[level])
+			x.killSweep(level, traces[variant{level, 0}])
 		}
 	}
 	x.lab.Report("CRASH VERSUS POWER LOSS")

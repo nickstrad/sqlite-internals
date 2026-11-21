@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -21,16 +23,17 @@ import (
 )
 
 const (
-	quietStep    = 6
-	lastRefStep  = 22
-	pageSize     = 4096
-	backupPages  = 5
-	giveUpAfter  = 8
-	methodCopy   = "closed-file copy"
-	methodBackup = "backup API"
-	methodVacuum = "VACUUM INTO"
-	methodPages  = "pages in a read transaction"
-	methodFile   = "file + WAL under a held transaction"
+	quietStep           = 6
+	lastRefStep         = 22
+	pageSize            = 4096
+	backupPages         = 5
+	giveUpAfter         = 8
+	schemaCookieLowByte = 43
+	methodCopy          = "closed-file copy"
+	methodBackup        = "backup API"
+	methodVacuum        = "VACUUM INTO"
+	methodPages         = "pages in a read transaction"
+	methodFile          = "file + WAL under a held transaction"
 )
 
 var errGaveUp = errors.New("gave up")
@@ -116,16 +119,42 @@ func (x *run) compare(capture string, k int, vacuumed bool) levels {
 		x.lab.Fatal("E3", err)
 	}
 	result := levels{e1: e1.Equal, e2: e2.Equal, e3: e3.Equal, e3ExceptJournalMode: e3.Equal || onlyJournalMode(e3.Differences)}
-	if vacuumed {
-		canonical, err := equal.CompareFiles(capture, x.canonicalRef(k), pageSize)
-		if err != nil {
-			x.lab.Fatal("canonical", err)
-		}
-		result.canonical = canonical.Equal
-	} else {
-		result.canonical = result.e3
+	if !result.e3ExceptJournalMode {
+		return result
 	}
+	canonicalCapture := capture
+	if !vacuumed {
+		canonicalCapture = x.canonicalCapture(capture)
+	}
+	canonical, err := equal.CompareFiles(canonicalCapture, x.canonicalRef(k), pageSize)
+	if err != nil {
+		x.lab.Fatal("canonical", err)
+	}
+	result.canonical = canonical.Equal
 	return result
+}
+
+func (x *run) canonicalCapture(capture string) string {
+	path := capture + ".canonical"
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+	scratch := filepath.Join(x.dir, "canonical-scratch", filepath.Base(capture))
+	if err := os.MkdirAll(filepath.Dir(scratch), 0o755); err != nil {
+		x.lab.Fatal("mkdir", err)
+	}
+	if err := copyFile(capture, scratch); err != nil {
+		x.lab.Fatal("canonical scratch copy", err)
+	}
+	db, err := x.r.Open(x.ctx, scratch)
+	if err != nil {
+		x.lab.Fatal("open capture copy", err)
+	}
+	_, err = db.ExecContext(x.ctx, "VACUUM INTO ?", path)
+	if err := errors.Join(err, db.Close()); err != nil {
+		x.lab.Fatal("canonical capture", err)
+	}
+	return path
 }
 
 func onlyJournalMode(differences []string) bool {
@@ -234,7 +263,7 @@ func (x *run) quiet() {
 	x.closeSource()
 	want := map[string]levels{
 		methodCopy:   {true, true, true, true, true},
-		methodBackup: {false, true, true, true, true},
+		methodBackup: backupLevels,
 		methodVacuum: {false, false, false, true, true},
 		methodPages:  {true, true, true, true, true},
 		methodFile:   {true, true, true, true, true},
@@ -251,11 +280,33 @@ func (x *run) quiet() {
 		x.lab.Fatal("E2", err)
 	}
 	fmt.Printf("backup API: %s\n", backup)
+	backupCanonical, err := equal.ComparePageFiles(x.canonicalCapture(x.path("a-backup.db")), x.canonicalRef(quietStep), pageSize)
+	if err != nil {
+		x.lab.Fatal("E2 canonical", err)
+	}
+	fmt.Printf("backup API after VACUUM INTO vs the source after VACUUM INTO: %s\n", backupCanonical)
+	backupCookie, sourceCookie := schemaCookie(x, x.path("a-backup.db")), schemaCookie(x, x.ref(quietStep))
+	fmt.Printf("schema cookie: backup %d, source %d\n", backupCookie, sourceCookie)
+	x.lab.Check(backupCanonical.Equal && slices.Equal(backupCanonical.IgnoredDiffering, []int{schemaCookieLowByte}) && backupCookie != sourceCookie,
+		fmt.Sprintf("the backup's VACUUM INTO form differs from the source's only at byte %d, the schema cookie", schemaCookieLowByte))
 	_, logical, vacuumed, err := equal.CompareLogicalFiles(x.ctx, x.path("a-vacuum.db"), x.ref(quietStep))
 	if err != nil {
 		x.lab.Fatal("E3", err)
 	}
 	fmt.Printf("VACUUM INTO: E3 differs only in journal_mode: %s for the copy, %s for the source\n", pragma(logical, "journal_mode"), pragma(vacuumed, "journal_mode"))
+}
+
+func schemaCookie(x *run, path string) uint32 {
+	file, err := os.Open(path)
+	if err != nil {
+		x.lab.Fatal("open", err)
+	}
+	defer file.Close()
+	header := make([]byte, 100)
+	if _, err := io.ReadFull(file, header); err != nil {
+		x.lab.Fatal("read header", err)
+	}
+	return binary.BigEndian.Uint32(header[40:44])
 }
 
 func pragma(l equal.Logical, name string) string {
@@ -287,10 +338,18 @@ func (x *run) closeSource() {
 	}
 }
 
-func (x *run) report(method, file string, vacuumed bool, want int) bool {
+var (
+	everyLevel   = levels{true, true, true, true, true}
+	backupLevels = levels{false, true, true, true, false}
+	vacuumLevels = levels{false, false, false, true, true}
+)
+
+func (x *run) report(method, file string, vacuumed bool, want int, wantLevels levels) bool {
 	k, l := x.stateOf(x.path(file), vacuumed)
 	fmt.Printf("%-36s equals recipe step %d (want %d): %s\n", method, k, want, l)
-	return k == want
+	ok := k == want && l == wantLevels
+	x.lab.Check(ok, fmt.Sprintf("under the writer, %s equals recipe step %d at exactly the expected levels", method, want))
+	return ok
 }
 
 func (x *run) underWriter() map[string]bool {
@@ -304,7 +363,11 @@ func (x *run) underWriter() map[string]bool {
 	fmt.Println("-- plain copy of the live database file (the -wal is not copied)")
 	current := x.commit()
 	x.copyLive("", "b-copy.db")
-	safe[methodCopy] = x.report("plain copy of the live file", "b-copy.db", false, current)
+	stale, staleLevels := x.stateOf(x.path("b-copy.db"), false)
+	fmt.Printf("%-36s equals recipe step %d (the writer has committed %d): %s\n", "plain copy of the live file", stale, current, staleLevels)
+	x.lab.Check(stale >= 0 && stale < current && staleLevels == everyLevel,
+		fmt.Sprintf("the plain copy is byte-identical (E1) to an older recipe step (%d), not to the committed step %d", stale, current))
+	safe[methodCopy] = stale == current
 
 	fmt.Println("-- every page through sqlite_dbpage in one read transaction, in two halves; the writer commits between them")
 	seen := x.begin()
@@ -316,7 +379,7 @@ func (x *run) underWriter() map[string]bool {
 	if err := walship.WriteDatabase(x.path("b-pages.db"), image); err != nil {
 		x.lab.Fatal("write", err)
 	}
-	safe[methodPages] = x.report(methodPages, "b-pages.db", false, seen)
+	safe[methodPages] = x.report(methodPages, "b-pages.db", false, seen, everyLevel)
 
 	fmt.Println("-- copy of the database file, a commit, then a copy of the -wal, all inside one read transaction; rebuilt by WAL replay")
 	seen = x.begin()
@@ -327,15 +390,19 @@ func (x *run) underWriter() map[string]bool {
 	if _, err := walfile.ReplayFiles(x.path("b-file.db"), x.path("b-file.wal"), x.path("b-replayed.db")); err != nil {
 		x.lab.Fatal("replay", err)
 	}
-	safe[methodFile] = x.report(methodFile, "b-replayed.db", false, afterCopy) && afterCopy >= seen
+	safe[methodFile] = x.report(methodFile, "b-replayed.db", false, afterCopy, everyLevel) && afterCopy >= seen
 
-	fmt.Println("-- VACUUM INTO, then the writer commits")
+	fmt.Println("-- VACUUM INTO while the writer child holds the write lock with step uncommitted, then the writer commits")
 	before := x.next - 1
+	x.lab.Must(x.writer, "begin", "immediate")
+	x.lab.Must(x.writer, "recipe-exec", strconv.Itoa(x.next))
 	if _, err := x.conn.ExecContext(x.ctx, "VACUUM INTO ?", x.path("b-vacuum.db")); err != nil {
 		x.lab.Fatal("vacuum into", err)
 	}
-	x.commit()
-	safe[methodVacuum] = x.report(methodVacuum, "b-vacuum.db", true, before)
+	fmt.Println("VACUUM INTO finished while the writer held its write transaction open")
+	x.lab.Must(x.writer, "commit")
+	x.next++
+	safe[methodVacuum] = x.report(methodVacuum, "b-vacuum.db", true, before, vacuumLevels)
 
 	safe[methodBackup] = x.backups()
 	x.closeSource()
@@ -375,7 +442,7 @@ func (x *run) backups() bool {
 		fmt.Sprintf("through the backup's own commits the copy keeps advancing %d pages per step (no restart), although the remaining count rose when those commits grew the database", backupPages))
 	x.lab.Check(copied[5] == backupPages, "after the writer child's commit the next step starts again from page 1: the backup restarted")
 	var remaining []int
-	ok := x.report(methodBackup, "b-backup.db", false, x.next-1) && finished
+	ok := x.report(methodBackup, "b-backup.db", false, x.next-1, backupLevels) && finished
 
 	fmt.Printf("-- backup API, %d pages per step, the writer child commits after every step; give up after %d steps\n", backupPages, giveUpAfter)
 	_, err = sqlitex.Backup(x.ctx, x.conn, x.path("b-backup-never.db"), backupPages, func(step sqlitex.BackupStep) error {
@@ -430,7 +497,7 @@ func main() {
 	rows := []struct{ method, level, blocks string }{
 		{methodCopy, "E1", "the database must be closed"},
 		{methodBackup, "E2", "no (commits ran between steps)"},
-		{methodVacuum, "E3 but journal_mode; E1 canonical", "no (commit right after; one statement, not interleaved)"},
+		{methodVacuum, "E3 but journal_mode; E1 canonical", "no (ran while the writer held its write transaction)"},
 		{methodPages, "E1", "no (a commit ran inside the read transaction)"},
 		{methodFile, "E1 after WAL replay", "no (a commit ran inside the read transaction)"},
 	}

@@ -4,31 +4,47 @@ INFO: work dir _work/9.2
 
 == part B: what a process crash keeps, and what the simplest power cut keeps
 -- synchronous=OFF: the writer acknowledged steps 4-11; checkpoint 7 busy=0 log=74 checkpointed=74; it exited without closing
+   the checkpoint copied 74 of 74 frames; the commits after it stayed in the same WAL generation: false
    process crash (files as the kernel holds them): integrity_check ok, recovered step 11 (equal except the change counter at bytes 24-27 and 92-95)
-check ok: OFF: a process crash keeps every acknowledged step (11)
+check ok: synchronous=OFF: a process crash keeps every acknowledged step (11)
    strace: -wal 0 sync(s); 306 write(s) after the last one, the lowest at offset 0
    strace: database file 0 sync(s); 44 write(s) after the last one, the lowest at offset 0
-check ok: OFF: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
+check ok: synchronous=OFF: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
    power-cut model: not applicable at OFF: the checkpoint wrote the database file and nothing was ever synced, so a power cut can leave any mix of old and new database pages
 check ok: only synchronous=OFF leaves database-file writes that were never synced
 -- synchronous=NORMAL: the writer acknowledged steps 4-11; checkpoint 7 busy=0 log=74 checkpointed=74; it exited without closing
+   the checkpoint copied 74 of 74 frames; the commits after it stayed in the same WAL generation: false
    process crash (files as the kernel holds them): integrity_check ok, recovered step 11 (equal except the change counter at bytes 24-27 and 92-95)
-check ok: NORMAL: a process crash keeps every acknowledged step (11)
+check ok: synchronous=NORMAL: a process crash keeps every acknowledged step (11)
    strace: -wal 3 sync(s); 156 write(s) after the last one, the lowest at offset 32
    strace: database file 1 sync(s); no write after the last one
-check ok: NORMAL: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
+check ok: synchronous=NORMAL: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
    power-cut model: -wal kept up to byte 32 of 321392 (everything after the last sync removed), no -shm: integrity_check ok, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95); acknowledged commits past the cut: 4
-check ok: NORMAL: the model recovers step 7, the last acknowledged step minus the 4 commit(s) written after the last sync
-check ok: NORMAL: the acknowledged commits after the checkpoint at step 7 are lost in the model, yet the database is consistent
+check ok: synchronous=NORMAL: the model recovers step 7, the last acknowledged step minus the 4 commit(s) written after the last sync
+check ok: synchronous=NORMAL: the acknowledged commits after the checkpoint at step 7 are lost in the model, yet the database is consistent
 -- synchronous=FULL: the writer acknowledged steps 4-11; checkpoint 7 busy=0 log=74 checkpointed=74; it exited without closing
+   the checkpoint copied 74 of 74 frames; the commits after it stayed in the same WAL generation: false
    process crash (files as the kernel holds them): integrity_check ok, recovered step 11 (equal except the change counter at bytes 24-27 and 92-95)
-check ok: FULL: a process crash keeps every acknowledged step (11)
+check ok: synchronous=FULL: a process crash keeps every acknowledged step (11)
    strace: -wal 11 sync(s); no write after the last one
    strace: database file 1 sync(s); no write after the last one
-check ok: FULL: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
+check ok: synchronous=FULL: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
    power-cut model: -wal kept up to byte 321392 of 321392 (everything after the last sync removed), no -shm: integrity_check ok, recovered step 11 (equal except the change counter at bytes 24-27 and 92-95); acknowledged commits past the cut: 0
-check ok: FULL: the model recovers step 11, the last acknowledged step minus the 0 commit(s) written after the last sync
+check ok: synchronous=FULL: the model recovers step 11, the last acknowledged step minus the 0 commit(s) written after the last sync
 check ok: FULL: no acknowledged commit is lost in the model
+-- synchronous=NORMAL with a second connection holding a read transaction from step 5: the writer acknowledged steps 4-11; checkpoint 7 busy=0 log=74 checkpointed=36; it exited without closing
+   the checkpoint copied 36 of 74 frames; the commits after it stayed in the same WAL generation: true
+check ok: synchronous=NORMAL with a second connection holding a read transaction from step 5: the reader stopped the checkpoint short of the end and the WAL did not restart
+   process crash (files as the kernel holds them): integrity_check ok, recovered step 11 (equal except the change counter at bytes 24-27 and 92-95)
+check ok: synchronous=NORMAL with a second connection holding a read transaction from step 5: a process crash keeps every acknowledged step (11)
+   strace: -wal 2 sync(s); 156 write(s) after the last one, the lowest at offset 304912
+   strace: database file 0 sync(s); 15 write(s) after the last one, the lowest at offset 73728
+check ok: synchronous=NORMAL with a second connection holding a read transaction from step 5: the strace record agrees with the rule read from wal.c and pager.c about which bytes were synced
+   power-cut model: -wal kept up to byte 304912 of 626272 (everything after the last sync removed), no -shm: integrity_check ok, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95); acknowledged commits past the cut: 4
+check ok: synchronous=NORMAL with a second connection holding a read transaction from step 5: the model recovers step 7, the last acknowledged step minus the 4 commit(s) written after the last sync
+   the checkpoint copied only part of the WAL, so it did not sync the database file; the same model with the database file as it was before the checkpoint (none of those writes kept): integrity_check ok, recovered step 7 (equal except the change counter at bytes 24-27 and 92-95)
+check ok: synchronous=NORMAL with a second connection holding a read transaction from step 5: with or without the checkpoint's unsynced database writes the model recovers step 7, because the WAL frames they came from were synced before the checkpoint wrote them
+check ok: synchronous=NORMAL with a second connection holding a read transaction from step 5: the acknowledged commits after the checkpoint at step 7 are lost in the model, yet the database is consistent
 
 == part A: kill the writer at chosen syscalls, reopen, identify the state
 -- synchronous=OFF: the uninterrupted writer made 0 sync call(s) and 357 pwrite64 call(s); kill on entry to each sync and to 6 of the writes
