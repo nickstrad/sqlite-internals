@@ -85,7 +85,7 @@ a finished part A leaves `sqlite-p2-<name>.stageA`, a finished part B `sqlite-p2
 
 | Chunk | State (2026-11-21 01:45 UTC) |
 | --- | --- |
-| 3 | part A: review NITS, run 1 16 held / 14 broken; Opus repair running |
+| 3 chapter 3 | done | Neon NITS → one Opus repair → PASS | 30 held / 0 broken after repair (run 1: 14 broken) | merged 4e1e290 |
 | 6 | part A: review FAIL, run 1 43 held / 6 broken; Opus repair running |
 | 8 | part A running (review + adversarial) |
 | 9 | built (e825529, base = 6 + 3 merged); part A not started |
