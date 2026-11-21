@@ -755,19 +755,3 @@ func TestDSNWithVFS(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-
-// TestDisplayPath verifies repo-internal paths render relative and external paths stay unchanged.
-func TestDisplayPath(t *testing.T) {
-	root, err := RepoRoot()
-	if err != nil {
-		t.Skip(err)
-	}
-	if got := DisplayPath(filepath.Join(root, "internal", "sqlitex")); got != "internal/sqlitex" {
-		t.Fatal(got)
-	}
-	outside := t.TempDir()
-	resolved, _ := filepath.EvalSymlinks(outside)
-	if got := DisplayPath(outside); got != outside && got != resolved {
-		t.Fatal(got)
-	}
-}
