@@ -103,6 +103,9 @@ func (n *Node) Drain(ctx context.Context, id string) (Drained, error) {
 	if !ok {
 		return Drained{}, fmt.Errorf("node: drain %s: the final ship did not leave the shipped state at rest: %s", id, strings.Join(problems, "; "))
 	}
+	if len(problems) > 0 {
+		return Drained{}, fmt.Errorf("node: drain %s: the final ship left the state at rest but reported: %s", id, strings.Join(problems, "; "))
+	}
 	return Drained{Position: c.shipper.Position(), SHA256: digest}, nil
 }
 
@@ -184,7 +187,14 @@ func (n *Node) Activate(ctx context.Context, id string, epoch uint64, position i
 	if fenceSlot != nil {
 		if owned, ok := n.owned[id]; ok && owned == epoch {
 			result.Adopted = true
-			return result, nil
+			if chainEnd(chain) != position+1 {
+				return result, nil
+			}
+			meta, _, err := walship.DecodeSnapshot(fenceSlot.Object)
+			if err != nil {
+				return Activated{}, err
+			}
+			return result, n.recordShipped(ctx, id, epoch, position+1, int(meta.UserVersion))
 		}
 		if end := chainEnd(chain); end != position+1 {
 			return Activated{}, fmt.Errorf("node: activate %s: epoch %d wrote through position %d after its fence, and this node does not hold it", id, epoch, end)

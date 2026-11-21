@@ -208,3 +208,90 @@ func TestParseAckIsStrict(t *testing.T) {
 		}
 	}
 }
+
+func relocateToB(t *testing.T, c *cluster, a, b *Node) (Drained, uint64) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := a.Claim(ctx, "db-1"); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, a, "db-1", StoreDurable)
+	mustWrite(t, a, "db-1", LocalDurable)
+	if err := a.Seal(ctx, "db-1"); err != nil {
+		t.Fatal(err)
+	}
+	drained, err := a.Drain(ctx, "db-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	epoch, err := c.catalog.Claim(ctx, "db-1", "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Stage(ctx, "db-1", epoch); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Activate(ctx, "db-1", epoch, drained.Position, drained.SHA256, true); err != nil {
+		t.Fatal(err)
+	}
+	return drained, epoch
+}
+
+func TestRepeatedActivateRepairsAnUnrecordedFence(t *testing.T) {
+	ctx := context.Background()
+	c := newCluster(t, "db-1")
+	a, b := c.start(t, "a", 2), c.start(t, "b", 2)
+	drained, epoch := relocateToB(t, c, a, b)
+	if _, err := c.catalog.DB.ExecContext(ctx, "UPDATE databases SET location = '', last_shipped = ?, schema_version = 0 WHERE id = 'db-1'", drained.Position); err != nil {
+		t.Fatal(err)
+	}
+	again, err := b.Activate(ctx, "db-1", epoch, drained.Position, drained.SHA256, true)
+	if err != nil || again != (Activated{Fence: drained.Position + 1, Adopted: true}) {
+		t.Fatalf("%+v %v", again, err)
+	}
+	record, err := c.catalog.Get(ctx, "db-1")
+	if err != nil || record.Owner != "b" || record.Epoch != epoch || record.Location != "b:db-1.db" || record.LastShipped != drained.Position+1 || record.SchemaVersion != 2 {
+		t.Fatalf("%+v %v", record, err)
+	}
+}
+
+func TestRepeatedActivateAfterLaterWritesKeepsTheCatalog(t *testing.T) {
+	ctx := context.Background()
+	c := newCluster(t, "db-1")
+	a, b := c.start(t, "a", 2), c.start(t, "b", 2)
+	drained, epoch := relocateToB(t, c, a, b)
+	ack := mustWrite(t, b, "db-1", StoreDurable)
+	before, err := c.catalog.Get(ctx, "db-1")
+	if err != nil || before.LastShipped != ack.Position {
+		t.Fatalf("%+v %v", before, err)
+	}
+	if _, err := b.Activate(ctx, "db-1", epoch, drained.Position, drained.SHA256, true); err != nil {
+		t.Fatal(err)
+	}
+	after, err := c.catalog.Get(ctx, "db-1")
+	if err != nil || after != before {
+		t.Fatalf("%+v %v, before %+v", after, err, before)
+	}
+}
+
+func TestDrainReportsAFailedAtRestRecord(t *testing.T) {
+	ctx := context.Background()
+	c := newCluster(t, "db-1")
+	a := c.start(t, "a", 2)
+	if _, err := a.Claim(ctx, "db-1"); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, a, "db-1", StoreDurable)
+	if err := a.Seal(ctx, "db-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(c.work, "a", "db-1.atrest.tmp"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Drain(ctx, "db-1"); err == nil || !strings.Contains(err.Error(), "reported") {
+		t.Fatalf("drain: %v", err)
+	}
+	if problems := a.TakeProblems(); len(problems) != 0 {
+		t.Fatalf("%q", problems)
+	}
+}

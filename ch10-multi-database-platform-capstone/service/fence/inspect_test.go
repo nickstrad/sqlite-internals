@@ -2,7 +2,9 @@ package fence_test
 
 import (
 	"context"
+	"encoding/binary"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -59,15 +61,15 @@ func shippedStore(t *testing.T, writes int) *walship.DirStore {
 func TestInspectNamesTheLastGoodRestorePoint(t *testing.T) {
 	ctx := context.Background()
 	store := shippedStore(t, 3)
-	var versions []byte
+	var versions []uint32
 	inspection, err := fence.Inspect(ctx, store, "db-1", func(position int64, image []byte) error {
-		versions = append(versions, image[63])
+		versions = append(versions, binary.BigEndian.Uint32(image[60:64]))
 		return nil
 	})
 	if err != nil || inspection.Problem != "" || inspection.Slots != 4 || inspection.RestorePoints != 4 || inspection.LastGood != 4 || inspection.BytesRead == 0 {
 		t.Fatalf("%+v %v", inspection, err)
 	}
-	if string(versions) != "\x00\x01\x02\x03" {
+	if !slices.Equal(versions, []uint32{0, 1, 2, 3}) {
 		t.Fatalf("user_versions %v", versions)
 	}
 	key := fence.SlotKey("db-1", 3)
