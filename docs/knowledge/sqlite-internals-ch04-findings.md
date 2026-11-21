@@ -14,6 +14,9 @@ Source: the `sqlite-internals` course repo (github.com/nickstrad/sqlite-internal
 
 ## Corrections to the outline
 
+
+### Correction 1
+
 1. **"The reopened file's sha256 equals the pre-step hash or the post-step hash, never a third
    value" is false at the byte level when the transaction reuses freelist pages.** It holds
    logically, and it holds byte for byte when the pre-step file has no freelist.
@@ -46,6 +49,9 @@ Source: the `sqlite-internals` course repo (github.com/nickstrad/sqlite-internal
      E3 (or E1 of the `VACUUM INTO` canonical form), not E1 of the raw file. ch01 found the same
      NOCONTENT effect for a rolled-back SAVEPOINT (ch01 notes, "Rolled-back SAVEPOINT leaves bytes
      behind").
+
+### Correction 2
+
 2. **The outline's call order "journal write → journal fsync → directory fsync → database write →
    database fsync → journal unlink" is the NORMAL order with one detail missing, and FULL adds a
    step.** Measured (step 3, 7 journaled pages, 18 database writes):
@@ -57,6 +63,9 @@ Source: the `sqlite-internals` course repo (github.com/nickstrad/sqlite-internal
    syncs; in NORMAL mode it comes before the only journal sync. The research probe's counts (3 at
    NORMAL, 4 at FULL) are CONFIRMED; OFF gives 0. The directory sync happens once, at the first sync
    of a newly created journal (`unixSync` DIRSYNC flag, as chapter 7's inventory says).
+
+### Correction 3
+
 3. **The `-journal` written before COMMIT is not hot.** With `synchronous` FULL or NORMAL the
    journal header is first written with its magic and record count set to zero
    (`writeJournalHdr`, `pager.c:1495-1502`: `memset(zHeader, 0, sizeof(aJournalMagic)+4)` unless
@@ -72,6 +81,9 @@ Source: the `sqlite-internals` course repo (github.com/nickstrad/sqlite-internal
    A platform that checks "is this database at rest" must therefore treat "a `-journal` exists"
    and "a hot journal exists" differently (ch02's correction 5 already defines at-rest by the hot
    test).
+
+### Correction 4
+
 4. **Even a database created by the platform's WAL opener is born through a `-journal`.** The
    brief says new databases start in rollback mode until switched. True (4.1 part A), and more:
    the switch itself is a rollback-mode commit. `PRAGMA journal_mode=wal` on a new empty file
@@ -84,6 +96,9 @@ Source: the `sqlite-internals` course repo (github.com/nickstrad/sqlite-internal
    (`sqlite3BtreeSetVersion`, btree.c; not copied). A crash inside `sqlitex.Open` of a brand-new
    file can therefore leave a `-journal` beside a WAL-to-be database (the file is then still 0 or
    1 page in rollback mode). Not demonstrated with a kill.
+
+### Correction 5
+
 5. **`cache_size` is not a per-connection cap in this driver build; it is each connection's share
    of one process-wide pool.** The outline's claim "per-connection cache bytes ≤ cache_size budget
    plus a stated overhead" and "`cache_size` is a budget per connection, not per process" need
@@ -108,6 +123,9 @@ Source: the `sqlite-internals` course repo (github.com/nickstrad/sqlite-internal
      (it has one connection and no `sqlite3_db_status` access from Go); stated from the source.
    - For platform sizing the conclusion the outline wanted still holds: memory = open
      connections × budget (B, C), and a connection cap bounds it (D).
+
+### Correction 6
+
 6. **Process memory is about twice the summed `CACHE_USED` with this driver.** 4.2 part B: RSS
    growth at 64 connections 252.9 MiB for 128.3 MiB of summed `CACHE_USED` (ratio 1.97, INFO line;
    ratio stable across runs). Mechanism: modernc's C library allocates through
@@ -117,6 +135,9 @@ Source: the `sqlite-internals` course repo (github.com/nickstrad/sqlite-internal
    + PgHdr1 + extra) takes an 8 KiB slot. This is a property of the driver, not of SQLite; with the
    C library (glibc malloc) the overhead would be small. The check in 4.2 only claims "RSS grows by
    at least the summed CACHE_USED".
+
+### Correction 7
+
 7. **`CACHE_USED` depends on the database's path length.** `sqlite3PagerMemUsed` adds
    `sqlite3MallocSize(pPager)`, and the Pager allocation holds the database, journal and WAL file
    names (`pager.c:6881-6887`). Running 4.2 inside the container (paths `/work/4.2/…`) gave
@@ -124,6 +145,9 @@ Source: the `sqlite-internals` course repo (github.com/nickstrad/sqlite-internal
    cached pages (path independent) on EXACT lines and raw bytes on INFO lines. Per cached page
    `CACHE_USED` counts 4352 bytes (4096 + 256 of headers; measured from cache_size 200 minus 100);
    the fixed part was 5077 bytes on the host (Pager allocation 981 bytes + one 4096-byte buffer).
+
+### Correction 8
+
 8. **A cache of N pages holds N−1.** `cache_size=100` held 99 pages and `cache_size=200` held 199
    (4.2 part A). `pcache1FetchStage2` recycles once `nPage+1 >= nMax` (`pcache1.c:899-901`).
    `cache_size=-2000` gives `nMax` = 2048000 / (4096 + szExtra) = 483 → 482 pages held.
