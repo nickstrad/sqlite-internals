@@ -22,7 +22,14 @@ Rulings applied (details: OUTLINE.md section 8):
   the vendored `kb/`, location `.kb/`). `agent_work/kb-sync.sh`.
 - Go for all code and scripts; working scripts in `agent_work/` (Go or bash), indexed.
 - Driver modernc.org/sqlite v1.60.1, no cgo/C. Rollback experiment 4.1 at full depth.
-- WAL is the platform default; per-chapter evaluation recorded here: (none yet).
+- WAL is the platform default; per-chapter evaluation:
+  - Chapter 5: WAL holds as the default. What it obliges a platform to own (each tied to an
+    experiment in the chapter): run checkpoints itself, bound reader lifetime, treat `-wal` as
+    part of the database while any connection is open, never ship `-shm`, watch WAL size,
+    detect WAL generations by salt change. Exception from the source (not tested): no WAL on
+    network filesystems (shared memory needed).
+  - Chapter 7: WAL holds. Care points: a custom VFS must implement the shared-memory methods
+    (io_methods version 2) or `journal_mode=wal` silently stays `delete`.
 - VFS viability verdict: **VIABLE** (probe `agent_work/probes/vfs-viability/RESULT.md`, chunk 0): a
   writable Go forwarding VFS registers with modernc in pure Go; read-only `fs.FS` VFS also works.
   Chapter 7 gains experiments 7.3 (Go VFS shim: call counts + fault injection) and 7.4
@@ -70,21 +77,21 @@ Where each open chunk stands (worktrees `../sqlite-internals-work/<name>`, branc
 `chunk/<name>`; chain logs `sqlite-p2-<name>-chainA.log` / `-chainB.log` in the run directory;
 a finished part A leaves `sqlite-p2-<name>.stageA`, a finished part B `sqlite-p2-<name>-accept.txt`):
 
-| Chunk | State (2026-11-21 00:50 UTC) |
+| Chunk | State (2026-11-21 01:45 UTC) |
 | --- | --- |
-| 7 chapter 7 | done | Neon FAIL → one Opus repair → PASS | 34 held / 0 broken after repair | merged 751e198 |
-| 4 | Neon finishing the adversarial suite; then part A from `rereview`; then stageB closing |
-| 5 chapter 5 | done | Neon FAIL → one Opus repair → PASS | 28 held / 0 broken after repair (run 1: 7 broken) | merged 2629fec |
-| 3 | part A running (review + adversarial) |
-| 6, 8 | built (Opus), part A not started yet (start when a Neon slot frees; at most ~5 Neon runs at once) |
-| 9 | Opus build running |
-| 10a, 10b | to build after 8 and 9 |
+| 4 | re-review NITS, 32 held / 0 broken; closing rewrite (stageB closing) running → accept → land |
+| 3 | part A: review NITS, run 1 16 held / 14 broken; Opus repair running |
+| 6 | part A: review FAIL, run 1 43 held / 6 broken; Opus repair running |
+| 8 | part A running (review + adversarial) |
+| 9 | built (e825529, base = 6 + 3 merged); part A not started |
+| 10a, 10b | to build after 8 and 9 finish part A |
 | pub | site generator + workflow built on `chunk/pub` (5bf7893), not on main; README/home text, review, adversarial still to do; lands last after the self-contained sweep |
-| 1, 2 closing rewrites | owed on main; not started |
+| 1 closing rewrite | running in the ch01 worktree (stageB closing); lands as a follow-up merge on main |
+| 2 closing rewrite | owed on main; not started |
 
-Closing prose record (commit of each chapter's closing Neon pass): (none yet).
+Closing prose record (commit of each chapter's closing Neon pass): chapter 5 — 394203d (single late prose pass); chapter 7 — c645979 (closing rewrite).
 
-Next steps, in order: land 7, 4, 5, 3 as their chains finish (each branch merges main before
+Next steps, in order: land 4, 3, 6, 8 as their chains finish (each branch merges main before
 its part B); run part A for 6 and 8; closing rewrites for 1 and 2; build 10a and 10b; chain 9,
 10a, 10b; then pub, the self-contained sweep, and the done file.
 
