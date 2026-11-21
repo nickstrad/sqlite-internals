@@ -1,9 +1,10 @@
 // Experiment 7.1 runs the pinned sqlite3 C CLI with -vfstrace under Linux
 // strace to merge VFS calls and kernel syscalls into a single ordered stream.
-// It verifies that every xRead/xWrite/xSync maps to the expected pread64,
-// pwrite64, or fsync/fdatasync syscall, that directory syncs happen inside the
-// first xSync of a new journal or WAL, and that -wal/-shm are created at first
-// use and removed at last close.
+// At SQLite's default mmap_size=0, it verifies that every xRead/xWrite/xSync
+// maps to the expected pread64, pwrite64, or fsync/fdatasync syscall, that no
+// byte-moving syscall on database/sidecar files escapes the VFS, that directory
+// syncs happen inside the first xSync of a new journal or WAL, and that
+// -wal/-shm are created at first use and removed at last close.
 //
 // Run from the repo root (Linux; on macOS, use docker compose run --rm lab):
 //
