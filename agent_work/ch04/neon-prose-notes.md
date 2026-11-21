@@ -30,3 +30,30 @@ Verification: `gofmt -l` clean (`PASS check gofmt: 88 Go file(s) formatted`), `g
 ## Suspected defects
 
 None observed in `internal/journalfile/` or `ch04-pager-and-page-cache/experiments/`.
+
+---
+
+## Closing rewrite — what changed
+
+### Go code comments (comment-only edits)
+- `internal/journalfile/journalfile.go`: added comments on `maxSuperJournalLen`, `HeaderMissing` (now covering sub-sector first headers per `readJournalHdr`, `src/pager.c:1607-1610`), the sub-sector branch in `Parse`, `superJournalName` / `cCharIsSigned` / `superJournalChecksum` (C `char` signedness, leading-NUL and length `> 512` rejection), `Playback` (conditional refusal when `SuperJournal != ""`), `PlaybackIfSuperJournalExists`, and `playback`.
+- `internal/journalfile/journalfile_test.go`: added doc comments on all eight repair-added `Test*` functions (`TestJournalShorterThanItsFirstSector`, `TestTrailingByteNeverNegative`, `TestSuperJournalChecksumFollowsCCharSignedness`, `TestSqliteWrittenSuperJournalChecksum`, `TestSuperJournalNameStartingWithNulIsIgnored`, `TestSuperJournalNameTooLongIsIgnored`, `TestPlaybackWithSuperJournalIsConditional`, `TestSuperJournalChecksumWhereCCharIsUnsigned`) and a WHY comment on closing `db` before `os.ReadFile(path)` in `liveJournal`.
+- `ch04-pager-and-page-cache/experiments/4.1-atomic-commit-and-hot-journal/main.go`: added WHY comments on `recordTriplesWellFormed` and `landedOn`.
+- `ch04-pager-and-page-cache/experiments/4.2-cache-budget/main.go`: added WHY comments on `calibrationPages` / `minBudgetBytes`, `minimumRows`, `withinBudget`, and `pagesMatch`.
+
+### Chapter prose and answers
+- `ch04-pager-and-page-cache/ch04-pager-and-page-cache.md`:
+  - Re-inlined all 7 include blocks with `go run ./cmd/course inline` (4 blocks updated from repaired Go files and `evidence/4.2-cache-budget.txt`).
+  - Corrected `sqlite3PagerCommitPhaseOne` (only extends undersized files, `src/pager.c:6704-6715`) and `pager_end_transaction` (truncates shrinking files *after* journal finalization, `src/pager.c:2155-2164`, `RCM-06`).
+  - Narrowed pre-`COMMIT` cold-journal and `4 / 3 / 0` sync claims to non-spilling transactions (`spill=0`), documenting `pagerStress` spills (`JRN-04`, `JRN-05a`, `RCM-03a`, `RCM-03b`).
+  - Narrowed `mmap` claims to pages without an uncheckpointed frame in `-wal` (`getPageMMap`, `src/pager.c:5719-5726`, `CAC-04`) and added Linux `RssFile` vs `Pss_File` shared-file accounting (`SCL-05`).
+  - Narrowed the `N -> N - 1` cache rule to `N >= 10` (`CAC-01a`), documented process-wide `PRAGMA shrink_memory` (`pcache1Shrink`, `src/pcache1.c:839-851`, `CAC-02a`/`CAC-02b`), and documented both first-pass `N × (nMax - 1)` and churn/second-pass `pGroup->nMaxPage = N × nMax` (`pcache1.c:902, 1096`, `SCL-07`, Part D `3,863 <= 8 × 483 = 3,864`).
+  - Updated `internal/journalfile` walk-through (`HeaderMissing` sub-sector rule, C `char` signedness and NUL/length checks in `superJournalName`, `Playback` vs `PlaybackIfSuperJournalExists`), Experiment 4.2 flag bounds, and every RSS figure in Reading the evidence and Section 7 to match the current `evidence/4.2-cache-budget.txt`.
+  - Updated Section 6 (added Section 6.5 on cache boundaries, trimmed Section 6.6 to genuinely unexercised boundaries, and populated `### What attacked this chapter` under `<!-- adversarial-results -->` with the full 32-attack record across Runs 1–3).
+  - Removed leftover build-note shorthand ("correction 4/5/6/7/8", "Outline correction") so the chapter reads as one finished piece of writing.
+- `ch04-pager-and-page-cache/answers.md`: updated Q1/A1 (non-spilling condition), Q4/A4 (`253.8 MiB`, `N × (nMax - 1)` vs `N × nMax` ceiling), and Q5/A5 (`+0.2 MiB` anon RSS, WAL-frame fallback in `getPageMMap`).
+
+### Verification and open doubts
+- Verified `go run ./cmd/course check all -skip-evidence` (all checks PASS: sources, spans, inline `-check`, gofmt, paths), `go build ./...`, `go vet ./...`, `go test ./internal/journalfile/...`, and `GOOS=darwin GOARCH=arm64 go build ./... && go vet ./...`.
+- Note on `gofmt -l .`: five pre-existing files under `agent_work/probes/` remain unformatted (outside chunk scope and not edited); all 113 tracked Go files checked by `cmd/course check gofmt` pass.
+- No open doubts.

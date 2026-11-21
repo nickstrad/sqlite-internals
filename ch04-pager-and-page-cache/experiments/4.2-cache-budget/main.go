@@ -142,15 +142,25 @@ func budgetBytes(cacheSize int) int {
 	return cacheSize * pageSize
 }
 
+// Flag floors ensuring calibration and RSS checks stay meaningful: Part A
+// calibrates bytes per page from cache_size=200 minus cache_size=100, and RSS
+// checks require at least 1 MiB of cache per connection so page-cache memory
+// dominates fixed per-connection overhead and allocator noise.
 const (
 	calibrationPages = 200
 	minBudgetBytes   = 1 << 20
 )
 
+// minimumRows returns the smallest row count (1.2x the larger of the 200-page
+// calibration cache and the requested cache budget) so the database exceeds
+// both caches and misses on a full scan.
 func minimumRows(cacheSize int) int {
 	return max(calibrationPages, budgetBytes(cacheSize)/pageSize) * 6 / 5
 }
 
+// withinBudget checks Part A's budget claim: positive PRAGMA cache_size counts
+// pages directly (numberOfCachePages, src/pcache.c:277-292), while negative
+// cache_size is a KiB byte budget that already accounts for pageSize + szExtra.
 func withinBudget(cacheUsed, cacheSize int) bool {
 	if cacheSize > 0 {
 		return cachedPages(cacheUsed) <= cacheSize
@@ -455,6 +465,9 @@ func sumsMatch(points []checkpoint, perConnection int) bool {
 	return true
 }
 
+// pagesMatch compares path-length-independent cached-page totals across every
+// checkpoint (raw CACHE_USED bytes vary with filename length via
+// sqlite3MallocSize(pPager), src/pager.c:6881-6887).
 func pagesMatch(a, b []checkpoint) bool {
 	if len(a) != len(b) {
 		return false

@@ -522,6 +522,9 @@ func collapse(ops []op) string {
 	return strings.Join(parts, ", ")
 }
 
+// recordTriplesWellFormed verifies that every journal-record write arrives as a
+// (4, pageSize, 4) triple: page number, original page image, and checksum
+// (pagerAddPageToRollbackJournal, src/pager.c:6062-6067).
 func recordTriplesWellFormed(ops []op) bool {
 	var lengths []int64
 	for _, o := range ops {
@@ -1383,6 +1386,10 @@ func recreateKilled(ctx context.Context, dir string, s *states, target op) {
 	}
 }
 
+// landedOn confirms strace killed the child with SIGKILL on entry to the exact
+// intended syscall by matching both formatted syscall text and per-PID ordinal
+// (strace counts --inject when= per thread). Tracking ordinals per PID also
+// handles logs where a killed pwrite64 appears unfinished on a second thread.
 func landedOn(run *trace.Result, dir string, target op) (string, bool) {
 	landed, onTarget := "", false
 	ordinals := map[int]int{}

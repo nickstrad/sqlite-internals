@@ -84,20 +84,20 @@ The **pager** sits between SQLite's B-tree layer and the **VFS** (Virtual File S
                    pread64, pwrite64, fsync/fdatasync, unlink, fcntl, mmap
 ```
 
-Key terms used throughout this chapter:
+Key terms used in this chapter:
 
 - **Rollback journal (`-journal`).** A companion file holding copies of pages as they existed *before* the current transaction began. Each journal segment starts on a **sector size** boundary (512 bytes on this Linux ext4 system) with a 28-byte header padded to one sector, followed by records of `[4-byte page number][page image][4-byte checksum]`.
 - **Nonce.** A 32-bit random initializer written into each journal header (`cksumInit`, generated via `sqlite3_randomness`) and folded into every record's checksum so stale records left over from an older transaction cannot pass validation.
 - **Hot journal versus cold journal.** A **hot journal** is a `-journal` left behind by a dead writer that SQLite must replay to restore the database on the next open. SQLite considers a journal hot when it exists, no process holds a `RESERVED` lock on the database, the database has more than 0 pages, and the journal's first byte is non-zero. A **cold journal** is a `-journal` whose size is 0 or whose first byte is `0x00`; SQLite ignores it.
 - **`fsync` / `fdatasync`.** Operating-system calls that flush modified file data (and, for `fsync`, metadata) from the kernel buffer cache to durable storage. A **directory fsync** (`fsync` on `.`) flushes the directory entry so a newly created filename survives power loss.
-- **Dirty page and spill.** A **dirty page** is a page modified in the page cache and not yet written to the database file. If a transaction dirties more pages than the cache can hold, the cache triggers a **spill** (`pagerStress`): it syncs the journal early and writes unreferenced dirty pages to the database file before `COMMIT`.
-- **Memory-mapped I/O (`mmap`).** Setting `PRAGMA mmap_size` asks the operating system to map the database file into the process's address space. Reads then fetch page pointers straight from the kernel's page cache instead of copying pages into SQLite's heap cache.
-- **RSS (`VmRSS`, `RssAnon`, `RssFile`, `RssShmem`).** Resident Set Size: the physical memory currently mapped into a process. On Linux, `/proc/self/status` splits `VmRSS` into **anonymous** heap memory (`RssAnon`), **file-backed** mapped pages (`RssFile`), and shared memory (`RssShmem`).
+- **Dirty page and spill.** A **dirty page** is a page modified in the page cache and not yet written to the database file. If a transaction dirties more pages than the cache can hold, the cache triggers a **spill** (`pagerStress`): it syncs the journal early, starts a new journal segment, and writes unreferenced dirty pages to the database file before `COMMIT`.
+- **Memory-mapped I/O (`mmap`).** Setting `PRAGMA mmap_size` asks the operating system to map the main database file into the process's address space. For pages served from the main `.db` file (that is, pages with no uncheckpointed frame in `-wal`), reads fetch pointers straight from the kernel's page cache instead of copying pages into SQLite's heap cache.
+- **RSS (`VmRSS`, `RssAnon`, `RssFile`, `RssShmem`) and PSS (`Pss_File`).** Resident Set Size is the physical memory currently mapped into a process. On Linux, `/proc/self/status` splits `VmRSS` into **anonymous** heap memory (`RssAnon`), **file-backed** mapped pages (`RssFile`), and shared memory (`RssShmem`). When multiple mappings point to the same file, `RssFile` counts each mapping's resident page-table entries separately, while Proportional Set Size (`Pss_File` in `/proc/self/smaps_rollup`) divides shared pages across the mappings that share them.
 
-**WAL mode as the platform default.** Platform databases in this course run in WAL (Write-Ahead Logging) mode, covered in Chapter 5. Chapter 4 evaluates that default and records one planned exception plus two discoveries:
+**WAL mode as the platform default.** Platform databases in this course run in WAL (Write-Ahead Logging) mode, covered in Chapter 5. Chapter 4 evaluates that default and keeps one planned exception:
 
-- **Planned exception (Experiment 4.1).** Chapter 4 is the rollback-journal chapter by subject, so Experiment 4.1 parts B–F run in rollback mode (`journal_mode=delete`, plus `truncate` and `persist` in part F). Even on a WAL-default platform, rollback mode still matters in two places that Part A measures directly: every newly created or imported database starts in `journal_mode=delete` until switched, and **the switch to WAL itself is a rollback-mode commit** (even `sqlitex.Open` on a brand-new WAL database creates, writes, syncs, and unlinks a `-journal` file).
-- **WAL default kept (Experiment 4.2).** Every database in Experiment 4.2 runs in WAL mode (`sqlitex.DefaultOptions()`). The page cache operates identically in both modes, and WAL mode adds one measurable cost per open database file: a 32 KiB `-shm` memory mapping visible in file-backed RSS (2 MiB across 64 files).
+- **Planned exception (Experiment 4.1).** Chapter 4 is the rollback-journal chapter by subject, so Experiment 4.1 Parts B–F run in rollback mode (`journal_mode=delete`, plus `truncate` and `persist` in Part F). Rollback mode still reaches a WAL-default platform in two places that Part A measures directly: every newly created or imported database starts in `journal_mode=delete` until switched, and **the switch to WAL itself is a rollback-mode commit** (even `sqlitex.Open` on a brand-new WAL database creates, writes, syncs, and unlinks a `-journal` file).
+- **WAL default kept (Experiment 4.2).** Every database in Experiment 4.2 runs in WAL mode (`sqlitex.DefaultOptions()`). The page cache operates identically in both modes, and WAL mode adds one measurable cost per distinct open database file: a 32 KiB `-shm` memory mapping visible in file-backed RSS (2 MiB across 64 distinct files).
 
 **Relation to the Rebuild Ladder.** Chapter 4 adds no new rung to the Rebuild Ladder. Instead, it establishes two foundations that later rungs depend on: the rule that a rollback-mode database is its `.db` file *plus* its hot `-journal` (and why post-crash verification in rollback mode must compare at equality level E3 or canonical E1), and the per-connection memory model that sizes the bounded connection manager in Chapter 8 (rung R5) and the multi-database fleet in Chapter 10 (rung R7).
 
@@ -149,12 +149,12 @@ All source citations below are at tag `version-3.53.4`. Four files are copied wh
      memset(zHeader, 0, sizeof(aJournalMagic)+4);
    }
    ```
-   That branch (lines 1495–1502) is why a rollback journal written under `synchronous=FULL` or `NORMAL` starts out **cold**: its first 12 bytes (magic and record count) are written as zeros until `syncJournal` runs. Under `synchronous=OFF` (`noSync`), SQLite writes the magic and `0xffffffff` ("infer the record count from file size") immediately, so the journal is hot as soon as the header hits the file.
-6. **`pagerAddPageToRollbackJournal` and `pager_cksum`** — [`src/pager.c:6037-6085`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L6037-L6085) and [`src/pager.c:2251-2259`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L2251-L2259) (local copy: [`pager.c`](pager.c)). Appends one record to the journal in three separate `sqlite3OsWrite` calls: the 4-byte big-endian page number, the `pageSize`-byte original page image, and the 4-byte checksum (lines 6062–6067), advancing `journalOff` by `pageSize + 8` and setting the page's bit in `pInJournal`. `pager_cksum` starts from `cksumInit` and sums every 200th byte stepping down from `pageSize - 200` while `i > 0` (20 sampled bytes on a 4,096-byte page: offsets 3896, 3696, …, 96).
+   That branch (lines 1495–1502) is why a rollback journal written under `synchronous=FULL` or `NORMAL` starts out **cold**: its first 12 bytes (magic and record count) are written as zeros until `syncJournal` runs—either at `COMMIT` (when the transaction fits in the page cache) or earlier during a mid-transaction spill via `pagerStress`. Under `synchronous=OFF` (`noSync`), SQLite writes the magic and `0xffffffff` ("infer the record count from file size") immediately, so the journal is hot as soon as the header hits the file.
+6. **`pagerAddPageToRollbackJournal` and `pager_cksum`** — [`src/pager.c:6037-6085`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L6037-L6085) and [`src/pager.c:2251-2259`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L2251-L2259) (local copy: [`pager.c`](pager.c)). Appends one record to the journal in three separate `sqlite3OsWrite` calls: the 4-byte big-endian page number, the `pageSize`-byte original page image, and the 4-byte checksum (lines 6062–6067), advancing `journalOff` by `pageSize + 8` and setting the page's bit in `pInJournal`. `pager_cksum` starts from `cksumInit` and sums every 200th byte stepping down from `pageSize - 200` while `i > 0` (20 sampled bytes on a 4,096-byte page: offsets 3896, 3696, …, 96). Because `pager_cksum` samples only 20 bytes per 4,096-byte page, a single-byte corruption at an unsampled offset is not detected by the journal checksum.
 
 ### 3.3 Two-phase commit: `syncJournal`, database writes, and the commit point
 
-7. **`sqlite3PagerCommitPhaseOne`** — [`src/pager.c:6511-6730`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L6511-L6730) (local copy: [`pager.c`](pager.c)). In rollback mode, Phase One brings the database file up to the new state while keeping the journal intact: it updates the change counter on page 1 (journaling page 1 if not already journaled, lines 6620–6636), writes a super-journal name if multiple databases participate (line 6644), calls `syncJournal` (line 6658), writes every dirty page with `pager_write_pagelist` (line 6666/6696), truncates or extends the file if its size changed (line 6713), calls `sqlite3PagerSync` (line 6719), and sets `eState = PAGER_WRITER_FINISHED` (line 6727).
+7. **`sqlite3PagerCommitPhaseOne`** — [`src/pager.c:6511-6730`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L6511-L6730) (local copy: [`pager.c`](pager.c)). In rollback mode, Phase One brings the database file up to the new state while keeping the journal intact: it updates the change counter on page 1 (journaling page 1 if not already journaled, lines 6620–6636), writes a super-journal name if multiple databases participate (line 6644), calls `syncJournal` (line 6658), writes every dirty page with `pager_write_pagelist` (line 6666/6696), extends an undersized file if `dbSize > dbFileSize` (lines 6704–6715), calls `sqlite3PagerSync` (line 6719), and sets `eState = PAGER_WRITER_FINISHED` (line 6727). Phase One only *extends* an undersized file; shrinking a database file happens later, in `pager_end_transaction`.
 8. **`syncJournal`** — [`src/pager.c:4332-4441`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L4332-L4441) (local copy: [`pager.c`](pager.c)). Takes the `EXCLUSIVE` lock, probes 8 bytes at the next sector boundary and zeroes byte 0 there if a stale `PERSIST`-mode header follows (lines 4380–4385), then executes the exact sync sequence that distinguishes `FULL` from `NORMAL`:
    ```c
    if( pPager->fullSync && 0==(iDc&SQLITE_IOCAP_SEQUENTIAL) ){
@@ -170,18 +170,18 @@ All source citations below are at tag `version-3.53.4`. Four files are copied wh
      (pPager->syncFlags==SQLITE_SYNC_FULL?SQLITE_SYNC_DATAONLY:0)
    );
    ```
-   In `FULL` mode (`fullSync` true, lines 4401–4420), SQLite syncs the journal *first* (flushing the records and, on the first sync of a new journal file, triggering the VFS directory sync in `unixSync`), writes the 12-byte `zHeader` (magic + `nRec`) at offset 0—making the journal hot—and then syncs the journal a second time. In `NORMAL` mode (`fullSync` false), SQLite skips the first sync, writes the 12-byte magic + `nRec` immediately, and performs one journal sync (plus the directory sync). In `OFF` mode (`noSync`), `syncJournal` issues no writes and no syncs. At line 4438 it sets `eState = PAGER_WRITER_DBMOD`.
+   In `FULL` mode (`fullSync` true, lines 4401–4420), SQLite syncs the journal *first* (flushing the records and, on the first sync of a new journal file, triggering the VFS directory sync in `unixSync`), writes the 12-byte `zHeader` (magic + `nRec`) at offset 0—making the journal hot—and then syncs the journal a second time. In `NORMAL` mode (`fullSync` false), SQLite skips the first sync, writes the 12-byte magic + `nRec` immediately, and performs one journal sync (plus the directory sync). In `OFF` mode (`noSync`), `syncJournal` issues no writes and no syncs. At line 4438 it sets `eState = PAGER_WRITER_DBMOD`. When called mid-transaction by `pagerStress` (`newHdr=1`), `syncJournal` also opens a new header segment on the next sector boundary (`lines 4423-4427`), so a spilling transaction runs this sync cycle multiple times.
 9. **`pager_write_pagelist` and `sqlite3PagerSync`** — [`src/pager.c:4475-4556`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L4475-L4556) and [`src/pager.c:6446-6456`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L6446-L6456) (local copy: [`pager.c`](pager.c)). `sqlite3PcacheDirtyList` ([`src/pcache.c:818-824`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache.c#L818-L824), local copy: [`pcache.c`](pcache.c)) merge-sorts dirty pages by ascending page number, and `pager_write_pagelist` writes each page to `(pgno - 1) * pageSize`, counting each write in `aStat[PAGER_STAT_WRITE]`. `sqlite3PagerSync` sends `SQLITE_FCNTL_SYNC` and syncs the database file unless `noSync`.
 10. **`sqlite3PagerCommitPhaseTwo`, `pager_end_transaction`, and `zeroJournalHdr`** — [`src/pager.c:6748-6786`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L6748-L6786), [`src/pager.c:2052-2180`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L2052-L2180), and [`src/pager.c:1399-1432`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L1399-L1432) (local copy: [`pager.c`](pager.c)). Phase Two calls `pager_end_transaction`, which executes the **commit point** according to `journal_mode` (lines 2086–2122):
     - `DELETE`: closes and deletes `-journal` (`sqlite3OsDelete`, line 2120).
     - `TRUNCATE`: truncates `-journal` to 0 bytes (`sqlite3OsTruncate`, line 2090), followed by `sqlite3OsSync` on the journal when `fullSync` is set (lines 2091–2098).
     - `PERSIST`: calls `zeroJournalHdr` (line 2104), overwriting the first 28 bytes of `-journal` with zeros and syncing the journal unless `noSync`.
-    After finalizing the journal, `pager_end_transaction` destroys `pInJournal`, marks cached pages clean, drops the lock back to `SHARED`, and sets `eState = PAGER_READER`.
+    After finalizing the journal—and while still holding the `EXCLUSIVE` lock—`pager_end_transaction` truncates the database file if the transaction shrank it (`bCommit && dbFileSize > dbSize`, lines 2155–2164). Because that `ftruncate` runs *after* the journal is gone, a process crash right on the truncation leaves a committed database whose logical content is post-step, with trailing slack pages beyond the header's page count. Finally, `pager_end_transaction` destroys `pInJournal`, marks cached pages clean, drops the lock back to `SHARED`, and sets `eState = PAGER_READER`.
 
 ### 3.4 Hot-journal recovery and the `PAGER_GET_NOCONTENT` exception
 
 11. **`sqlite3PagerSharedLock`, `hasHotJournal`, and `pagerSyncHotJournal`** — [`src/pager.c:5300-5507`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L5300-L5507), [`src/pager.c:5180-5271`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L5180-L5271), and [`src/pager.c:4094-4103`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L4094-L4103) (local copy: [`pager.c`](pager.c)). On the first read or write (`OPEN -> READER`), `sqlite3PagerSharedLock` takes a `SHARED` lock and calls `hasHotJournal`. `hasHotJournal` checks four conditions in order: (a) `<db>-journal` exists (`sqlite3OsAccess`, line 5196), (b) no process holds `RESERVED` (`sqlite3OsCheckReservedLock`, line 5209), (c) the database has more than 0 pages (if `nPage == 0`, it deletes the stale journal instead, lines 5224–5230), and (d) the first byte of `-journal` is non-zero (`sqlite3OsRead` of 1 byte at offset 0, lines 5243–5251). When `hasHotJournal` reports true, `sqlite3PagerSharedLock` jumps straight to an `EXCLUSIVE` lock (line 5354, bypassing `RESERVED` so other readers cannot see the torn database), syncs the hot journal (`pagerSyncHotJournal`, line 5400), and runs `pager_playback` (line 5402).
-12. **`pager_playback`, `readJournalHdr`, and `pager_playback_one_page`** — [`src/pager.c:2864-3052`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L2864-L3052), [`src/pager.c:1590-1693`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L1590-L1693), and [`src/pager.c:2298-2500`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L2298-L2500) (local copy: [`pager.c`](pager.c)). `pager_playback` checks any super-journal footer (if named but missing, the multi-database commit already succeeded and rollback stops), loops over headers via `readJournalHdr` (stopping on bad magic or non-power-of-two geometry), truncates the database back to the first header's `dbOrigSize` (`pager_truncate`, line 2952), and calls `pager_playback_one_page` for each record. `pager_playback_one_page` stops on page `0` or `PAGER_SJ_PGNO`, skips pages larger than `dbOrigSize`, stops on a checksum mismatch, and otherwise writes the original page image back to the database file. Finally, `pager_playback` syncs the restored database and calls `pager_end_transaction` (which deletes the journal in `DELETE` mode).
+12. **`pager_playback`, `readJournalHdr`, and `pager_playback_one_page`** — [`src/pager.c:2864-3052`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L2864-L3052), [`src/pager.c:1590-1693`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L1590-L1693), and [`src/pager.c:2298-2500`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L2298-L2500) (local copy: [`pager.c`](pager.c)). `pager_playback` first checks for a super-journal footer (`readSuperJournal`, [`src/pager.c:1303-1349`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L1303-L1349)); if a super-journal is named and does not exist on disk, the multi-database commit already succeeded and rollback skips playback completely (lines 2891–2897). Otherwise it loops over headers via `readJournalHdr`. If the remaining file is shorter than one full sector (`journalOff + JOURNAL_HDR_SZ(pPager) > journalSize`, lines 1607–1610), or if the magic or power-of-two geometry fails, `readJournalHdr` returns `SQLITE_DONE` before truncating anything. On a valid first header, `pager_playback` truncates the database back to `dbOrigSize` (`pager_truncate`, line 2952) and calls `pager_playback_one_page` for each record. `pager_playback_one_page` stops on page `0` or `PAGER_SJ_PGNO`, skips pages larger than `dbOrigSize`, stops on a checksum mismatch, and otherwise writes the original page image back to the database file. Finally, `pager_playback` syncs the restored database and calls `pager_end_transaction` (which deletes the journal in `DELETE` mode).
 13. **`getPageNormal` and `PAGER_GET_NOCONTENT`** — [`src/pager.c:5581-5683`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L5581-L5683) (local copy: [`pager.c`](pager.c)) and `allocateBtreePage` at [`src/btree.c:6740`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/btree.c#L6740) (in the pinned tree and Chapter 2's copy). When the B-tree pops a leaf page off the freelist, its old content is unused, so `allocateBtreePage` passes `PAGER_GET_NOCONTENT` to the pager. Inside `getPageNormal` (lines 5645–5661), SQLite zeroes the in-memory page instead of reading disk *and* sets the page's bit in `pInJournal`:
     ```c
     if( noContent ){
@@ -197,8 +197,8 @@ All source citations below are at tag `version-3.53.4`. Four files are copied wh
 ### 3.5 Page cache, spills, unified LRU, mmap, and `sqlite3_db_status`
 
 14. **`PCache`, `numberOfCachePages`, dirty list, and fetch/stress** — [`src/pcache.c:41-54`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache.c#L41-L54) (`struct PCache`), [`src/pcache.c:195-259`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache.c#L195-L259) (`pcacheManageDirtyList`), [`src/pcache.c:277-292`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache.c#L277-L292) (`numberOfCachePages`), [`src/pcache.c:403-432`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache.c#L403-L432) (`sqlite3PcacheFetch`), [`src/pcache.c:445-490`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache.c#L445-L490) (`sqlite3PcacheFetchStress`), [`src/pcache.c:593-607`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache.c#L593-L607) (`sqlite3PcacheMakeDirty`), and [`src/pager.c:4655-4727`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L4655-L4727) (`pagerStress`, local copies: [`pcache.c`](pcache.c), [`pager.c`](pager.c)). `numberOfCachePages` translates `PRAGMA cache_size`: a positive `N` means `N` pages; a negative `N` means `(-1024 * N) / (szPage + szExtra)` pages (KiB budget). When a cache fills with dirty pages above `szSpill`, `sqlite3PcacheFetchStress` invokes `pagerStress`, which increments `PAGER_STAT_SPILL`, calls `syncJournal(pPager, 1)` (syncing the journal and starting a new header segment for subsequent writes), and writes an unreferenced dirty page out to the database file early.
-15. **`pcache1` structures, unified `PGroup`, and the `N - 1` rule** — [`src/pcache1.c:117-127`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache1.c#L117-L127) (`struct PgHdr1`), [`src/pcache1.c:158-165`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache1.c#L158-L165) (`struct PGroup`), [`src/pcache1.c:175-203`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache1.c#L175-L203) (`struct PCache1`), [`src/pcache1.c:209-211`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache1.c#L209-L211) (`struct PgFreeslot`), [`src/pcache1.c:520-526`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache1.c#L520-L526) (`pcache1UnderMemoryPressure`), [`src/pcache1.c:621-637`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache1.c#L621-L637) (`pcache1EnforceMaxPage`), and [`src/pcache1.c:874-941`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache1.c#L874-L941) (`pcache1FetchStage2`, local copy: [`pcache1.c`](pcache1.c)). Two facts in `pcache1.c` explain the numbers Experiment 4.2 measures:
-    - **Unified LRU under `ENABLE_MEMORY_MANAGEMENT` (`pcache1Init`, `pcache1.c:717-724`; `pcache1Cachesize`, `pcache1.c:814-832`; `pcache1FetchStage2`, `pcache1.c:899-916`).** When compiled with `SQLITE_ENABLE_MEMORY_MANAGEMENT`—which `modernc.org/sqlite v1.60.1` enables—`pcache1.separateCache` is `0`, so every open connection in the process shares one global `PGroup` and one LRU list. Each connection's `cache_size` adds its share `nMax` to `pGroup->nMaxPage`. When a cache needs a page and reaches its own limit, `pcache1FetchStage2` recycles `pGroup->lru.pLruPrev`, **whichever connection owns it**:
+15. **`pcache1` structures, unified `PGroup`, `shrink_memory`, and the `N - 1` rule** — [`src/pcache1.c:117-127`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache1.c#L117-L127) (`struct PgHdr1`), [`src/pcache1.c:158-165`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache1.c#L158-L165) (`struct PGroup`), [`src/pcache1.c:175-203`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache1.c#L175-L203) (`struct PCache1`), [`src/pcache1.c:209-211`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache1.c#L209-L211) (`struct PgFreeslot`), [`src/pcache1.c:520-526`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache1.c#L520-L526) (`pcache1UnderMemoryPressure`), [`src/pcache1.c:621-637`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache1.c#L621-L637) (`pcache1EnforceMaxPage`), and [`src/pcache1.c:874-941`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache1.c#L874-L941) (`pcache1FetchStage2`, local copy: [`pcache1.c`](pcache1.c)). Three details in `pcache1.c` govern the numbers Experiment 4.2 and the adversarial checks measure:
+    - **Unified LRU under `ENABLE_MEMORY_MANAGEMENT` (`pcache1Init`, [`src/pcache1.c:717-724`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache1.c#L717-L724); `pcache1Cachesize`, [`src/pcache1.c:814-832`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache1.c#L814-L832); `pcache1FetchStage2`, `src/pcache1.c:899-916`).** When compiled with `SQLITE_ENABLE_MEMORY_MANAGEMENT`—which `modernc.org/sqlite v1.60.1` enables—`pcache1.separateCache` is `0`, so every open connection in the process shares one global `PGroup` and one LRU list. Each connection's `cache_size` adds its share `nMax` to `pGroup->nMaxPage`. When a cache needs a page and reaches its own limit, `pcache1FetchStage2` recycles `pGroup->lru.pLruPrev`, **whichever connection owns it**:
       ```c
       if( pCache->bPurgeable
        && !pGroup->lru.pLruPrev->isAnchor
@@ -210,9 +210,10 @@ All source citations below are at tag `version-3.53.4`. Four files are copied wh
         pcache1PinPage(pPage);
         pOther = pPage->pCache;
       ```
-      An active connection can therefore hold far more pages than its own `cache_size` by taking pages from idle connections, while the process-wide sum stays fixed at the sum of all open connections' budgets. Without `SQLITE_ENABLE_MEMORY_MANAGEMENT` (such as the C `sqlite3` CLI here), `separateCache` is `1`, giving each connection its own private `PGroup` and enforcing `cache_size` per connection.
-    - **A budget of `N` pages holds `N - 1`.** The recycle condition at line 902 is `pCache->nPage + 1 >= pCache->nMax`. Once `nPage` reaches `nMax - 1`, every subsequent miss recycles an existing page instead of allocating a new one. Thus `cache_size=100` holds `99` pages, `cache_size=200` holds `199`, and `cache_size=-2000` (`nMax = 2048000 / (4096 + szExtra) = 483`) holds `482` pages.
-16. **Memory-mapped reads (`mmap`)** — [`src/pager.c:3579-3590`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3579-L3590) (`pagerFixMaplimit`) and [`src/pager.c:5687-5752`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L5687-L5752) (`getPageMMap`, local copy: [`pager.c`](pager.c)). Setting `PRAGMA mmap_size > 0` switches the pager's fetch method to `getPageMMap` and passes the limit to the VFS (`SQLITE_FCNTL_MMAP_SIZE`). On Unix (`unixFetch` -> `unixMapfile` in `src/os_unix.c`, linked in the pinned tree), `sqlite3OsFetch` returns a pointer directly into the `mmap` region and `pagerAcquireMapPage` wraps it in a lightweight page handle outside `pcache1`.
+      An active connection can therefore hold more pages than its own `cache_size` by recycling pages from idle connections. On a single first-pass sweep across `N` open connections, the process-wide sum equals `N × (nMax - 1)`. Under connection-pool churn or a second round-robin sweep across evicted connections (where `nPage < nMax`), allocations climb to the true group cap `pGroup->nMaxPage = N × nMax`, where `pcache1Unpin` ([`src/pcache1.c:1096`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache1.c#L1096)) trims any excess. Without `SQLITE_ENABLE_MEMORY_MANAGEMENT` (such as the C `sqlite3` CLI here), `separateCache` is `1`, giving each connection its own private `PGroup` and enforcing `cache_size` per connection.
+    - **Process-wide `PRAGMA shrink_memory` (`pcache1Shrink`, [`src/pcache1.c:839-851`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pcache1.c#L839-L851)).** `pcache1Shrink` temporarily sets `pGroup->nMaxPage = 0`, calls `pcache1EnforceMaxPage` (`src/pcache1.c:621-637`), and restores `nMaxPage`. Under `SQLITE_ENABLE_MEMORY_MANAGEMENT`, `pGroup` is process-wide—so running `PRAGMA shrink_memory` on *any* single connection (even an idle one holding 0 pages) evicts every other connection's unpinned clean pages while leaving cursor-pinned and uncommitted dirty pages intact.
+    - **The `N - 1` rule for `N >= 10`.** The recycle condition at line 902 is `pCache->nPage + 1 >= pCache->nMax`. Once `nPage` reaches `nMax - 1`, subsequent misses recycle an existing page instead of allocating a new one: `cache_size=10` holds `9` pages, `100` holds `99`, `200` holds `199`, and `cache_size=-2000` (`nMax = 2048000 / (4096 + szExtra) = 483`) holds `482` pages. For tiny caches (`N <= 2`), the cache rests at `N` (`0 -> 0`, `1 -> 1`, `2 -> 2`) and temporarily holds more than `N` while a statement runs (`4` pages pinned by an open scan cursor cannot be recycled). Huge `cache_size` values allocate lazily, holding only the pages actually read.
+16. **Memory-mapped reads (`mmap`)** — [`src/pager.c:3579-3590`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3579-L3590) (`pagerFixMaplimit`) and [`src/pager.c:5687-5752`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L5687-L5752) (`getPageMMap`, local copy: [`pager.c`](pager.c)). Setting `PRAGMA mmap_size > 0` switches the pager's fetch method to `getPageMMap` and passes the limit to the VFS (`SQLITE_FCNTL_MMAP_SIZE`). In WAL mode, `getPageMMap` checks `sqlite3WalFindFrame` first (lines 5719–5726): if the requested page has a frame in `-wal` (`iFrame != 0`), `getPageMMap` falls back to `getPageNormal` and copies the page into `pcache1`. Only when `iFrame == 0`—a page read from the main `.db` file, such as a checkpointed database—does `sqlite3OsFetch` (`unixFetch` -> `unixMapfile` in `src/os_unix.c`, linked in the pinned tree) return a pointer straight into the `mmap` region and wrap it in a lightweight `pagerAcquireMapPage` handle outside `pcache1`.
 17. **Per-connection counters** — [`src/status.c:203-421`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/status.c#L203-L421) (`sqlite3_db_status64`, local copy: [`status.c`](status.c)), [`src/pager.c:6881-6887`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L6881-L6887) (`sqlite3PagerMemUsed`), and [`src/pager.c:6928-6946`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L6928-L6946) (`sqlite3PagerCacheStat`). `SQLITE_DBSTATUS_CACHE_USED` sums `sqlite3PagerMemUsed` across attached databases:
     ```c
     int sqlite3PagerMemUsed(Pager *pPager){
@@ -223,7 +224,7 @@ All source citations below are at tag `version-3.53.4`. Four files are copied wh
                + pPager->pageSize;
     }
     ```
-    Because `pPager` stores the database, journal, and WAL filenames inside its single heap allocation, `sqlite3MallocSize(pPager)`—and therefore raw `CACHE_USED` bytes—varies slightly with the database's path length. `SQLITE_DBSTATUS_CACHE_HIT`, `CACHE_MISS`, `CACHE_WRITE`, and `CACHE_SPILL` read `aStat[]` through `sqlite3PagerCacheStat`.
+    Because `pPager` stores the database, journal, and WAL filenames inside its single heap allocation, `sqlite3MallocSize(pPager)`—and therefore raw `CACHE_USED` bytes—varies with the database's path length. `SQLITE_DBSTATUS_CACHE_HIT`, `CACHE_MISS`, `CACHE_WRITE`, and `CACHE_SPILL` read `aStat[]` through `sqlite3PagerCacheStat`.
 
 ### Version notes
 
@@ -240,8 +241,8 @@ Behavior differences across SQLite releases relevant to the pager and page cache
 
 - **Claim:**
   1. New databases start in rollback-journal mode (`journal_mode=delete`, header bytes 18–19 = `1,1`), and switching a new database to WAL—including inside the platform opener `sqlitex.Open`—commits page 1 through a rollback `-journal`.
-  2. In rollback mode, SQLite writes original page images to `-journal` and syncs the journal before any write reaches the database file: 4 syncs per commit at `synchronous=FULL` (`journal-sync`, `dir-sync`, 12-byte `journal-count`, `journal-sync`, database writes, `db-sync`, `journal-unlink`), 3 syncs at `NORMAL` (12-byte `journal-count` before the single `journal-sync` and `dir-sync`), and 0 syncs at `OFF`. The pinned C `sqlite3` CLI produces the exact same writes, syncs, and unlink in the same order.
-  3. Killing the writer on entry to every write, sync, and unlink across `FULL`, `NORMAL`, and `OFF` always leaves a database that SQLite restores to the pre-step or post-step state—never a third state—with the flip occurring on the journal finalization syscall (`unlink` in `DELETE`, `ftruncate` in `TRUNCATE`, 28-byte header zero in `PERSIST`). **Outline correction:** at the byte level, a hot-journal rollback restores exact pre-step bytes whenever the pre-step file has no freelist (Part D2, step 1), but leaves new bytes inside reused freelist leaves when the transaction pops pages off the freelist via `PAGER_GET_NOCONTENT` (Part D, step 3, page 22); in every such case, `integrity_check` is `ok` and the `VACUUM INTO` canonical hash equals pre-step's.
+  2. In rollback mode, for a transaction that fits in the page cache (`spill=0`), SQLite writes all original page images to `-journal` and syncs the journal before any write reaches the database file: 4 syncs per commit at `synchronous=FULL` (`journal-sync`, `dir-sync`, 12-byte `journal-count`, `journal-sync`, database writes, `db-sync`, `journal-unlink`), 3 syncs at `NORMAL` (12-byte `journal-count` before the single `journal-sync` and `dir-sync`), and 0 syncs at `OFF`. (If a transaction spills via `pagerStress`, journal segments and database writes interleave with additional syncs while keeping per-page journal-before-database ordering.) The pinned C `sqlite3` CLI produces the exact same writes, syncs, and unlink in the same order.
+  3. Killing the writer on entry to every write, sync, and unlink across `FULL`, `NORMAL`, and `OFF` always leaves a database that SQLite restores to the pre-step or post-step state—never a third state—with the flip occurring on the journal finalization syscall (`unlink` in `DELETE`, `ftruncate` in `TRUNCATE`, 28-byte header zero in `PERSIST`). At the byte level, hot-journal rollback restores exact pre-step bytes whenever the pre-step file has no freelist (Part D2, step 1), but leaves new bytes inside reused freelist leaves when the transaction pops pages off the freelist via `PAGER_GET_NOCONTENT` (Part D, step 3, page 22); in every such case, `integrity_check` is `ok` and the `VACUUM INTO` canonical hash equals pre-step's. (For a shrinking transaction, `ftruncate` on the database file runs *after* journal finalization in `pager_end_transaction`, leaving logical post-step content with trailing slack pages if killed there.)
   4. Deleting a hot journal or copying a crashed database without its hot journal either yields an unreadable malformed database or silently commits a transaction whose `COMMIT` never returned (Part E).
 - **Why kept:** A WAL-mode platform still meets rollback mode. Every new database starts in it, the switch to WAL itself commits through a `-journal`, and a file moved without its `-journal` is a corrupt file. One full-depth experiment covers all of that; a Go journal replayer is not built because the platform never replays rollback journals itself.
 - **Evidence form:** `EXACT` (every non-`INFO:` line matches byte for byte on repeated runs and inside the Debian `lab` container; `INFO:` lines carry work directory, sync syscall name, random per-run journal nonces, and runtimes).
@@ -781,6 +782,27 @@ func collapse(ops []op) string {
 	return strings.Join(parts, ", ")
 }
 
+// recordTriplesWellFormed verifies that every journal-record write arrives as a
+// (4, pageSize, 4) triple: page number, original page image, and checksum
+// (pagerAddPageToRollbackJournal, src/pager.c:6062-6067).
+func recordTriplesWellFormed(ops []op) bool {
+	var lengths []int64
+	for _, o := range ops {
+		if o.kind == "journal-record" {
+			lengths = append(lengths, int64(o.call.Length))
+		}
+	}
+	if len(lengths)%3 != 0 {
+		return false
+	}
+	for i := 0; i < len(lengths); i += 3 {
+		if lengths[i] != 4 || lengths[i+1] != pageSize || lengths[i+2] != 4 {
+			return false
+		}
+	}
+	return true
+}
+
 func countKind(ops []op, kind string) int {
 	n := 0
 	for _, o := range ops {
@@ -935,14 +957,7 @@ func runKill(ctx context.Context, dir string, s *states, journalMode, synchronou
 	start := time.Now()
 	run := killRun(ctx, dir, s, journalMode, synchronous, target)
 	result.duration = time.Since(start)
-	// Confirm strace intercepted the exact intended syscall on entry before the
-	// kernel executed it (marked Unfinished and terminated by SIGKILL).
-	for _, call := range run.Log.Calls {
-		if call.Unfinished && call.Name == target.call.Name && trace.UnderDir(dir)(call) {
-			result.landed = describe(trace.RelativeTo(dir, []trace.Syscall{call})[0])
-		}
-	}
-	result.landedOK = run.Killed == "SIGKILL" && result.landed == target.text
+	result.landed, result.landedOK = landedOn(run, dir, target)
 	path := filepath.Join(dir, dbName)
 	image, err := os.ReadFile(path)
 	if err != nil {
@@ -1179,7 +1194,7 @@ func checkBaseline(w window, image []byte, s *states, journalMode, synchronous s
 		wantSyncs := map[string]int{sqlitex.SyncFull: 4, sqlitex.SyncNormal: 3, sqlitex.SyncOff: 0}[synchronous]
 		check(len(syncs) == wantSyncs, fmt.Sprintf("%s: %d syncs per commit (journal, directory and database syncs counted)", label, wantSyncs))
 	}
-	check(records%3 == 0 && records > 0, label+": each journal record is three pwrite64 calls: page number (4 bytes), original page image (4096), checksum (4)")
+	check(records > 0 && recordTriplesWellFormed(w.ops), label+": each journal record is three pwrite64 calls: page number (4 bytes), original page image (4096), checksum (4)")
 	check(bytes.Equal(image, s.post), label+": the traced commit leaves exactly the post-step bytes")
 }
 
@@ -1449,7 +1464,10 @@ func partA(ctx context.Context, base string) {
 		}
 	}
 	usesJournal := func(ops []string) bool {
-		return len(ops) >= 2 && strings.HasPrefix(ops[0], "open ") && strings.HasPrefix(ops[len(ops)-1], "unlink ")
+		hasPrefix := func(prefix string) bool {
+			return slices.ContainsFunc(ops, func(o string) bool { return strings.HasPrefix(o, prefix) })
+		}
+		return len(ops) >= 2 && strings.HasPrefix(ops[0], "open ") && strings.HasPrefix(ops[len(ops)-1], "unlink ") && hasPrefix("pwrite64 ") && hasPrefix("sync ")
 	}
 	check(usesJournal(journalBySegment["plain"][0]), "a file created with driver defaults commits its first transaction through a -journal (opened, written, synced, unlinked)")
 	check(usesJournal(journalBySegment["switch"][0]) && walBySegment["switch"][0] == 0, "the switch to WAL is itself a rollback-mode commit: it writes page 1 through a -journal")
@@ -1537,7 +1555,7 @@ func partC(ctx context.Context, base string, s *states) {
 		fatal("journal", errors.New("no -journal during the transaction"))
 	}
 	fmt.Printf("every statement of step %d executed, COMMIT not yet issued: %s\n", s.step, journalSummary(j, present))
-	allOriginal := true
+	allOriginal := j.RecordsPresent() > 0
 	for _, segment := range j.Segments {
 		for _, r := range segment.Records {
 			same := bytes.Equal(pageAt(s.pre, int(r.Page-1)*pageSize), r.Image)
@@ -1623,9 +1641,34 @@ func countsOf(ctx context.Context, path string) string {
 
 func recreateKilled(ctx context.Context, dir string, s *states, target op) {
 	run := killRun(ctx, dir, s, sqlitex.JournalDelete, sqlitex.SyncFull, target)
-	if run.Killed != "SIGKILL" {
-		fatal("kill", fmt.Errorf("child was not killed: exit %d", run.ExitCode))
+	if landed, ok := landedOn(run, dir, target); !ok {
+		fatal("kill", fmt.Errorf("child was not killed on %q (ordinal %d): killed=%q exit %d landed %q", target.text, target.ordinal, run.Killed, run.ExitCode, landed))
 	}
+}
+
+// landedOn confirms strace killed the child with SIGKILL on entry to the exact
+// intended syscall by matching both formatted syscall text and per-PID ordinal
+// (strace counts --inject when= per thread). Tracking ordinals per PID also
+// handles logs where a killed pwrite64 appears unfinished on a second thread.
+func landedOn(run *trace.Result, dir string, target op) (string, bool) {
+	landed, onTarget := "", false
+	ordinals := map[int]int{}
+	for _, call := range run.Log.Calls {
+		if call.Name != target.call.Name {
+			continue
+		}
+		ordinals[call.PID]++
+		if !call.Unfinished || !trace.UnderDir(dir)(call) {
+			continue
+		}
+		text := describe(trace.RelativeTo(dir, []trace.Syscall{call})[0])
+		if text == target.text && ordinals[call.PID] == target.ordinal {
+			landed, onTarget = text, true
+		} else if !onTarget {
+			landed = text
+		}
+	}
+	return landed, run.Killed == "SIGKILL" && onTarget
 }
 
 // partE demonstrates three failure cases of losing a hot journal: deleting it
@@ -1773,7 +1816,8 @@ func describeStates(s *states) {
 	fmt.Println(s.stepStatements.Summary())
 	fmt.Printf("pre-step state (after step %d): %d pages, sha256 %s, freelist leaves %s\n", s.preStep, s.prePages, s.hashes[s.preStep].Exact[:16], pageList(s.preFreeLeaves))
 	fmt.Printf("post-step state (after step %d): %d pages, sha256 %s\n", s.step, s.postPages, s.hashes[s.step].Exact[:16])
-	check(s.matchFile(s.prePath).Step == s.preStep && s.matchFile(filepath.Join(filepath.Dir(s.prePath), "post.db")).Step == s.step, fmt.Sprintf("the pre-step and post-step files equal the recipe's hashes for steps %d and %d", s.preStep, s.step))
+	preMatch, postMatch := s.matchFile(s.prePath), s.matchFile(filepath.Join(filepath.Dir(s.prePath), "post.db"))
+	check(preMatch.Step == s.preStep && preMatch.Exact && postMatch.Step == s.step && postMatch.Exact, fmt.Sprintf("the pre-step and post-step files equal the recipe's hashes for steps %d and %d", s.preStep, s.step))
 }
 
 func main() {
@@ -3254,12 +3298,12 @@ ATOMIC COMMIT OK
 
 #### Reading the evidence (Parts A–D2)
 
-Parts E and F are analyzed in Section 6 alongside the hot-journal failure cases. Here is what Parts A through D2 establish:
+Parts E and F are analyzed in Section 6 alongside the hot-journal failure cases. Parts A through D2 establish:
 
-- **Lines 5–20 (Part A: where a WAL-default platform meets rollback mode).** Opening a new path with plain `sql.Open("sqlite", path)` reports `journal_mode=delete`, and its first `CREATE TABLE` writes `1,1` into header bytes 18–19. Running `PRAGMA journal_mode=wal` rewrites bytes 18–19 to `2,2` so a fresh connection reports `journal_mode=wal`. The three traced children prove **correction 4**: not only does a driver-default `CREATE TABLE` go through `plain.db-journal`, but `PRAGMA journal_mode=wal` on an empty file (`switch.db-journal`) and `sqlitex.Open` with `journal_mode=wal` (`platform.db-journal`) each run the exact same six `-journal` syscalls (`open`, `pwrite64 off=0 len=512`, `sync`, `pwrite64 off=0 len=12`, `sync`, `unlink`). The journal holds zero page records because page 1 is past the 0-page initial file size (`pager_write`, `src/pager.c:6139-6147`). Only *after* page 1 records format version `2` do commits move to `-wal` (`-journal []`; `-wal writes 5` for `sqlitex.Open`'s `application_id`/`user_version` commit and `4` for the subsequent `CREATE TABLE`).
+- **Lines 5–20 (Part A: where a WAL-default platform meets rollback mode).** Opening a new path with plain `sql.Open("sqlite", path)` reports `journal_mode=delete`, and its first `CREATE TABLE` writes `1,1` into header bytes 18–19. Running `PRAGMA journal_mode=wal` rewrites bytes 18–19 to `2,2` so a fresh connection reports `journal_mode=wal`. The three traced children show that not only does a driver-default `CREATE TABLE` go through `plain.db-journal`, but `PRAGMA journal_mode=wal` on an empty file (`switch.db-journal`) and `sqlitex.Open` with `journal_mode=wal` (`platform.db-journal`) each run the exact same six `-journal` syscalls (`open`, `pwrite64 off=0 len=512`, `sync`, `pwrite64 off=0 len=12`, `sync`, `unlink`). The journal holds zero page records because page 1 is past the 0-page initial file size (`pager_write`, `src/pager.c:6139-6147`). Only *after* page 1 records format version `2` do commits move to `-wal` (`-journal []`; `-wal writes 5` for `sqlitex.Open`'s `application_id`/`user_version` commit and `4` for the subsequent `CREATE TABLE`).
 - **Lines 22–27 (Part B: the recipe step).** Step 3 of the rollback-mode recipe (`seed=1`) executes 53 inserts, 5 updates, and 5 deletes, growing the database from 29 pages (`b8a0bd0796442099`, with freelist leaves `[22]`) to 39 pages (`0ef90bd0e64af1e3`).
-- **Lines 29–44 (Part C: the live journal before `COMMIT`, portable).** After executing every statement of step 3 without committing, `internal/journalfile` reads `t.db-journal` (29,240 bytes = 512-byte header sector + 7 × 4,104-byte records). Its first byte is `0x00` (`not hot`, header `not-yet-synced`), initial size is `29` pages, sector size is `512` (the unix VFS advertises `SQLITE_IOCAP_POWERSAFE_OVERWRITE`, so the pager uses 512-byte sectors), and all 7 records (`[2 1 20 3 27 4 26]`) pass their checksums and match the exact pre-step pages byte for byte. Notice page `22` (the reused freelist leaf) is absent from the journal. Issuing `ROLLBACK` on the live connection restores `pre-step exact bytes` because page 22 was modified only in memory and never written to disk.
-- **Lines 46–415 (Part D: step 3 at `synchronous=FULL`).** The baseline trace records 70 syscalls (examined line by line in Section 4): 7 journaled pages (21 record writes), 18 database page writes, and 4 syncs (`[t.db-journal . t.db-journal t.db]`). The twin check confirms the pinned C `sqlite3` CLI issues the exact same 46 writes, syncs, and unlink in the same order and produces identical post-step bytes. Killing on entry to each of the 47 kill points yields:
+- **Lines 29–44 (Part C: the live journal before `COMMIT`, portable).** After executing every statement of step 3 without committing (the transaction fits in `cache_size=-2000`, so `spill=0`), `internal/journalfile` reads `t.db-journal` (29,240 bytes = 512-byte header sector + 7 × 4,104-byte records). Its first byte is `0x00` (`not hot`, header `not-yet-synced`), initial size is `29` pages, sector size is `512` (the unix VFS advertises `SQLITE_IOCAP_POWERSAFE_OVERWRITE`, so the pager uses 512-byte sectors), and all 7 records (`[2 1 20 3 27 4 26]`) pass their checksums and match the exact pre-step pages byte for byte. Page `22` (the reused freelist leaf) is absent from the journal. Issuing `ROLLBACK` on the live connection restores `pre-step exact bytes` because page 22 was modified only in memory and never written to disk.
+- **Lines 46–415 (Part D: step 3 at `synchronous=FULL`).** The baseline trace records 70 syscalls (examined line by line in Section 4): 7 journaled pages (21 record writes, verified as `(4, 4096, 4)` triples), 18 database page writes, and 4 syncs (`[t.db-journal . t.db-journal t.db]`). The twin check confirms the pinned C `sqlite3` CLI issues the exact same 46 writes, syncs, and unlink in the same order and produces identical post-step bytes. Killing on entry to each of the 47 kill points yields:
   - **Kills 01–25** (through entry to `journal-count` at offset 0 len 12): database untouched; journal first byte is `0x00` (cold); SQLite ignores the journal on reopen, leaving `pre-step, exact bytes` and a harmless cold `-journal` on disk.
   - **Kill 26** (entry to second `journal-sync`): `journal-count` has written magic `0xd9...` and record count `7`, turning the journal hot; database is still untouched; SQLite rolls back the 7 pages and deletes `-journal`, leaving `pre-step, exact bytes`.
   - **Kills 27–32** (database writes of pages 1, 2, 3, 4, 20, and entry to page 22 at offset `86016`): database is torn (1 to 5 pages differ from pre-step); hot journal restores all 7 original pages; `pre-step, exact bytes`.
@@ -3272,13 +3316,13 @@ Parts E and F are analyzed in Section 6 alongside the hot-journal failure cases.
     - `FULL`: 32 `B`, 14 `b`, 1 `A`
     - `NORMAL`: 31 `B`, 14 `b`, 1 `A`
     - `OFF`: 28 `B`, 13 `b`, 1 `A`
-- **Lines 1119–1297 (Part D2: step 1 with no freelist).** Pre-step (after step 0) has 4 pages and `freelist leaves []`; step 1 grows it to 22 pages (4 journaled pages, 22 database writes—18 of them appended past page 4 and undone by truncation). Across all 42 (`FULL`), 41 (`NORMAL`), and 37 (`OFF`) kill points, every single reopened database matches pre-step or post-step **to the exact byte** (`41 B + 1 A`, `40 B + 1 A`, `36 B + 1 A`, zero `b` outcomes).
+- **Lines 1119–1297 (Part D2: step 1 with no freelist).** Pre-step (after step 0) has 4 pages and `freelist leaves []`; step 1 grows it to 22 pages (4 journaled pages, 22 database writes—18 of them appended past page 4 and undone by truncation). Across all 42 (`FULL`), 41 (`NORMAL`), and 37 (`OFF`) kill points, every reopened database matches pre-step or post-step **to the exact byte** (`41 B + 1 A`, `40 B + 1 A`, `36 B + 1 A`, zero `b` outcomes).
 
 ---
 
 ## 4. Timeline
 
-One rollback-mode commit of recipe step 3 (`synchronous=FULL`, `journal_mode=delete`, Experiment 4.1 Part D lines 48–117) crosses every pager state in 70 traced syscalls on the database directory:
+One non-spilling rollback-mode commit of recipe step 3 (`synchronous=FULL`, `journal_mode=delete`, Experiment 4.1 Part D lines 48–117) crosses every pager state in 70 traced syscalls on the database directory:
 
 | Syscall # | Syscalls in the trace | Pager action | Pager state / lock |
 | --- | --- | --- | --- |
@@ -3299,13 +3343,15 @@ One rollback-mode commit of recipe step 3 (`synchronous=FULL`, `journal_mode=del
 | 66–67 | `close t.db-journal`, `unlink t.db-journal` | **Commit point (`DELETE` mode):** remove the hot journal (`pager_end_transaction`) | `-> READER` |
 | 68–70 | `fcntl F_RDLCK 1073741826 len=510`, `F_UNLCK 1073741824 len=2`, `F_UNLCK 0 len=0` | Downgrade to `SHARED`, then release all locks | `-> OPEN` |
 
-How the other settings alter this timeline (all verified in Experiment 4.1 Parts D and F):
+How other settings and workloads alter this timeline:
 
-- **`synchronous=NORMAL` (69 calls, 3 syncs).** Drops call #40 (the first journal sync). Call #45 (`journal-count`, 12 bytes at offset 0) runs right after the stale-header probe, followed by the single `fsync t.db-journal` and `fsync .`.
-- **`synchronous=OFF` (61 calls, 0 syncs).** Drops all four syncs and the stale-header probe. Call #9 writes the magic and `0xffffffff` immediately, so call #45 disappears too.
-- **`journal_mode=truncate` and `persist` at `FULL` (5 syncs).** Replace calls #66–67 (`close`, `unlink`) with either `ftruncate t.db-journal len=0` (`TRUNCATE`) or `pwrite64 t.db-journal off=0 len=28` (`PERSIST`), followed by a fifth sync (`fsync t.db-journal`) so the journal inactivation reaches disk (`pager_end_transaction`, `src/pager.c:2090-2105`).
+- **`synchronous=NORMAL` (69 calls, 3 syncs; Experiment 4.1 Part D).** Drops call #40 (the first journal sync). Call #45 (`journal-count`, 12 bytes at offset 0) runs right after the stale-header probe, followed by the single `fsync t.db-journal` and `fsync .`.
+- **`synchronous=OFF` (61 calls, 0 syncs; Experiment 4.1 Part D).** Drops all four syncs and the stale-header probe. Call #9 writes the magic and `0xffffffff` immediately, so call #45 disappears too.
+- **`journal_mode=truncate` and `persist` at `FULL` (5 syncs; Experiment 4.1 Part F).** Replace calls #66–67 (`close`, `unlink`) with either `ftruncate t.db-journal len=0` (`TRUNCATE`) or `pwrite64 t.db-journal off=0 len=28` (`PERSIST`), followed by a fifth sync (`fsync t.db-journal`) so the journal inactivation reaches disk (`pager_end_transaction`, `src/pager.c:2090-2105`).
+- **Spilling transactions (`pagerStress`, `src/pager.c:4655-4727`; `JRN-04`, `RCM-03a`).** When dirty pages exceed `cache_size`, `syncJournal` runs before `COMMIT`—writing the `0xd9` magic and record count, syncing the journal, opening a new sector-aligned header segment, and writing dirty pages to `t.db` early. Journal records and database writes then interleave across segments and sync counts rise above 4 (`FULL`) / 3 (`NORMAL`).
+- **Shrinking commits (`pager_end_transaction`, `src/pager.c:2155-2164`; `RCM-06`).** When a transaction shrinks the database (for example, `DELETE` under `auto_vacuum=FULL`), `ftruncate t.db` runs *after* call #67 (`unlink t.db-journal`) and before locks are released at #68–70.
 
-Crash outcome by timeline window (`FULL`, `DELETE`):
+Crash outcome by timeline window for a non-spilling, non-shrinking commit (`FULL`, `DELETE`):
 
 - **Before #45 (`journal-count`):** `-journal` is cold (first byte `0x00`), `t.db` is untouched -> reopen ignores the journal -> **pre-step exact**.
 - **From #45 through #67 (before `unlink` completes):** `-journal` is hot (`0xd9...`, count `7`), `t.db` is untouched, torn, or post-step -> reopen replays the 7 pages and truncates to 29 pages -> **pre-step** (exact before page 22 is written at #52; pre-step except freelist leaf 22 from #52 through #67).
@@ -3334,6 +3380,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"runtime"
+	"slices"
 )
 
 // Magic is the 8-byte signature that identifies a live rollback journal header
@@ -3358,6 +3406,9 @@ const (
 	minPageSize        = 512
 	maxPageSize        = 65536
 	superJournalFooter = 16
+	// maxSuperJournalLen matches unix MAX_PATHNAME (512, src/os_unix.c:180);
+	// readSuperJournal rejects lengths >= 1 + mxPathname (src/pager.c:1315,2891).
+	maxSuperJournalLen = 512
 )
 
 // HeaderState classifies the 28-byte header at the start of a journal segment.
@@ -3382,7 +3433,9 @@ const (
 	// HeaderInvalid indicates bytes that are neither valid magic, nor zeroed,
 	// nor a valid sector/page-size geometry (readJournalHdr, src/pager.c:1650-1672).
 	HeaderInvalid
-	// HeaderMissing indicates fewer than HeaderFieldsSize bytes were present.
+	// HeaderMissing indicates fewer than HeaderFieldsSize bytes or fewer than
+	// one full first sector (readJournalHdr returns SQLITE_DONE before reading
+	// the magic or truncating the database, src/pager.c:1607-1610).
 	HeaderMissing
 )
 
@@ -3512,6 +3565,15 @@ func Parse(data []byte) (*Journal, error) {
 		return j, nil
 	}
 	sector := int64(first.SectorSize)
+	// readJournalHdr returns SQLITE_DONE if journalOff+sectorSize > journalSize
+	// (src/pager.c:1607-1610), before reading the magic or truncating the
+	// database; treat a sub-sector file as missing so TrailingByte stays >= 0.
+	if end < sector {
+		first.State = HeaderMissing
+		j.Segments = append(j.Segments, Segment{Header: first})
+		j.TrailingByte = end
+		return j, nil
+	}
 	pageSize := int64(first.PageSize)
 	recordSize := pageSize + RecordOverhead
 	offset := int64(0)
@@ -3610,7 +3672,10 @@ func SuperJournalPage(pageSize uint32) uint32 {
 }
 
 // superJournalName detects the optional multi-database super-journal footer
-// written by writeSuperJournal: [4-byte PAGER_SJ_PGNO][name][4-byte len][4-byte sum][8-byte Magic].
+// written by writeSuperJournal (src/pager.c:1703-1737) and validated by
+// readSuperJournal (src/pager.c:1303-1349): [4-byte PAGER_SJ_PGNO][name]
+// [4-byte len][4-byte sum][8-byte Magic]. Names starting with NUL or longer
+// than maxSuperJournalLen are ignored, and the name stops at its first NUL.
 func superJournalName(data []byte) (string, int64, bool) {
 	size := int64(len(data))
 	if size < superJournalFooter+4 || !bytes.Equal(data[size-8:], Magic[:]) {
@@ -3619,18 +3684,37 @@ func superJournalName(data []byte) (string, int64, bool) {
 	length := int64(binary.BigEndian.Uint32(data[size-16 : size-12]))
 	stored := binary.BigEndian.Uint32(data[size-12 : size-8])
 	nameStart := size - superJournalFooter - length
-	if length <= 0 || nameStart < 4 {
+	if length <= 0 || length > maxSuperJournalLen || nameStart < 4 {
 		return "", 0, false
 	}
 	name := data[nameStart : size-superJournalFooter]
-	var sum uint32
-	for _, b := range name {
-		sum += uint32(b)
-	}
-	if sum != stored {
+	if superJournalChecksum(name, cCharIsSigned) != stored || name[0] == 0 {
 		return "", 0, false
 	}
-	return string(bytes.TrimRight(name, "\x00")), nameStart - 4, true
+	if nul := bytes.IndexByte(name, 0); nul >= 0 {
+		name = name[:nul]
+	}
+	return string(name), nameStart - 4, true
+}
+
+// cCharIsSigned mirrors the target platform's C char signedness because
+// writeSuperJournal and readSuperJournal sum char elements directly
+// (src/pager.c:1735-1737, 1333-1335). C char is unsigned on Linux ARM/ARM64/
+// PPC64/RISC-V/s390x and signed on amd64 and macOS.
+var cCharIsSigned = !(runtime.GOOS == "linux" && slices.Contains([]string{"arm", "arm64", "ppc64", "ppc64le", "riscv64", "s390x"}, runtime.GOARCH))
+
+// superJournalChecksum sums name bytes as signed or unsigned C chars to match
+// writeSuperJournal (src/pager.c:1735-1737) and readSuperJournal (1333-1335).
+func superJournalChecksum(name []byte, signedChars bool) uint32 {
+	var sum uint32
+	for _, b := range name {
+		if signedChars {
+			sum += uint32(int8(b))
+		} else {
+			sum += uint32(b)
+		}
+	}
+	return sum
 }
 
 func validGeometry(sector, pageSize uint32) bool {
@@ -3689,8 +3773,29 @@ func (j *Journal) ChecksumFailures() int {
 // Playback simulates the read loop of pager_playback (src/pager.c:2864-3052)
 // and pager_playback_one_page (src/pager.c:2298-2500) to predict which pages
 // SQLite will restore and what page count it will truncate the database to.
+// When the journal names a super-journal, pager_playback skips rollback unless
+// that super-journal file still exists on disk (src/pager.c:2891-2897); because
+// Playback sees only the journal bytes, it refuses to predict an unconditional
+// rollback and names the super-journal in StopReason.
 func (j *Journal) Playback() PlaybackOutcome {
 	outcome := PlaybackOutcome{Hot: j.LooksHot()}
+	if outcome.Hot && j.SuperJournal != "" {
+		outcome.StopReason = fmt.Sprintf("names super-journal %q: nothing is played back unless that file exists (see PlaybackIfSuperJournalExists)", j.SuperJournal)
+		return outcome
+	}
+	return j.playback(outcome)
+}
+
+// PlaybackIfSuperJournalExists returns the playback prediction assuming any
+// named super-journal file exists on disk (the branch of pager_playback that
+// proceeds past src/pager.c:2895).
+func (j *Journal) PlaybackIfSuperJournalExists() PlaybackOutcome {
+	return j.playback(PlaybackOutcome{Hot: j.LooksHot()})
+}
+
+// playback runs the shared segment-and-record simulation used by Playback and
+// PlaybackIfSuperJournalExists.
+func (j *Journal) playback(outcome PlaybackOutcome) PlaybackOutcome {
 	if !outcome.Hot {
 		outcome.StopReason = "not hot: empty file or first byte is zero"
 		return outcome
@@ -3761,10 +3866,10 @@ func (o *PlaybackOutcome) take(r Record, initialPages, superPage uint32) string 
 
 Walk-through of `internal/journalfile`:
 
-- **Constants and `HeaderState` (`Magic`, `HeaderFieldsSize`, `NoSyncRecordCount`, `RecordOverhead`).** Encodes the 8-byte signature `aJournalMagic` (`d9 d5 05 f9 20 a1 63 d7`), the 28-byte header field block, the `0xffffffff` no-sync sentinel, and the 8-byte per-record wrapper (4-byte page number + 4-byte checksum). `parseHeader` classifies the first 28 bytes into six states: `HeaderZeroed` (all 28 bytes zero, `PERSIST` after commit), `HeaderNoSync` (magic + `0xffffffff`), `HeaderSynced` (magic + explicit count), `HeaderNotYetSynced` (first 12 bytes zero, rest populated—cold journal before `syncJournal`), `HeaderInvalid`, and `HeaderMissing` (fewer than 28 bytes).
-- **Segment parsing (`Parse`, `validGeometry`, `roundUp`, `superJournalName`).** Checks first for a multi-database super-journal footer at EOF (`[PAGER_SJ_PGNO][name][4-byte len][4-byte byte-sum][Magic]`) and trims it off the record scan. Reads sector size and page size from header 0, rejecting non-power-of-two or out-of-range values just as `readJournalHdr` does (`src/pager.c:1650-1672`). Walks sector-aligned segments: records begin one sector after each header; a counted header owns `RecordCount` records and the next header begins at `roundUp(position, sector)` (`journalHdrOffset`, `src/pager.c:1366-1376`), while a `no-sync` or `not-yet-synced` header reads every complete record up to EOF, recording any incomplete tail in `TrailingByte`.
+- **Constants and `HeaderState` (`Magic`, `HeaderFieldsSize`, `NoSyncRecordCount`, `RecordOverhead`, `maxSuperJournalLen`).** Encodes the 8-byte signature `aJournalMagic` (`d9 d5 05 f9 20 a1 63 d7`), the 28-byte header field block, the `0xffffffff` no-sync sentinel, the 8-byte per-record wrapper (4-byte page number + 4-byte checksum), and Unix's 512-byte maximum super-journal pathname length (`MAX_PATHNAME`, `src/os_unix.c:180`). `parseHeader` classifies the first 28 bytes into six states: `HeaderZeroed` (all 28 bytes zero, `PERSIST` after commit), `HeaderNoSync` (magic + `0xffffffff`), `HeaderSynced` (magic + explicit count), `HeaderNotYetSynced` (first 12 bytes zero, rest populated—cold journal before `syncJournal`), `HeaderInvalid`, and `HeaderMissing` (fewer than 28 bytes, or fewer than one full first sector—matching `readJournalHdr`, `src/pager.c:1607-1610`).
+- **Segment and super-journal parsing (`Parse`, `validGeometry`, `roundUp`, `superJournalName`, `superJournalChecksum`).** Checks first for a multi-database super-journal footer at EOF (`[PAGER_SJ_PGNO][name][4-byte len][4-byte sum][Magic]`) and trims it off the record scan. Matching `readSuperJournal` (`src/pager.c:1303-1349`) and `writeSuperJournal` (`src/pager.c:1709-1737`), `superJournalChecksum` sums the name bytes using the target platform's C `char` signedness (`cCharIsSigned`: signed on `linux/amd64` and `darwin/*`; unsigned on `linux/arm`, `arm64`, `ppc64`, `ppc64le`, `riscv64`, and `s390x`), ignores names starting with NUL (`name[0] == 0`) or longer than 512 bytes, and ends the name at its first NUL byte. `Parse` then reads sector size and page size from header 0, rejecting non-power-of-two or out-of-range values (`src/pager.c:1650-1672`). If the remaining file is shorter than `first.SectorSize`, `Parse` keeps the decoded fields, marks the header `HeaderMissing`, and sets `TrailingByte = end` so `TrailingByte` is never negative. Otherwise it walks sector-aligned segments: records begin one sector after each header; a counted header owns `RecordCount` records and the next header begins at `roundUp(position, sector)` (`journalHdrOffset`, `src/pager.c:1366-1376`), while a `no-sync` or `not-yet-synced` header reads every complete record up to EOF, recording any incomplete tail in `TrailingByte`.
 - **Checksum (`Checksum`).** Re-implements `pager_cksum` (`src/pager.c:2251-2259`): starts from `nonce` and sums `image[i]` for `i = len(image) - 200; i > 0; i -= 200`. Byte 0 is intentionally not included.
-- **Hotness and playback prediction (`LooksHot`, `Playback`, `take`).** `LooksHot()` checks `Size > 0 && FirstByte != 0`—the byte-level half of `hasHotJournal` (`src/pager.c:5244-5251`). `Playback()` walks segments and applies `pager_playback_one_page`'s exact stop/skip rules (`src/pager.c:2298-2500`): stop on page `0` or `SuperJournalPage(pageSize)` (`262145` for 4,096-byte pages), skip pages `> InitialPages`, stop on the first bad checksum, and report `TruncateTo = first.InitialPages`.
+- **Hotness and playback prediction (`LooksHot`, `Playback`, `PlaybackIfSuperJournalExists`, `take`).** `LooksHot()` checks `Size > 0 && FirstByte != 0`—the byte-level half of `hasHotJournal` (`src/pager.c:5244-5251`). Because `pager_playback` skips rollback whenever a named super-journal file does not exist on disk (`src/pager.c:2891-2897`), `Playback()` refuses to predict an unconditional rollback when `SuperJournal != ""` (returning `Hot: true`, empty `Pages`, `TruncateTo: 0`, and a `StopReason` naming the super-journal); `PlaybackIfSuperJournalExists()` returns the rollback prediction for the case where that file exists. Both share `playback` and `take`, which apply `pager_playback_one_page`'s exact stop/skip rules (`src/pager.c:2298-2500`): stop on page `0` or `SuperJournalPage(pageSize)` (`262145` for 4,096-byte pages), skip pages `> InitialPages`, stop on the first bad checksum, and report `TruncateTo = first.InitialPages`.
 
 Unit tests and a live test against an open SQLite transaction live in [`internal/journalfile/journalfile_test.go`](../internal/journalfile/journalfile_test.go) and run with:
 
@@ -3777,18 +3882,18 @@ go test ./internal/journalfile/
 ### 5.2 Experiment 4.2 — Cache budget (`4.2-cache-budget`)
 
 - **Claim:**
-  1. One full scan reports exact per-page memory overhead (`4,352` bytes = 4,096-byte page + 256 bytes of headers in `sqlite3PagerMemUsed`, `src/pager.c:6881-6887`), a cache of `N` pages holds `N - 1` (`pcache1FetchStage2`, `src/pcache1.c:902`), a file larger than `cache_size` misses every page again on a second scan, and a cache larger than the file serves the second scan with zero new misses (Part A).
-  2. **Outline correction (unified `PGroup` in this driver build):** `modernc.org/sqlite v1.60.1` is compiled with `SQLITE_ENABLE_MEMORY_MANAGEMENT=1`, so `cache_size` is **not** a per-connection cap; every open connection contributes its share (`482` pages at `cache_size=-2000`) to one process-wide LRU pool (`pcache1Init`, `src/pcache1.c:718-719`). An active connection takes pages from idle connections (holding up to all 1,004 pages of its file while idle connections drop to 0), while the sum across all open connections equals `open * 482` exactly.
+  1. One full scan reports exact per-page memory overhead (`4,352` bytes = 4,096-byte page + 256 bytes of headers in `sqlite3PagerMemUsed`, `src/pager.c:6881-6887`), a cache of `N` pages holds `N - 1` for `N >= 10` (`pcache1FetchStage2`, `src/pcache1.c:902`), a file larger than `cache_size` misses every page again on a second scan, and a cache larger than the file serves the second scan with zero new misses (Part A).
+  2. In `modernc.org/sqlite v1.60.1`, `SQLITE_ENABLE_MEMORY_MANAGEMENT=1` is enabled, so `cache_size` is **not** a per-connection cap; every open connection contributes its share (`nMax = 483`, holding `482` pages on a single pass at `cache_size=-2000`) to one process-wide LRU `PGroup` (`pcache1Init`, `src/pcache1.c:718-719`). An active connection takes pages from idle connections (holding up to all 1,004 pages of its file while idle connections drop to 0). On a first sweep across `N` open connections, the sum equals `N × 482`; under pool churn (Part D) or repeated sweeps, the group stays capped at `pGroup->nMaxPage = open × (full + 1)`.
   3. Total cached pages and process RSS grow linearly with open connections—whether those connections open `N` distinct files (Part B) or the same single file (Part C, proving connections do not share a cache). With this driver's `modernc.org/memory` power-of-two allocator, RSS growth is roughly `2x` summed `CACHE_USED` (each ~4.3 KiB page allocation occupies an 8 KiB slot).
-  4. Visiting `N` files through an LRU pool capped at `K` open connections holds cached pages and process RSS flat past `K` (Part D).
-  5. Enabling `PRAGMA mmap_size` to cover the file drops `CACHE_USED` near zero (from `482` to `2` pages) while total RSS still grows by the file's size—shifted from anonymous heap (`RssAnon`) to file-backed mapped pages (`RssFile`, Part E).
+  4. Visiting `N` files through an LRU pool capped at `K` open connections holds cached pages (within `K × (full + 1)`) and process RSS flat past `K` (Part D).
+  5. On a checkpointed database (no pending frames in `-wal`), enabling `PRAGMA mmap_size` to cover the file drops `CACHE_USED` near zero (from `482` to `2` pages) while total RSS still grows by the file's size—shifted from anonymous heap (`RssAnon`) to file-backed mapped pages (`RssFile`, Part E).
 - **Evidence form:** `BOUND` and `SHAPE` for process RSS and pool bounds, with `EXACT` page counts and hit/miss/spill counters on every non-`INFO:` line.
 - **Portable (Linux-only split in Part E):** Runs on Linux and macOS; the `RssFile`/`RssAnon` split in Part E requires `/proc/self/status` (**Linux only**; on macOS use `docker compose run --rm lab go run ./ch04-pager-and-page-cache/experiments/4.2-cache-budget`).
 - **Run command:**
   ```text
   go run ./ch04-pager-and-page-cache/experiments/4.2-cache-budget
   ```
-  Optional flags: `-n 64` (unbounded connection count), `-k 8` (pool cap), `-cache-size -2000`, `-rows 1000`.
+  Optional flags: `-n 64` (unbounded connection count), `-k 8` (pool cap), `-cache-size -2000` (must represent a budget of at least `1 MiB`; positive page counts are verified in pages rather than bytes), `-rows 1000` (must be at least `1.2 × max(200, budget pages)` so the database exceeds both the 200-page calibration cache and the requested budget).
 
 <!-- include: experiments/4.2-cache-budget/main.go -->
 ```go
@@ -3934,6 +4039,32 @@ func budgetBytes(cacheSize int) int {
 		return -1024 * cacheSize
 	}
 	return cacheSize * pageSize
+}
+
+// Flag floors ensuring calibration and RSS checks stay meaningful: Part A
+// calibrates bytes per page from cache_size=200 minus cache_size=100, and RSS
+// checks require at least 1 MiB of cache per connection so page-cache memory
+// dominates fixed per-connection overhead and allocator noise.
+const (
+	calibrationPages = 200
+	minBudgetBytes   = 1 << 20
+)
+
+// minimumRows returns the smallest row count (1.2x the larger of the 200-page
+// calibration cache and the requested cache budget) so the database exceeds
+// both caches and misses on a full scan.
+func minimumRows(cacheSize int) int {
+	return max(calibrationPages, budgetBytes(cacheSize)/pageSize) * 6 / 5
+}
+
+// withinBudget checks Part A's budget claim: positive PRAGMA cache_size counts
+// pages directly (numberOfCachePages, src/pcache.c:277-292), while negative
+// cache_size is a KiB byte budget that already accounts for pageSize + szExtra.
+func withinBudget(cacheUsed, cacheSize int) bool {
+	if cacheSize > 0 {
+		return cachedPages(cacheUsed) <= cacheSize
+	}
+	return cacheUsed <= budgetBytes(cacheSize)*105/100
 }
 
 func fileName(dir string, i int) string {
@@ -4233,6 +4364,21 @@ func sumsMatch(points []checkpoint, perConnection int) bool {
 	return true
 }
 
+// pagesMatch compares path-length-independent cached-page totals across every
+// checkpoint (raw CACHE_USED bytes vary with filename length via
+// sqlite3MallocSize(pPager), src/pager.c:6881-6887).
+func pagesMatch(a, b []checkpoint) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Label != b[i].Label || a[i].pagesTotal() != b[i].pagesTotal() {
+			return false
+		}
+	}
+	return true
+}
+
 func growth(points []checkpoint, label string) int64 {
 	return find(points, label).Memory.RSS - points[0].Memory.RSS
 }
@@ -4246,8 +4392,14 @@ func main() {
 	ctx := context.Background()
 	started := time.Now()
 	sqlitex.MustPinCheckMemory(ctx)
-	if *connectionsN < 2 || *boundK < 1 || *boundK >= *connectionsN || *rowsFlag < 10 || *cacheSizeFlag == 0 {
-		fatal("flags", errors.New("need n >= 2, 1 <= k < n, rows >= 10, cache-size != 0"))
+	if *connectionsN < 2 || *boundK < 1 || *boundK >= *connectionsN || *cacheSizeFlag == 0 {
+		fatal("flags", errors.New("need n >= 2, 1 <= k < n, cache-size != 0"))
+	}
+	if minRows := minimumRows(*cacheSizeFlag); *rowsFlag < minRows {
+		fatal("flags", fmt.Errorf("-rows %d is too small for -cache-size %d: need rows >= %d so the file is larger than both the cache_size=200 calibration cache and the requested budget", *rowsFlag, *cacheSizeFlag, minRows))
+	}
+	if budgetBytes(*cacheSizeFlag) < minBudgetBytes {
+		fatal("flags", fmt.Errorf("-cache-size %d is a budget of %d bytes; need at least %d so that cache memory dominates per-connection memory in the RSS checks", *cacheSizeFlag, budgetBytes(*cacheSizeFlag), minBudgetBytes))
 	}
 	work := sqlitex.MustWorkDir("4.2")
 	n, k, cacheSize := *connectionsN, *boundK, *cacheSizeFlag
@@ -4292,7 +4444,7 @@ func main() {
 	// difference is still exactly 100 pages and cancels the fixed Pager overhead.
 	small := runChild("scans", work, "100")[0].Conns[0].CacheUsed
 	large := runChild("scans", work, "200")[0].Conns[0].CacheUsed
-	if (large-small)%100 != 0 {
+	if large <= small || (large-small)%100 != 0 {
 		fatal("per-page size", fmt.Errorf("CACHE_USED at cache_size=200 minus at 100 is %d, not a multiple of 100", large-small))
 	}
 	perPage = (large - small) / 100
@@ -4307,7 +4459,11 @@ func main() {
 			fmt.Printf("INFO:   after scan %d: CACHE_USED=%d bytes\n", i+1, s.CacheUsed)
 		}
 		first, second := scans.Conns[0], scans.Conns[1]
-		check(first.CacheUsed <= budgetBytes(size)*105/100, fmt.Sprintf("cache_size=%d: CACHE_USED stays within the budget plus 5%% (%d pages x %d bytes against %d bytes)", size, cachedPages(first.CacheUsed), perPage, budgetBytes(size)))
+		budgetClaim := fmt.Sprintf("cache_size=%d: CACHE_USED stays within the budget plus 5%% (%d pages x %d bytes against %d bytes)", size, cachedPages(first.CacheUsed), perPage, budgetBytes(size))
+		if size > 0 {
+			budgetClaim = fmt.Sprintf("cache_size=%d: the cache holds at most %d pages (it holds %d)", size, size, cachedPages(first.CacheUsed))
+		}
+		check(withinBudget(first.CacheUsed, size), budgetClaim)
 		if size == cacheSize {
 			check(second.Misses-first.Misses >= int(info.Size()/pageSize)*9/10, "a file larger than the cache misses again on the second scan (the LRU evicted the pages the scan needs next)")
 		} else {
@@ -4331,7 +4487,7 @@ func main() {
 	// (pcache1FetchStage2, src/pcache1.c:899-912) while the group total equals
 	// open * perConnBudget (pcache1Cachesize, src/pcache1.c:814-832).
 	if compileMM == 1 {
-		check(hi > full && lo < full/10, fmt.Sprintf("in this driver build cache_size is not a per-connection cap: the connection that scanned last holds %d pages (its own budget is %d) while the idle connections were left with %d", hi, full, lo))
+		check(hi > full && lo < full, fmt.Sprintf("in this driver build cache_size is not a per-connection cap: the connection that scanned last holds %d pages (its own budget is %d) while the idle connections were left with %d", hi, full, lo))
 	} else {
 		check(hi <= full, "every connection stays within its own budget")
 	}
@@ -4346,7 +4502,7 @@ func main() {
 	fmt.Printf("\n== C. %d connections to one file, all kept open ==\n", n)
 	oneFile := runChild("one-file", work, strconv.Itoa(n), strconv.Itoa(cacheSize))
 	printGrowth(oneFile)
-	check(sumsMatch(oneFile, full) && find(oneFile, nLabel).cacheTotal() == find(files, nLabel).cacheTotal(), "connections to one file do not share a cache: the totals equal the N-files run at every checkpoint")
+	check(sumsMatch(oneFile, full) && pagesMatch(oneFile, files), "connections to one file do not share a cache: the totals equal the N-files run at every checkpoint")
 	oneN := growth(oneFile, nLabel)
 	check(oneN >= cacheN*9/10, "process memory grows by the summed CACHE_USED here too")
 
@@ -4356,7 +4512,7 @@ func main() {
 	kLabel := fmt.Sprintf("after %d", k)
 	atK, atN := growth(bounded, kLabel), growth(bounded, nLabel)
 	fmt.Printf("INFO: RSS growth at %s %s, at %s %s\n", kLabel, mib(atK), nLabel, mib(atN))
-	check(find(bounded, nLabel).Open == k && find(bounded, nLabel).pagesTotal() <= k*full*101/100, fmt.Sprintf("with the pool, %d connections are open at the end and their cached pages stay within %d x %d (plus 1%%)", k, k, full))
+	check(find(bounded, nLabel).Open == k && find(bounded, nLabel).pagesTotal() <= k*(full+1), fmt.Sprintf("with the pool, %d connections are open at the end and their cached pages stay within %d x (%d + 1), the sum of their cache sizes in pages", k, k, full))
 	check(atN-atK <= atK/4, fmt.Sprintf("with the pool, process memory stays flat after %d connections: growth from %s to %s is at most a quarter of the growth up to %s", k, kLabel, nLabel, kLabel))
 	check(float64(atN) <= float64(rssN)*float64(k)/float64(n)*1.5, fmt.Sprintf("the pooled run ends with about %d/%d of the unbounded run's memory growth (at most 1.5 x that fraction)", k, n))
 
@@ -4517,25 +4673,25 @@ check ok: a cache larger than the file serves the second scan from memory: no ne
 == B. 64 connections to 64 files, all kept open ==
   checkpoint    open cached pages (sum) cached pages per connection min..max
   after 1          1                482                   482..482       
-INFO:   after 1      sum CACHE_USED 2102741 bytes; RSS 12.9 MiB (anon 5.7 MiB, file 7.2 MiB, shmem 0.0 MiB), growth since start 6.0 MiB
+INFO:   after 1      sum CACHE_USED 2102741 bytes; RSS 12.9 MiB (anon 5.8 MiB, file 7.0 MiB, shmem 0.0 MiB), growth since start 6.0 MiB
   after 2          2                964                     0..964       
-INFO:   after 2      sum CACHE_USED 4205482 bytes; RSS 17.1 MiB (anon 9.8 MiB, file 7.3 MiB, shmem 0.0 MiB), growth since start 10.3 MiB
+INFO:   after 2      sum CACHE_USED 4205482 bytes; RSS 16.9 MiB (anon 9.8 MiB, file 7.1 MiB, shmem 0.0 MiB), growth since start 10.0 MiB
   after 4          4               1928                     0..1004      
-INFO:   after 4      sum CACHE_USED 8410964 bytes; RSS 25.1 MiB (anon 17.7 MiB, file 7.4 MiB, shmem 0.0 MiB), growth since start 18.2 MiB
+INFO:   after 4      sum CACHE_USED 8410964 bytes; RSS 24.8 MiB (anon 17.6 MiB, file 7.1 MiB, shmem 0.0 MiB), growth since start 17.9 MiB
   after 8          8               3856                     0..1004      
-INFO:   after 8      sum CACHE_USED 16821928 bytes; RSS 41.1 MiB (anon 33.2 MiB, file 7.9 MiB, shmem 0.0 MiB), growth since start 34.2 MiB
+INFO:   after 8      sum CACHE_USED 16821928 bytes; RSS 40.8 MiB (anon 33.2 MiB, file 7.6 MiB, shmem 0.0 MiB), growth since start 33.9 MiB
   after 16        16               7712                     0..1004      
-INFO:   after 16     sum CACHE_USED 33643856 bytes; RSS 72.6 MiB (anon 64.3 MiB, file 8.3 MiB, shmem 0.0 MiB), growth since start 65.8 MiB
+INFO:   after 16     sum CACHE_USED 33643856 bytes; RSS 72.6 MiB (anon 64.4 MiB, file 8.2 MiB, shmem 0.0 MiB), growth since start 65.7 MiB
   after 32        32              15424                     0..1004      
 INFO:   after 32     sum CACHE_USED 67287712 bytes; RSS 135.2 MiB (anon 126.4 MiB, file 8.8 MiB, shmem 0.0 MiB), growth since start 128.3 MiB
   after 64        64              30848                     0..1004      
-INFO:   after 64     sum CACHE_USED 134575424 bytes; RSS 260.5 MiB (anon 250.4 MiB, file 10.1 MiB, shmem 0.0 MiB), growth since start 253.7 MiB
+INFO:   after 64     sum CACHE_USED 134575424 bytes; RSS 260.7 MiB (anon 250.6 MiB, file 10.1 MiB, shmem 0.0 MiB), growth since start 253.8 MiB
   all closed       0                  0                     0..0         
-INFO:   all closed   sum CACHE_USED 0 bytes; RSS 32.2 MiB (anon 24.1 MiB, file 8.1 MiB, shmem 0.0 MiB), growth since start 25.3 MiB
+INFO:   all closed   sum CACHE_USED 0 bytes; RSS 32.3 MiB (anon 24.2 MiB, file 8.1 MiB, shmem 0.0 MiB), growth since start 25.4 MiB
   at after 64: connection 1 cached pages=0 hit=7 miss=1005; connection 64 cached pages=1004 hit=7 miss=1005
 check ok: the cached pages of all open connections add up to exactly (open connections) x 482, the pages one connection holds when it fills its budget
 check ok: in this driver build cache_size is not a per-connection cap: the connection that scanned last holds 1004 pages (its own budget is 482) while the idle connections were left with 0
-INFO: RSS growth at after 64 253.7 MiB, at after 32 128.3 MiB; RSS growth / summed CACHE_USED 1.98
+INFO: RSS growth at after 64 253.8 MiB, at after 32 128.3 MiB; RSS growth / summed CACHE_USED 1.98
 check ok: process memory grows by at least the summed CACHE_USED of the open connections
 INFO: RSS growth per open connection: 4.0 MiB at 64, 4.0 MiB at 32
 check ok: process memory grows linearly with open connections: growth per open connection at 64 is within -20%/+25% of that at 32
@@ -4543,42 +4699,42 @@ check ok: process memory grows linearly with open connections: growth per open c
 == C. 64 connections to one file, all kept open ==
   checkpoint    open cached pages (sum) cached pages per connection min..max
   after 1          1                482                   482..482       
-INFO:   after 1      sum CACHE_USED 2102741 bytes; RSS 13.0 MiB (anon 5.8 MiB, file 7.2 MiB, shmem 0.0 MiB), growth since start 6.1 MiB
+INFO:   after 1      sum CACHE_USED 2102741 bytes; RSS 12.8 MiB (anon 5.8 MiB, file 7.0 MiB, shmem 0.0 MiB), growth since start 6.0 MiB
   after 2          2                964                     0..964       
-INFO:   after 2      sum CACHE_USED 4205482 bytes; RSS 17.0 MiB (anon 9.8 MiB, file 7.2 MiB, shmem 0.0 MiB), growth since start 10.1 MiB
+INFO:   after 2      sum CACHE_USED 4205482 bytes; RSS 16.8 MiB (anon 9.7 MiB, file 7.0 MiB, shmem 0.0 MiB), growth since start 9.9 MiB
   after 4          4               1928                     0..1004      
-INFO:   after 4      sum CACHE_USED 8410964 bytes; RSS 24.8 MiB (anon 17.6 MiB, file 7.2 MiB, shmem 0.0 MiB), growth since start 17.9 MiB
+INFO:   after 4      sum CACHE_USED 8410964 bytes; RSS 24.6 MiB (anon 17.6 MiB, file 7.0 MiB, shmem 0.0 MiB), growth since start 17.8 MiB
   after 8          8               3856                     0..1004      
-INFO:   after 8      sum CACHE_USED 16821928 bytes; RSS 40.4 MiB (anon 33.1 MiB, file 7.3 MiB, shmem 0.0 MiB), growth since start 33.6 MiB
+INFO:   after 8      sum CACHE_USED 16821928 bytes; RSS 40.8 MiB (anon 33.1 MiB, file 7.7 MiB, shmem 0.0 MiB), growth since start 33.9 MiB
   after 16        16               7712                     0..1004      
-INFO:   after 16     sum CACHE_USED 33643856 bytes; RSS 72.1 MiB (anon 64.5 MiB, file 7.6 MiB, shmem 0.0 MiB), growth since start 65.2 MiB
+INFO:   after 16     sum CACHE_USED 33643856 bytes; RSS 72.1 MiB (anon 64.3 MiB, file 7.8 MiB, shmem 0.0 MiB), growth since start 65.3 MiB
   after 32        32              15424                     0..1004      
-INFO:   after 32     sum CACHE_USED 67287712 bytes; RSS 134.6 MiB (anon 126.5 MiB, file 8.1 MiB, shmem 0.0 MiB), growth since start 127.8 MiB
+INFO:   after 32     sum CACHE_USED 67287712 bytes; RSS 134.2 MiB (anon 126.4 MiB, file 7.9 MiB, shmem 0.0 MiB), growth since start 127.4 MiB
   after 64        64              30848                     0..1004      
-INFO:   after 64     sum CACHE_USED 134575424 bytes; RSS 258.6 MiB (anon 250.5 MiB, file 8.1 MiB, shmem 0.0 MiB), growth since start 251.8 MiB
+INFO:   after 64     sum CACHE_USED 134575424 bytes; RSS 258.5 MiB (anon 250.5 MiB, file 8.0 MiB, shmem 0.0 MiB), growth since start 251.7 MiB
   all closed       0                  0                     0..0         
-INFO:   all closed   sum CACHE_USED 0 bytes; RSS 32.2 MiB (anon 24.1 MiB, file 8.1 MiB, shmem 0.0 MiB), growth since start 25.4 MiB
+INFO:   all closed   sum CACHE_USED 0 bytes; RSS 32.2 MiB (anon 24.2 MiB, file 8.0 MiB, shmem 0.0 MiB), growth since start 25.3 MiB
 check ok: connections to one file do not share a cache: the totals equal the N-files run at every checkpoint
 check ok: process memory grows by the summed CACHE_USED here too
 
 == D. 64 files visited through a pool of at most 8 open connections (LRU close) ==
   checkpoint    open cached pages (sum) cached pages per connection min..max
   after 1          1                482                   482..482       
-INFO:   after 1      sum CACHE_USED 2102741 bytes; RSS 13.2 MiB (anon 5.8 MiB, file 7.4 MiB, shmem 0.0 MiB), growth since start 6.3 MiB
+INFO:   after 1      sum CACHE_USED 2102741 bytes; RSS 12.9 MiB (anon 5.9 MiB, file 7.0 MiB, shmem 0.0 MiB), growth since start 6.1 MiB
   after 2          2                964                     0..964       
-INFO:   after 2      sum CACHE_USED 4205482 bytes; RSS 17.2 MiB (anon 9.8 MiB, file 7.4 MiB, shmem 0.0 MiB), growth since start 10.4 MiB
+INFO:   after 2      sum CACHE_USED 4205482 bytes; RSS 17.0 MiB (anon 9.9 MiB, file 7.1 MiB, shmem 0.0 MiB), growth since start 10.1 MiB
   after 4          4               1928                     0..1004      
-INFO:   after 4      sum CACHE_USED 8410964 bytes; RSS 25.2 MiB (anon 17.7 MiB, file 7.4 MiB, shmem 0.0 MiB), growth since start 18.3 MiB
+INFO:   after 4      sum CACHE_USED 8410964 bytes; RSS 24.8 MiB (anon 17.7 MiB, file 7.1 MiB, shmem 0.0 MiB), growth since start 18.0 MiB
   after 8          8               3856                     0..1004      
-INFO:   after 8      sum CACHE_USED 16821928 bytes; RSS 41.0 MiB (anon 33.2 MiB, file 7.8 MiB, shmem 0.0 MiB), growth since start 34.1 MiB
+INFO:   after 8      sum CACHE_USED 16821928 bytes; RSS 40.6 MiB (anon 33.3 MiB, file 7.3 MiB, shmem 0.0 MiB), growth since start 33.7 MiB
   after 16         8               3863                     0..1004      
-INFO:   after 16     sum CACHE_USED 16852392 bytes; RSS 41.7 MiB (anon 33.5 MiB, file 8.2 MiB, shmem 0.0 MiB), growth since start 34.9 MiB
+INFO:   after 16     sum CACHE_USED 16852392 bytes; RSS 41.1 MiB (anon 33.5 MiB, file 7.5 MiB, shmem 0.0 MiB), growth since start 34.2 MiB
   after 32         8               3863                     0..1004      
-INFO:   after 32     sum CACHE_USED 16852392 bytes; RSS 42.1 MiB (anon 33.8 MiB, file 8.3 MiB, shmem 0.0 MiB), growth since start 35.2 MiB
+INFO:   after 32     sum CACHE_USED 16852392 bytes; RSS 41.7 MiB (anon 33.8 MiB, file 7.9 MiB, shmem 0.0 MiB), growth since start 34.8 MiB
   after 64         8               3863                     0..1004      
-INFO:   after 64     sum CACHE_USED 16852392 bytes; RSS 42.3 MiB (anon 34.0 MiB, file 8.3 MiB, shmem 0.0 MiB), growth since start 35.5 MiB
-INFO: RSS growth at after 8 34.1 MiB, at after 64 35.5 MiB
-check ok: with the pool, 8 connections are open at the end and their cached pages stay within 8 x 482 (plus 1%)
+INFO:   after 64     sum CACHE_USED 16852392 bytes; RSS 42.1 MiB (anon 34.0 MiB, file 8.1 MiB, shmem 0.0 MiB), growth since start 35.2 MiB
+INFO: RSS growth at after 8 33.7 MiB, at after 64 35.2 MiB
+check ok: with the pool, 8 connections are open at the end and their cached pages stay within 8 x (482 + 1), the sum of their cache sizes in pages
 check ok: with the pool, process memory stays flat after 8 connections: growth from after 8 to after 64 is at most a quarter of the growth up to after 8
 check ok: the pooled run ends with about 8/64 of the unbounded run's memory growth (at most 1.5 x that fraction)
 
@@ -4586,38 +4742,38 @@ check ok: the pooled run ends with about 8/64 of the unbounded run's memory grow
 connection 1: no mmap, scans f-000; connection 2: PRAGMA mmap_size=8224768 (twice the file), scans f-001
   plain   connection 1: cached pages=482 hit=7 miss=1005
 INFO:   plain   connection 1: CACHE_USED=2102741 bytes
-INFO:   plain   RSS 13.0 MiB (anon 5.8 MiB, file 7.2 MiB, shmem 0.0 MiB)
+INFO:   plain   RSS 12.9 MiB (anon 5.8 MiB, file 7.0 MiB, shmem 0.0 MiB)
   mapped  connection 1: cached pages=482 hit=7 miss=1005
 INFO:   mapped  connection 1: CACHE_USED=2102741 bytes
   mapped  connection 2: cached pages=2 hit=7 miss=3
 INFO:   mapped  connection 2: CACHE_USED=13781 bytes
-INFO:   mapped  RSS 17.2 MiB (anon 6.1 MiB, file 11.1 MiB, shmem 0.0 MiB)
+INFO:   mapped  RSS 17.1 MiB (anon 6.1 MiB, file 11.0 MiB, shmem 0.0 MiB)
 check ok: with mmap covering the file, the scan leaves CACHE_USED near zero (under 5% of the unmapped connection's)
 INFO: the mapped scan added 4.2 MiB RSS (file 3.9 MiB)
 check ok: the mapped scan still adds about the file's size to process RSS: the memory moved from SQLite's heap to mapped file pages
-INFO: file-backed RSS +4.0 MiB, anonymous RSS +0.3 MiB
+INFO: file-backed RSS +4.0 MiB, anonymous RSS +0.2 MiB
 check ok: the added memory is file-backed (RssFile), not anonymous heap
-INFO: runtime 5.8s
+INFO: runtime 4.9s
 
 CACHE BUDGET OK
 ```
 
 #### Reading the evidence
 
-- **Lines 3–9 (Setup).** Builds one WAL-mode database (`1,000` rows × `3,500` bytes = `1,004` pages = `4,112,384` bytes, ~3.9 MiB) and copies it 64 times. Each connection opens with `sqlitex.DefaultOptions()` (`journal_mode=wal`, `synchronous=FULL`) and `cache_size=-2000` (`2,048,000`-byte budget). Line 9 prints `driver compiled with ENABLE_MEMORY_MANAGEMENT: 1`, announcing the unified `PGroup` mode (`src/pcache1.c:718-719`).
+- **Lines 3–9 (Setup).** Builds one WAL-mode database (`1,000` rows × `3,500` bytes = `1,004` pages = `4,112,384` bytes, ~3.9 MiB) and copies it 64 times. Each connection opens with `sqlitex.DefaultOptions()` (`journal_mode=wal`, `synchronous=FULL`) and `cache_size=-2000` (`2,048,000`-byte budget). Line 9 prints `driver compiled with ENABLE_MEMORY_MANAGEMENT: 1`, confirming the unified `PGroup` mode (`src/pcache1.c:718-719`).
 - **Lines 11–28 (Part A: single connection, page accounting, and LRU behavior).**
-  - Subtracting `CACHE_USED` at `cache_size=100` from `cache_size=200` and dividing by `100` measures `4,352` bytes per cached page (`4,096` page bytes + `256` bytes of `PgHdr`/extra/pointers from `sqlite3PagerMemUsed`, `src/pager.c:6881-6887`). The fixed overhead (`5,077` bytes on this host) is the `Pager` struct (whose size includes the database, journal, and WAL paths—**correction 7**, why raw bytes are `INFO:` lines while page counts are `EXACT`) plus one 4,096-byte page buffer.
-  - Line 14 proves **correction 8**: `cache_size=100 holds 99 pages, cache_size=200 holds 199 pages` (`pCache->nPage + 1 >= pCache->nMax`, `src/pcache1.c:902`).
+  - Subtracting `CACHE_USED` at `cache_size=100` from `cache_size=200` and dividing by `100` measures `4,352` bytes per cached page (`4,096` page bytes + `256` bytes of `PgHdr`/extra/pointers from `sqlite3PagerMemUsed`, `src/pager.c:6881-6887`). The fixed overhead (`5,077` bytes on this host) is the `Pager` struct (whose size includes the database, journal, and WAL paths, which is why raw `CACHE_USED` bytes are `INFO:` lines while derived page counts are `EXACT`) plus one 4,096-byte page buffer.
+  - Line 14 shows the `N - 1` recycle rule: `cache_size=100 holds 99 pages, cache_size=200 holds 199 pages` (`pCache->nPage + 1 >= pCache->nMax`, `src/pcache1.c:902`).
   - At `cache_size=-2000`, scan 1 fills `482` pages (`hit=7 miss=1005 spill=0`, `CACHE_USED=2,102,741` bytes). Scan 2 ends at `hit=9 miss=2007`: because the 1,004-page table exceeds the 482-page cache, the LRU evicts every leaf page before the second scan reaches it again.
   - At `cache_size=-8032` (8,224,768 bytes, twice the file), scan 1 caches all `1,004` pages (`hit=7 miss=1005`), and scan 2 records `hit=1011 miss=1005`—zero new misses.
 - **Lines 30–54 (Part B: 64 open connections to 64 files).**
-  - At every checkpoint (`1, 2, 4, 8, 16, 32, 64` open connections), `cached pages (sum)` equals `open × 482` exactly (`482`, `964`, `1,928`, `3,856`, `7,712`, `15,424`, `30,848`).
-  - Look at the `min..max` column (**correction 5**): after connection 2 scans, `min..max` is `0..964`; from connection 4 onward it is `0..1004`. Line 48 confirms `connection 1 cached pages=0` while `connection 64 cached pages=1004`. Because `ENABLE_MEMORY_MANAGEMENT` puts every connection in one `PGroup`, each scanning connection steals the LRU pages of idle connections until it holds the entire 1,004-page file.
-  - Look at the `INFO:` RSS lines (**correction 6**): at 64 connections, summed `CACHE_USED` is `134,575,424` bytes (`128.3 MiB`), while RSS growth is `253.7 MiB` (`RSS growth / summed CACHE_USED = 1.98`, `4.0 MiB` per connection at both 32 and 64). That `~2x` factor is a property of `modernc.org/memory` v1.12.1, whose power-of-two allocator places each ~4.3 KiB page allocation into an 8 KiB slot; a C build using glibc `malloc` would show much smaller allocator overhead. File-backed RSS rises by ~2.9 MiB (from `7.2` to `10.1 MiB`), largely the 64 × 32 KiB (`2.0 MiB`) WAL `-shm` mappings.
-  - Closing all 64 connections drops `sum CACHE_USED` to `0` and RSS from `260.5 MiB` to `32.2 MiB` (the remaining `25.3 MiB` is retained Go/driver allocator arenas).
-- **Lines 56–75 (Part C: 64 open connections to one file).** Every `cached pages (sum)` and `CACHE_USED` line (`134,575,424` bytes at 64) is identical to Part B, and RSS growth (`251.8 MiB`) matches. Opening 64 connections to one database does not share a page cache; each connection adds its own `cache_size` share to the process total. Notice file-backed RSS rises by only `0.9 MiB` (`7.2` to `8.1 MiB`) instead of `2.9 MiB` because all 64 connections share one `-shm` mapping.
-- **Lines 77–96 (Part D: 64 files visited through an 8-connection LRU pool).** Up to 8 connections, cached pages climb to `3,856` (`8 × 482`) and RSS growth reaches `34.1 MiB`. Across connections 9 through 64, closing the least recently used connection before opening the next keeps open connections at `8`, cached pages flat at `3,863` (within 1% of `3,856`), and RSS growth flat at `35.5 MiB`—`14%` of Part B's `253.7 MiB` (matching `8/64 = 12.5%` within the `1.5x` bound).
-- **Lines 98–112 (Part E: `mmap`).** Connection 1 (no `mmap`) scans `f-000` and holds `482` cached pages (`CACHE_USED=2,102,741` bytes, `hit=7 miss=1005`, `RSS 13.0 MiB`). Connection 2 sets `PRAGMA mmap_size=8224768` (twice the file) and scans `f-001`: it holds only `2` cached pages (`CACHE_USED=13,781` bytes, `hit=7 miss=3`). Total RSS still rises by `+4.2 MiB` (the `3.9 MiB` file size), and `/proc/self/status` shows where it went: `file-backed RSS +4.0 MiB, anonymous RSS +0.3 MiB`. `mmap` does not eliminate memory usage—it moves the read cache from SQLite's private heap into the OS kernel's shared, reclaimable page cache.
+  - At every checkpoint (`1, 2, 4, 8, 16, 32, 64` open connections), `cached pages (sum)` equals `open × 482` (`482`, `964`, `1,928`, `3,856`, `7,712`, `15,424`, `30,848`).
+  - In the `min..max` column, after connection 2 scans, `min..max` is `0..964`; from connection 4 onward it is `0..1004`. Line 48 confirms `connection 1 cached pages=0` while `connection 64 cached pages=1004`. Because `ENABLE_MEMORY_MANAGEMENT` puts every connection in one `PGroup`, each scanning connection steals the LRU pages of idle connections until it holds the entire 1,004-page file.
+  - In the `INFO:` RSS lines, at 64 connections summed `CACHE_USED` is `134,575,424` bytes (`128.3 MiB`), while RSS growth is `253.8 MiB` (`RSS growth / summed CACHE_USED = 1.98`, `4.0 MiB` per connection at both 32 and 64). That `~2x` factor is a property of `modernc.org/memory` v1.12.1, whose power-of-two allocator places each ~4.3 KiB page allocation into an 8 KiB slot; a C build using glibc `malloc` would show much smaller allocator overhead. File-backed RSS rises by `3.1 MiB` (from `7.0` to `10.1 MiB`), largely the 64 × 32 KiB (`2.0 MiB`) WAL `-shm` mappings.
+  - Closing all 64 connections drops `sum CACHE_USED` to `0` and RSS from `260.7 MiB` to `32.3 MiB` (the remaining `25.4 MiB` growth is retained Go/driver allocator arenas).
+- **Lines 56–75 (Part C: 64 open connections to one file).** Every `cached pages (sum)` line equals Part B's (`30,848` at 64, `CACHE_USED=134,575,424` bytes), and RSS growth (`251.7 MiB`) matches. Opening 64 connections to one database does not share a page cache; each connection adds its own `cache_size` share to the process total. File-backed RSS rises by only `1.0 MiB` (`7.0` to `8.0 MiB`) instead of `3.1 MiB` because all 64 connections share one `-shm` mapping.
+- **Lines 77–96 (Part D: 64 files visited through an 8-connection LRU pool).** Up to 8 connections, cached pages climb to `3,856` (`8 × 482`) and RSS growth reaches `33.7 MiB`. Across connections 9 through 64, closing the least recently used connection before opening the next keeps open connections at `8`, cached pages flat at `3,863 <= 8 × (482 + 1) = 3,864` (the true `PGroup.nMaxPage` cap: closing an evicted 0-page connection leaves `pGroup->nMaxPage = 7 × 483 = 3,381`, and the newly opened scanner adds `482`, totaling `3,863`), and RSS growth flat at `35.2 MiB`—`14%` of Part B's `253.8 MiB` (matching `8/64 = 12.5%` within the `1.5x` bound).
+- **Lines 98–112 (Part E: `mmap`).** Connection 1 (no `mmap`) scans `f-000` and holds `482` cached pages (`CACHE_USED=2,102,741` bytes, `hit=7 miss=1005`, `RSS 12.9 MiB`). Connection 2 sets `PRAGMA mmap_size=8224768` (twice the file) and scans `f-001` (which is cleanly closed and checkpointed, so no page sits in `-wal`): it holds only `2` cached pages (`CACHE_USED=13,781` bytes, `hit=7 miss=3`). Total RSS still rises by `+4.2 MiB` (the `3.9 MiB` file size), and `/proc/self/status` shows where it went: `file-backed RSS +4.0 MiB, anonymous RSS +0.2 MiB`. `mmap` does not eliminate memory usage—it moves the read cache for checkpointed `.db` pages from SQLite's private heap into the OS kernel's shared, reclaimable page cache.
 
 ---
 
@@ -4625,20 +4781,20 @@ CACHE BUDGET OK
 
 ### 6.1 Cold journals versus hot journals
 
-Before `syncJournal` writes the 12-byte magic and record count at offset 0 (call #45 in Section 4), a rollback journal under `synchronous=FULL` or `NORMAL` starts with 12 zero bytes (`writeJournalHdr`, `src/pager.c:1500-1502`). Experiment 4.1 Part D proves what happens if the writer dies during that window (kills 01–25 at `FULL`, kills 01–22 at `NORMAL`):
+For a transaction that fits in the page cache (`spill=0`), a rollback journal under `synchronous=FULL` or `NORMAL` starts with 12 zero bytes (`writeJournalHdr`, `src/pager.c:1500-1502`) until `syncJournal` writes the 12-byte magic and record count at offset 0 (call #45 in Section 4). Experiment 4.1 Part D shows what happens if the writer dies during that window (kills 01–25 at `FULL`, kills 01–22 at `NORMAL`):
 
 - `t.db` still holds the exact pre-step bytes.
 - `t.db-journal` has `first byte 0x00 (not hot)` and `header not-yet-synced`.
 - On reopen, `hasHotJournal` (`src/pager.c:5244-5251`) reads byte 0, sees `0x00`, and ignores the file without deleting it (`cold -journal left (29240 bytes, first byte 0x00)`).
 
-A cold `-journal` left beside a database is harmless because no write reached `t.db` before the header was activated. A platform check that asks "is this database at rest?" by testing only whether `<db>-journal` exists will misclassify a database with a cold journal; the right check is `journalfile.LooksHot()` (`size > 0 && firstByte != 0`), matching `hasHotJournal` and Chapter 2's `capture.CheckAtRest`.
+A cold `-journal` left beside a database is harmless because no write reached `t.db` before the header was activated. Once a transaction overflows `cache_size` and spills via `pagerStress`, however, `syncJournal` runs *before* `COMMIT`: the journal's first byte flips to `0xd9` (hot), dirty pages reach `t.db` before `COMMIT`, and subsequent writes open new sector-aligned segments (`JRN-04`, `JRN-05a`). A platform check that asks "is this database at rest?" by testing only whether `<db>-journal` exists will misclassify a cold journal; the right test is `journalfile.LooksHot()` (`size > 0 && firstByte != 0`), matching `hasHotJournal` and Chapter 2's `capture.CheckAtRest`.
 
-### 6.2 Why hot-journal rollback is not always byte-exact (`PAGER_GET_NOCONTENT`)
+### 6.2 Why hot-journal rollback is not always byte-exact (`PAGER_GET_NOCONTENT` and post-commit truncation)
 
-The outline originally predicted that every kill point would reopen to either the exact pre-step SHA-256 or the exact post-step SHA-256. Experiment 4.1 disproved the raw-byte version of that claim when the pre-step file has a freelist, and confirmed it when the freelist is empty:
+Hot-journal recovery always restores a database that is **logically** pre-step or post-step, never a third logical state. At the raw byte level, two SQLite mechanisms can make a crashed file differ from the exact pre-step or post-step SHA-256:
 
-- **Step 3 (`freelist leaves [22]`):** At `FULL`, kills 01–32 reopen to `pre-step, exact bytes`. Kill 32 lands on entry to `pwrite64 t.db off=86016 len=4096`—the write of page 22 (`21 × 4096 = 86016`). From kill 33 through kill 46 (`unlink t.db-journal`), page 22's new bytes are on disk. Because `allocateBtreePage` (`src/btree.c:6740`) fetched page 22 with `PAGER_GET_NOCONTENT`, `getPageNormal` (`src/pager.c:5645-5656`) marked page 22 in `pInJournal` without writing a record for it. When SQLite replays the hot journal on reopen, it restores the freelist trunk page—putting page 22 back on the freelist—but never overwrites page 22's bytes. With `secure_delete=ON`, pre-step page 22 was all zeros, so the leftover bytes make the raw file SHA-256 differ from both pre-step and post-step (`14` kills at `FULL`, `14` at `NORMAL`, `13` at `OFF`). Every single one of those files passes `PRAGMA integrity_check`, has the exact pre-step size (`29` pages), differs from pre-step *only* in page 22, and produces the exact pre-step `VACUUM INTO` canonical hash (equality level E3 turned into E1).
-- **Step 1 (`freelist leaves []`, Part D2):** With no freelist pages to reuse, every kill across all three `synchronous` levels (`42` at `FULL`, `41` at `NORMAL`, `37` at `OFF`) reopens to the exact pre-step or post-step bytes (`BBBB…BA`).
+- **Reused freelist leaves (`PAGER_GET_NOCONTENT`, Experiment 4.1 Parts D and D2).** In step 3 (`freelist leaves [22]`), kills 01–32 at `FULL` reopen to `pre-step, exact bytes`. Kill 32 lands on entry to `pwrite64 t.db off=86016 len=4096`—the write of page 22 (`21 × 4096 = 86016`). From kill 33 through kill 46 (`unlink t.db-journal`), page 22's new bytes are on disk. Because `allocateBtreePage` (`src/btree.c:6740`) fetched page 22 with `PAGER_GET_NOCONTENT`, `getPageNormal` (`src/pager.c:5645-5656`) marked page 22 in `pInJournal` without writing a journal record for it. When SQLite replays the hot journal on reopen, it restores the freelist trunk page—putting page 22 back on the freelist—but never overwrites page 22's bytes. With `secure_delete=ON`, pre-step page 22 was all zeros, so the leftover bytes make the raw file SHA-256 differ from both pre-step and post-step (`14` kills at `FULL`, `14` at `NORMAL`, `13` at `OFF`). Every one of those files passes `PRAGMA integrity_check`, has the exact pre-step size (`29` pages), differs from pre-step *only* in page 22, and produces the exact pre-step `VACUUM INTO` canonical hash (equality level E3 turned into E1). In Part D2 (step 1, `freelist leaves []`), with no freelist pages to reuse, every kill across all three `synchronous` levels (`42` at `FULL`, `41` at `NORMAL`, `37` at `OFF`) reopens to the exact pre-step or post-step bytes (`BBBB…BA`).
+- **Post-commit truncation of a shrinking file (`pager_end_transaction`, `src/pager.c:2155-2164`; `RCM-06`).** `sqlite3PagerCommitPhaseOne` only extends an undersized file (`src/pager.c:6704-6715`); shrinking a database (for example, `DELETE` under `auto_vacuum=FULL`) calls `ftruncate` in `pager_end_transaction` *after* the journal is unlinked. Killing the writer on entry to that `ftruncate` leaves a committed database whose logical content is post-step and passes `integrity_check`, while the OS file still carries trailing slack pages beyond the header's page count (`155,648` bytes instead of `53,248` bytes in `RCM-06`).
 
 ### 6.3 Losing a hot journal (Experiment 4.1 Part E)
 
@@ -4663,36 +4819,71 @@ Part F traces step 3 at `synchronous=FULL` in all three disk-backed rollback mod
 | `truncate` | `5` | `ftruncate t.db-journal len=0` | pre-step (logical) | post-step (kill on `journal-sync`) | `-journal 0 bytes (not hot)` |
 | `persist` | `5` | `pwrite64 t.db-journal off=0 len=28` | pre-step (logical) | post-step (kill on `journal-sync`) | `-journal 29240 bytes, first byte 0x00 (not hot), header zeroed` |
 
-In all three modes, a kill on entry to the commit point rolls back to pre-step and a kill on the very next syscall opens to post-step. `TRUNCATE` and `PERSIST` avoid directory-entry creation/deletion overhead on every transaction, at the cost of a fifth sync (`fsync t.db-journal`) at `synchronous=FULL` (`pager_end_transaction`, `src/pager.c:2091-2105`) and leaving a cold `-journal` file beside the database.
+In all three modes, a kill on entry to the commit point rolls back to pre-step and a kill on the very next syscall opens to post-step. `TRUNCATE` and `PERSIST` avoid directory-entry creation/deletion overhead on every transaction, at the cost of a fifth sync (`fsync t.db-journal`) at `synchronous=FULL` (`pager_end_transaction`, `src/pager.c:2091-2105`) and leaving a cold `-journal` file beside the database. By contrast, `journal_mode=MEMORY` and `journal_mode=OFF` keep no journal on disk and leave a damaged database on a mid-write `SIGKILL` (`RCM-05`).
 
-### 6.5 Boundaries not exercised live here
+### 6.5 Cache boundaries and driver-specific behaviors
 
-Four behaviors discussed in this chapter are stated from the pinned source or unit tests rather than exercised live in Experiments 4.1–4.2:
+Five cache behaviors matter when sizing or tuning a Go service using `modernc.org/sqlite`:
 
-- **Cache spill and multi-header rollback journals (`pagerStress`, `src/pager.c:4655-4727`).** Step 3 fits inside `cache_size=-2000` (`spill=0`). Multi-segment journals are unit-tested in `internal/journalfile/journalfile_test.go` (`TestMultipleSegments`) and were forced live in Chapter 2 Experiment 2.3 Part D2, not in 4.1.
-- **Crash inside the WAL-switch commit of a brand-new file.** Experiment 4.1 Part A traces the `-journal` syscalls during `PRAGMA journal_mode=wal` and `sqlitex.Open` but does not inject a kill inside them; from `hasHotJournal` (`src/pager.c:5224-5230`), a crash there leaves a 0- or 1-page rollback-mode file.
-- **Separate per-connection `PGroup` without `ENABLE_MEMORY_MANAGEMENT`.** The installed C `sqlite3` CLI lacks `ENABLE_MEMORY_MANAGEMENT` (`pcache1.c:720-721`), so each connection keeps its own private LRU. That behavior is read from `pcache1.c`, not measured via `sqlite3_db_status` (the CLI has one connection).
-- **1,000 open connections.** Left to the adversarial pass (`-n 1000` in 4.2 takes roughly 4 GiB RSS with `modernc.org/memory`'s 8 KiB slot rounding).
+- **`PRAGMA shrink_memory` is process-wide under `ENABLE_MEMORY_MANAGEMENT` (`CAC-02a`, `CAC-02b`).** Calling `PRAGMA shrink_memory` on a single idle connection holding `0` pages zeroes the global `PGroup.nMaxPage` temporarily (`pcache1Shrink`, `src/pcache1.c:839-851`) and evicts every other connection's unpinned clean pages (`7,712 -> 0` pages across 16 connections; RSS growth `65.6 -> 13.9 MiB`). Cursor-pinned pages (`4`) and uncommitted dirty pages (`41`) survive until the cursor closes or the transaction finishes.
+- **`PRAGMA soft_heap_limit` does not cap `modernc`'s default allocator (`CAC-03`).** Setting `PRAGMA soft_heap_limit=4 MiB` on connection 1 is visible to other connections, but without `SQLITE_ENABLE_MEMSYS` it does not prevent 32 connections at `cache_size=-2000` from growing linearly to `15,424` cached pages (`64.2 MiB` `CACHE_USED`, `128.5 MiB` RSS).
+- **`mmap` does not bypass `pcache1` for uncheckpointed WAL pages (`CAC-04`).** Because `getPageMMap` checks `sqlite3WalFindFrame` first (`src/pager.c:5719-5726`), scanning 500 leaf pages sitting in an uncheckpointed `-wal` cached `501` pages even with `mmap_size = 4×` file size (vs `502` unmapped), dropping to `2` pages only after a checkpoint (and `253` pages with half-file `mmap_size`).
+- **Shared-file `mmap` accounting on Linux: `RssFile` versus `Pss_File` (`SCL-05`).** When 1,000 connections in one process `mmap` 1,000 distinct 408 KiB files, both `RssFile` (`+432.4 MiB`) and `Pss_File` (`+431.2 MiB`) grow with the distinct files. When 1,000 connections `mmap` the *same* 408 KiB file, `/proc/self/status` `RssFile` sums resident PTEs across all 1,000 VMAs (`+401.6 MiB`), while `/proc/self/smaps_rollup` `Pss_File` reflects the single shared kernel page-cache copy (`+2.3 MiB`).
+- **Tiny/huge `cache_size` and the second-pass `N × nMax` ceiling (`CAC-01a`, `SCL-07`).** The `N - 1` rule holds for `N >= 10` (`10 -> 9`, `100 -> 99`, `200 -> 199`, `483 -> 482`). Tiny caches (`N <= 2`) rest at `N` (`0 -> 0`, `1 -> 1`, `2 -> 2`) and hold `4` cursor-pinned pages mid-scan; huge budgets (`±1,000,000`) allocate lazily (`1,004` pages). Under repeated round-robin sweeps across 16 open connections (`cache_size=-2000`, `nMax=483`), pass 1 sums to `16 × 482 = 7,712` and pass 2 reaches and holds `pGroup->nMaxPage = 16 × 483 = 7,728` (`src/pcache1.c:902, 1096`).
+
+### 6.6 Boundaries not exercised live here
+
+Three behaviors discussed in this chapter are read from the pinned source or unit-tested rather than exercised live in Experiments 4.1–4.2:
+
+- **Separate per-connection `PGroup` without `SQLITE_ENABLE_MEMORY_MANAGEMENT`.** The installed C `sqlite3` CLI lacks `ENABLE_MEMORY_MANAGEMENT` (`src/pcache1.c:720-721`), giving each connection its own private LRU. That path is read from `pcache1.c`, not measured across multiple connections.
+- **Unsigned-`char` super-journal checksums on ARM64 Linux hardware.** `internal/journalfile` unit-tests the unsigned `char` checksum path (`0x0f98` vs `0x0d98`) by toggling `cCharIsSigned` in `TestSuperJournalChecksumWhereCCharIsUnsigned`; it was not executed on an ARM64 Linux host.
+- **Real power loss, torn sector writes, and disk write reordering.** Experiment 4.1 tests process crashes (`SIGKILL`), where completed writes survive in the kernel buffer cache. Power loss and unsynced writes are modeled in Chapter 9.
 
 ### What attacked this chapter
 
 <!-- adversarial-results -->
 
+Four adversarial programs (`32` attacks total, driven by [`run-all.sh`](../agent_work/ch04/adversarial/run-all.sh)) attacked this chapter's claims, `internal/journalfile`, and Experiments 4.1 and 4.2 against the pinned SQLite 3.53.4 build:
+
+- [`journal-parser`](../agent_work/ch04/adversarial/journal-parser/main.go) (`JRN-01`–`JRN-05b`, 8 attacks): attacked `internal/journalfile` with sub-sector journals (`28` and `100` bytes < `512`-byte sector) compared against real SQLite reopen, non-ASCII UTF-8 and NUL-leading super-journal footers, a hot journal pointing to an absent super-journal file, live SQLite rollback journals across all 8 valid page sizes (`512..65536`), sampled (`3896`) vs unsampled (`1097`) single-byte flips against `pager_cksum`, a mid-transaction `pagerStress` spill (`cache_size=10`, 55-page `UPDATE`), multi-segment spilled journals under `FULL` and `OFF`, and 5,000 seeded parser/playback fuzz mutations.
+- [`rollback-crashes`](../agent_work/ch04/adversarial/rollback-crashes/main.go) (`RCM-01`–`RCM-07`, 9 attacks): attacked Experiment 4.1 by deleting/omitting hot journals across `DELETE`, `TRUNCATE`, and `PERSIST`, killing a spilling `synchronous=OFF` transaction at 6 syscall points and running 30 asynchronous `SIGKILL`s during an 8-step `OFF` loop, tracing and killing spilling `FULL`/`NORMAL` commits across multiple journal segments, killing `sqlitex.Open(DefaultOptions())` on a brand-new WAL database at all 27 write/sync/unlink points (`4` left hot journals, `4` left cold journals, `0` recovery failures on retry), testing a hot journal beside a 0-byte database plus `journal_mode=MEMORY` and `OFF` mid-write kills, killing a shrinking `auto_vacuum=FULL` `DELETE` around `unlink` and `ftruncate`, and testing pin-mismatch enforcement on mutated `sqlite/PIN` and a bogus `SQLITE3_BIN`.
+- [`cache-limits`](../agent_work/ch04/adversarial/cache-limits/main.go) (`CAC-01a`–`CAC-05`, 8 attacks): attacked Experiment 4.2 with tiny (`0, 1, 2, 10, -1, -10`) and huge (`±1,000,000`) `PRAGMA cache_size` values, positive `-cache-size 500`, small negative `-cache-size -50` and minimum `-1024`, `PRAGMA shrink_memory` invoked on an idle 0-page connection and while another connection holds pinned cursor pages and 40 dirty uncommitted pages, `PRAGMA soft_heap_limit=4 MiB` across 32 connections, `PRAGMA mmap_size` with 500 uncheckpointed WAL pages vs checkpointed vs half-file mapping, and short (`74` B), max-valid (`480` B < `512` B), and over-`MAX_PATHNAME` (`682` B) paths.
+- [`cache-scale`](../agent_work/ch04/adversarial/cache-scale/main.go) (`SCL-01`–`SCL-07`, 7 attacks): scaled Experiment 4.2 to **1,000 open connections** (`cache_size=-256 KiB` on 102-page WAL files to fit 7 GiB RAM) across 1,000 distinct files (`60,000` cached pages, `602.1 MiB` RSS, `3,007` FDs), 1,000 connections to one file (`60,000` pages, `570.3 MiB` RSS, `2,008` FDs), 1,000 distinct files through a `K=16` LRU pool (`984` evictions, `975/976` pages, `14.5 MiB` RSS, `55` FDs), 1,000 heterogeneous-budget connections (`500 × -384 KiB` + `500 × -128 KiB`, verifying immediate eviction on closing the 500 large connections and `>= 75%` RSS drop on closing all 1,000), 1,000 `mmap`-ed connections (1,000 distinct files vs 1 shared file using `Pss_File`), Experiment 4.2 itself at 4× scale (`-n 256 -k 16 -cache-size -1024 -rows 320`), and a second round-robin scan across 16 WAL connections verifying the `N × (nMax - 1)` to `N × nMax` (`7,712 -> 7,728`) transition.
+
+**Run 1** ([`results-run1.txt`](../agent_work/ch04/adversarial/results-run1.txt), first three groups) produced **12 HELD, 12 BROKEN** (and `cache-limits` exited non-zero on `CAC-05`'s over-`MAX_PATHNAME` path). **Run 2** ([`results-run2.txt`](../agent_work/ch04/adversarial/results-run2.txt), after the repair round and adding `cache-scale`) produced **21 HELD, 10 BROKEN**.
+
+**Code defects exposed and fixed in repair:**
+
+- `JRN-01`, `JRN-05b` (and review blocker 1): `internal/journalfile.Parse` previously computed a negative `TrailingByte` (`-412` on a 100-byte journal; `221` negative cases in 5,000 fuzz mutations) and predicted truncation for journals shorter than one sector; fixed to mark sub-sector journals `HeaderMissing` with `TrailingByte = end` (`src/pager.c:1607-1610`).
+- `JRN-02a`, `JRN-02b` (and review blocker 2): `superJournalName` previously summed unsigned bytes unconditionally (rejecting non-ASCII UTF-8 names on signed-`char` platforms) and accepted NUL-leading names, while `Playback()` predicted unconditional rollback; fixed to match C `char` signedness (`cCharIsSigned`), reject `name[0] == 0` and lengths `> 512`, and refuse unconditional rollback in `Playback()` (adding `PlaybackIfSuperJournalExists()`).
+- `CAC-01b`, `CAC-01c`: Experiment 4.2 previously checked positive `-cache-size` in bytes instead of pages (failing `-cache-size 500`), compared Part D against `K × full × 1.01` instead of the true `PGroup.nMaxPage = K × (full + 1)`, and panicked on `-rows 50` (review finding 3); fixed with `withinBudget`, `K × (full + 1)`, and flag validation requiring `-rows >= 1.2 × max(200, budget pages)` and budget `>= 1 MiB` (cleanly rejecting `-cache-size -50`).
+
+**Claims narrowed or corrected in this chapter (rather than changing SQLite behavior):**
+
+- `JRN-04`, `RCM-03a`: cold pre-`COMMIT` journals, untouched `.db` before `COMMIT`, and the `4 / 3 / 0` sync counts apply only to non-spilling transactions (`spill=0`); spilling via `pagerStress` activates the journal early, interleaves segments with `.db` writes, and multiplies syncs (`20` at `FULL`, `11` at `NORMAL`).
+- `RCM-06`: `sqlite3PagerCommitPhaseOne` only extends undersized files (`src/pager.c:6704-6715`); shrinking commits truncate in `pager_end_transaction` *after* `unlink` (`src/pager.c:2155-2164`), leaving logical post-step content with trailing slack pages if killed on `ftruncate`.
+- `CAC-01a`: `N -> N - 1` applies to `N >= 10`; tiny caches (`N <= 2`) rest at `N` and hold `4` cursor-pinned pages mid-scan.
+- `CAC-02a`: under `SQLITE_ENABLE_MEMORY_MANAGEMENT`, `PRAGMA shrink_memory` on any connection empties every connection's unpinned clean pages (`pcache1Shrink`, `src/pcache1.c:839-851`).
+- `CAC-04`: `mmap` bypasses `pcache1` only for pages with no frame in `-wal` (`getPageMMap`, `src/pager.c:5719-5726`).
+- `SCL-07`: `open × (nMax - 1)` holds on a first sweep; repeated sweeps and pool churn reach `pGroup->nMaxPage = open × nMax` (`src/pcache1.c:902, 1096`).
+
+Two attack-side bugs were also fixed before the final run (`CAC-05` generated a ~1,550-byte path exceeding Unix `MAX_PATHNAME = 512`, and `SCL-05` originally checked `RssFile` instead of `Pss_File` for shared-file mappings). After aligning the stale attack expectations to the narrowed rules, the final run ([`results-run3.txt`](../agent_work/ch04/adversarial/results-run3.txt) and [`results.txt`](../agent_work/ch04/adversarial/results.txt)) passed **32 HELD, 0 BROKEN**.
+
 ---
 
 ## 7. Platform implications
 
-Every operational rule below is backed directly by this chapter's experiments:
+Every operational rule below is backed directly by this chapter's experiments and verified source spans:
 
-1. **A hot `-journal` is part of the database; copy both or refuse (Experiment 4.1 Parts D and E).** Copying a crashed rollback-mode `.db` file without its hot `-journal` produced `database disk image is malformed (11)` (E2a), while copying both together recovered cleanly to pre-step (E2b). Backup, move, and capture tools must either copy `<db>` and `<db>-journal` together or refuse any file with a hot journal (as `capture.CheckAtRest` does in Chapter 2).
+1. **A hot `-journal` is part of the database; copy both or refuse (Experiment 4.1 Parts D and E, `RCM-01`).** Copying a crashed rollback-mode `.db` file without its hot `-journal` produced `database disk image is malformed (11)` (E2a), while copying both together recovered cleanly to pre-step (E2b). Backup, move, and capture tools must either copy `<db>` and `<db>-journal` together or refuse any file with a hot journal (as `capture.CheckAtRest` does in Chapter 2).
 2. **Never delete a `-journal` file to "fix" a database (Experiment 4.1 Part E1, E3).** Removing a hot journal mid-write corrupts the database (`malformed (11)`). Removing it after the last database write silently turns an unacknowledged crashed commit into a committed transaction (`user_version=3` instead of `2`).
 3. **Test for a *hot* journal, not merely for the `-journal` filename (Experiment 4.1 Parts D and F).** Cold journals (first byte `0x00`) remain after pre-sync crashes in `DELETE` mode and after every clean commit in `TRUNCATE` (0 bytes) and `PERSIST` (28 zeroed header bytes) modes. Use `size > 0 && firstByte != 0` (`journalfile.LooksHot`) to test whether a database is at rest.
-4. **Rollback mode costs 3 (`NORMAL`) or 4 (`FULL`) syncs per commit and writes every modified page twice (Experiment 4.1 Part D).** Step 3 wrote 7 pages to `-journal`, synced twice (plus a directory sync at `FULL`), wrote 18 pages to `t.db`, and synced `t.db`. Chapter 1 showed WAL mode needed 1 sync per commit after the first; Chapter 7 measures the full I/O matrix across modes.
-5. **Every newly created WAL database passes through one rollback-journal commit, and imported files start in rollback mode (Experiment 4.1 Part A).** Even `sqlitex.Open` with `journal_mode=wal` opens, syncs twice, and unlinks a `-journal` when initializing a brand-new file. A platform opener must explicitly switch new files to WAL and refuse to silently flip existing files whose mode disagrees with policy.
-6. **Verify rollback-mode crash recovery at E3 (or canonical E1), not raw E1 (Experiment 4.1 Parts D and D2).** Because `PAGER_GET_NOCONTENT` skips journaling reused freelist leaves, a valid hot-journal rollback can leave non-zero bytes inside unused freelist leaves (14 of 47 kills in step 3). Compare rolled-back files with `VACUUM INTO` canonical SHA-256 or logical equality (E3), not raw file SHA-256 (E1).
-7. **Size a multi-database Go service by its open-connection cap, not its file count (Experiment 4.2 Parts B, C, D).** Page-cache memory scales linearly with open connections—even when multiple connections open the same file (`134.6 MB` `CACHE_USED`, `~252–254 MiB` RSS for 64 connections at `cache_size=-2000`). An 8-connection LRU pool capped memory flat at `35.5 MiB` across all 64 files.
-8. **Account for both `ENABLE_MEMORY_MANAGEMENT` pooling and the driver's `~2x` RSS multiplier (Experiment 4.2 Parts B and D).** With `modernc.org/sqlite`, `cache_size` adds to one process-wide `PGroup` budget (`open × 482` pages at `-2000`), so active connections automatically reuse idle connections' pages and closing an idle connection primarily frees its fixed overhead (~5 KiB `CACHE_USED`, 32 KiB `-shm` mapping, Go/driver structs) and shrinks the group cap. Budget roughly `2 × summed CACHE_USED` for process RSS (`~4.0 MiB` per connection at `-2000`) because `modernc.org/memory` rounds ~4.3 KiB page allocations into 8 KiB slots.
-9. **Use `PRAGMA mmap_size` to move read-cache memory out of SQLite's heap into the kernel page cache (Experiment 4.2 Part E).** Covering the 3.9 MiB file with `mmap_size` cut `CACHE_USED` from `482` pages (`2.1 MB`) to `2` pages (`13.8 KB`) while shifting the `4.0 MiB` resident footprint into file-backed RSS (`RssFile`), which the OS shares across processes and reclaims under memory pressure.
+4. **Rollback mode costs at least 3 (`NORMAL`) or 4 (`FULL`) syncs per commit and writes every modified page twice (Experiment 4.1 Part D, `RCM-03a`).** Step 3 (non-spilling) wrote 7 pages to `-journal`, synced twice (plus a directory sync at `FULL`), wrote 18 pages to `t.db`, and synced `t.db`; transactions that spill past `cache_size` multiply those syncs (`20` at `FULL`, `11` at `NORMAL` in `RCM-03a`). Chapter 1 showed WAL mode needed 1 sync per commit after the first; Chapter 7 measures the full I/O matrix across modes.
+5. **Every newly created WAL database passes through one rollback-journal commit, and imported files start in rollback mode (Experiment 4.1 Part A, `RCM-04`).** Even `sqlitex.Open` with `journal_mode=wal` opens, syncs twice, and unlinks a `-journal` when initializing a brand-new file; a crash mid-open can leave a hot `-journal` that a retry cleans up. A platform opener must explicitly switch new files to WAL and refuse to silently flip existing files whose mode disagrees with policy.
+6. **Verify rollback-mode crash recovery at E3 (or canonical E1), not raw E1 (Experiment 4.1 Parts D and D2, `RCM-06`).** Because `PAGER_GET_NOCONTENT` skips journaling reused freelist leaves (`14` of `47` kills in step 3) and shrinking commits truncate *after* journal unlink (`pager_end_transaction`, `src/pager.c:2155-2164`), a valid rollback or post-commit recovery can leave unused bytes in freelist leaves or trailing slack pages. Compare recovered rollback-mode files with `VACUUM INTO` canonical SHA-256 or logical equality (E3), not raw file SHA-256 (E1).
+7. **Size a multi-database Go service by its open-connection cap, not its file count (Experiment 4.2 Parts B, C, D, `SCL-01`–`SCL-03`).** Page-cache memory scales linearly with open connections—even when multiple connections open the same file (`134.6 MB` `CACHE_USED`, `~252–254 MiB` RSS for 64 connections at `cache_size=-2000`; confirmed to 1,000 connections in `SCL-01` and `SCL-02`). An 8-connection LRU pool capped memory flat at `35.2 MiB` across 64 files (and a 16-connection pool held `14.5 MiB` across 1,000 files at `-256 KiB` in `SCL-03`).
+8. **Account for `ENABLE_MEMORY_MANAGEMENT` pooling, process-wide `shrink_memory`, and the driver's `~2x` RSS multiplier (Experiment 4.2 Parts B and D, `CAC-02a`, `SCL-07`).** With `modernc.org/sqlite`, `cache_size` adds to one process-wide `PGroup` budget capped at `open × nMax` pages (`open × 483` at `-2000`), so active connections automatically reuse idle connections' pages and closing an idle connection frees its fixed overhead (~5 KiB `CACHE_USED`, 32 KiB `-shm` mapping, Go/driver structs) while shrinking the group cap. Never call `PRAGMA shrink_memory` expecting it to affect only one connection—in this build it evicts every connection's unpinned clean pages across the whole process. Budget roughly `2 × summed CACHE_USED` for process RSS (`~4.0 MiB` per connection at `-2000`) because `modernc.org/memory` rounds ~4.3 KiB page allocations into 8 KiB slots.
+9. **Use `PRAGMA mmap_size` to move read-cache memory for checkpointed `.db` pages into the kernel page cache (Experiment 4.2 Part E, `CAC-04`, `SCL-05`).** Covering the checkpointed 3.9 MiB file with `mmap_size` cut `CACHE_USED` from `482` pages (`2.1 MB`) to `2` pages (`13.8 KB`) while shifting the `4.0 MiB` resident footprint into file-backed RSS (`RssFile`), which the OS shares across processes and reclaims under memory pressure. Pages still sitting in an uncheckpointed `-wal` fall back to `pcache1` (`CAC-04`), and on Linux use `Pss_File` (`/proc/self/smaps_rollup`) rather than `RssFile` when measuring shared-file mappings across many connections in one process (`SCL-05`).
 
 ---
 
@@ -4700,8 +4891,8 @@ Every operational rule below is backed directly by this chapter's experiments:
 
 Answers are in [answers.md](answers.md).
 
-1. In Experiment 4.1 Part D (`synchronous=FULL`), why did killing the writer during kills 01–25 leave a `-journal` file on disk that SQLite ignored and did *not* delete on reopen, whereas kills 26–46 triggered rollback and deleted `-journal`?
+1. In Experiment 4.1 Part D (`synchronous=FULL`), why did killing the writer during kills 01–25 leave a `-journal` file on disk that SQLite ignored and did *not* delete on reopen, whereas kills 26–46 triggered rollback and deleted `-journal`—and what condition on the transaction's size kept the journal cold until `COMMIT`?
 2. In Experiment 4.1 Part D (step 3), 14 kill points at `synchronous=FULL` reopened to a database whose raw SHA-256 matched neither pre-step nor post-step, yet Part D2 (step 1) reopened to exact pre-step or post-step bytes at every kill point. What exact SQLite mechanism caused the difference, which page differed in step 3, and how did the experiment verify the database was still logically pre-step?
 3. Compare what happened in Experiment 4.1 Part E when `t.db-journal` was deleted after a crash at database write 10 of 18 (E1) versus after a crash on entry to `sync t.db` (E3). Why is E3 dangerous even though `PRAGMA integrity_check` returns `ok`?
-4. In Experiment 4.2 Part B (`64` connections, `cache_size=-2000`), connection 1 held `0` cached pages and connection 64 held `1,004` cached pages—more than double its `482`-page budget—while the sum across all 64 connections was exactly `30,848` (`64 × 482`). Which compile option and `pcache1.c` mechanism caused this, and why did RSS grow by `253.7 MiB` when summed `CACHE_USED` was only `128.3 MiB`?
-5. In Experiment 4.2 Part E, setting `PRAGMA mmap_size=8224768` cut `CACHE_USED` from `2,102,741` bytes (`482` pages) to `13,781` bytes (`2` pages), yet process RSS still grew by `4.2 MiB`. What happened to the memory, and how did `/proc/self/status` prove it?
+4. In Experiment 4.2 Part B (`64` connections, `cache_size=-2000`), connection 1 held `0` cached pages and connection 64 held `1,004` cached pages—more than double its `482`-page budget—while the sum across all 64 connections was `30,848` (`64 × 482`). Which compile option and `pcache1.c` mechanism caused this, what is the true group ceiling under pool churn or repeated sweeps, and why did RSS grow by `253.8 MiB` when summed `CACHE_USED` was only `128.3 MiB`?
+5. In Experiment 4.2 Part E, setting `PRAGMA mmap_size=8224768` cut `CACHE_USED` from `2,102,741` bytes (`482` pages) to `13,781` bytes (`2` pages), yet process RSS still grew by `4.2 MiB`. What happened to the memory, how did `/proc/self/status` prove it, and when does `getPageMMap` fall back to `pcache1` in WAL mode?

@@ -37,6 +37,8 @@ const (
 	minPageSize        = 512
 	maxPageSize        = 65536
 	superJournalFooter = 16
+	// maxSuperJournalLen matches unix MAX_PATHNAME (512, src/os_unix.c:180);
+	// readSuperJournal rejects lengths >= 1 + mxPathname (src/pager.c:1315,2891).
 	maxSuperJournalLen = 512
 )
 
@@ -62,6 +64,9 @@ const (
 	// HeaderInvalid indicates bytes that are neither valid magic, nor zeroed,
 	// nor a valid sector/page-size geometry (readJournalHdr, src/pager.c:1650-1672).
 	HeaderInvalid
+	// HeaderMissing indicates fewer than HeaderFieldsSize bytes or fewer than
+	// one full first sector (readJournalHdr returns SQLITE_DONE before reading
+	// the magic or truncating the database, src/pager.c:1607-1610).
 	HeaderMissing
 )
 
@@ -191,6 +196,9 @@ func Parse(data []byte) (*Journal, error) {
 		return j, nil
 	}
 	sector := int64(first.SectorSize)
+	// readJournalHdr returns SQLITE_DONE if journalOff+sectorSize > journalSize
+	// (src/pager.c:1607-1610), before reading the magic or truncating the
+	// database; treat a sub-sector file as missing so TrailingByte stays >= 0.
 	if end < sector {
 		first.State = HeaderMissing
 		j.Segments = append(j.Segments, Segment{Header: first})
@@ -295,7 +303,10 @@ func SuperJournalPage(pageSize uint32) uint32 {
 }
 
 // superJournalName detects the optional multi-database super-journal footer
-// written by writeSuperJournal: [4-byte PAGER_SJ_PGNO][name][4-byte len][4-byte sum][8-byte Magic].
+// written by writeSuperJournal (src/pager.c:1703-1737) and validated by
+// readSuperJournal (src/pager.c:1303-1349): [4-byte PAGER_SJ_PGNO][name]
+// [4-byte len][4-byte sum][8-byte Magic]. Names starting with NUL or longer
+// than maxSuperJournalLen are ignored, and the name stops at its first NUL.
 func superJournalName(data []byte) (string, int64, bool) {
 	size := int64(len(data))
 	if size < superJournalFooter+4 || !bytes.Equal(data[size-8:], Magic[:]) {
@@ -317,8 +328,14 @@ func superJournalName(data []byte) (string, int64, bool) {
 	return string(name), nameStart - 4, true
 }
 
+// cCharIsSigned mirrors the target platform's C char signedness because
+// writeSuperJournal and readSuperJournal sum char elements directly
+// (src/pager.c:1735-1737, 1333-1335). C char is unsigned on Linux ARM/ARM64/
+// PPC64/RISC-V/s390x and signed on amd64 and macOS.
 var cCharIsSigned = !(runtime.GOOS == "linux" && slices.Contains([]string{"arm", "arm64", "ppc64", "ppc64le", "riscv64", "s390x"}, runtime.GOARCH))
 
+// superJournalChecksum sums name bytes as signed or unsigned C chars to match
+// writeSuperJournal (src/pager.c:1735-1737) and readSuperJournal (1333-1335).
 func superJournalChecksum(name []byte, signedChars bool) uint32 {
 	var sum uint32
 	for _, b := range name {
@@ -387,6 +404,10 @@ func (j *Journal) ChecksumFailures() int {
 // Playback simulates the read loop of pager_playback (src/pager.c:2864-3052)
 // and pager_playback_one_page (src/pager.c:2298-2500) to predict which pages
 // SQLite will restore and what page count it will truncate the database to.
+// When the journal names a super-journal, pager_playback skips rollback unless
+// that super-journal file still exists on disk (src/pager.c:2891-2897); because
+// Playback sees only the journal bytes, it refuses to predict an unconditional
+// rollback and names the super-journal in StopReason.
 func (j *Journal) Playback() PlaybackOutcome {
 	outcome := PlaybackOutcome{Hot: j.LooksHot()}
 	if outcome.Hot && j.SuperJournal != "" {
@@ -396,10 +417,15 @@ func (j *Journal) Playback() PlaybackOutcome {
 	return j.playback(outcome)
 }
 
+// PlaybackIfSuperJournalExists returns the playback prediction assuming any
+// named super-journal file exists on disk (the branch of pager_playback that
+// proceeds past src/pager.c:2895).
 func (j *Journal) PlaybackIfSuperJournalExists() PlaybackOutcome {
 	return j.playback(PlaybackOutcome{Hot: j.LooksHot()})
 }
 
+// playback runs the shared segment-and-record simulation used by Playback and
+// PlaybackIfSuperJournalExists.
 func (j *Journal) playback(outcome PlaybackOutcome) PlaybackOutcome {
 	if !outcome.Hot {
 		outcome.StopReason = "not hot: empty file or first byte is zero"
