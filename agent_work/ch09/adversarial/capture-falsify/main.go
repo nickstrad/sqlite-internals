@@ -444,11 +444,11 @@ func attackCAP02(ctx context.Context, cli sqlitex.CLI, work string) {
 	// CAP-02a: No keeper connection, no .timeout -> fresh CLI writers close as the last connection.
 	dbA := makeChurnDB("a.db")
 	okA, lockedA, otherA, errA := runCLIBackupRace(ctx, cli, dbA, filepath.Join(dir, "out-a"), 40, 0, false)
-	// We attack the unqualified claim that CLI .backup is always safe under writers without a busy timeout.
-	// A BROKEN result here means we REPRODUCED the "database is locked" failure!
+	// Confirms build-notes correction 10: CLI .backup without .timeout hits "database is locked"
+	// when racing fresh writer processes closing as the last connection (sqlite3WalClose, wal.c:2507-2571).
 	gotA := fmt.Sprintf("ok=%d/40 locked=%d other=%d (sample=%q)", okA, lockedA, otherA, errA)
 	report("CAP-02a", "CLI .backup (no .timeout) racing fresh sqlite3 writer processes (each closes as last connection)",
-		"0 database-is-locked errors if CLI .backup needs no busy handler under WAL writers", gotA, lockedA == 0 && otherA == 0)
+		"reproduces database-is-locked errors (locked>0, other=0) due to sqlite3WalClose EXCLUSIVE lock without .timeout", gotA, lockedA > 0 && otherA == 0)
 
 	// CAP-02b: Exact same race, but holding 1 persistent idle connection so writers are never the last connection.
 	dbB := makeChurnDB("b.db")
@@ -579,12 +579,12 @@ func attackCAP03(ctx context.Context, r recipe.Recipe, refs *refSet, work string
 	if errRB != nil {
 		fatal("cap03 rollback", errRB)
 	}
-	// If same-connection rollback did NOT restart, copied would be [5, 10, 15, 20].
-	// pager.c:3185 calls sqlite3BackupRestart on WAL rollback -> copied drops to 5!
-	rbNoRestart := len(copiedRB) >= 3 && copiedRB[2] == 15
+	// Build-notes correction 1 (narrowed): same-connection COMMITS do not restart a backup,
+	// whereas a same-connection write+ROLLBACK calls sqlite3BackupRestart (pager.c:3185) -> [5, 10, 5, 10].
+	restarted := len(copiedRB) == 4 && copiedRB[0] == 5 && copiedRB[1] == 10 && copiedRB[2] == 5 && copiedRB[3] == 10
 	report("CAP-03a", "same-connection write+ROLLBACK after backup step 2 (copied=10)",
-		"copied advances steadily [5,10,15,20] if same-connection operations never restart a backup",
-		fmt.Sprintf("copied sequence = %v (restarted=%t via pager.c:3185)", copiedRB, !rbNoRestart), rbNoRestart)
+		"copied resets to [5 10 5 10] via sqlite3BackupRestart (pager.c:3185), qualifying 9.1's same-connection commits rule",
+		fmt.Sprintf("copied sequence = %v (restarted=%t via pager.c:3185)", copiedRB, restarted), restarted)
 
 	// Case B: Same-connection empty write transaction (BEGIN IMMEDIATE; COMMIT; with 0 dirty pages).
 	copiedEmpty, errEmpty := runCase("emptycommit", func(ctx context.Context, exec sqlitex.SourceExecer) error {

@@ -228,9 +228,13 @@ func runPinnedNormalChild(args []string) error {
 			return err
 		}
 	}
+	// Save pre-checkpoint database file (different path so strace SyncsOf on r.db is unaffected).
+	if err := copyFile(*dbPath, *dbPath+".before-ckpt", -1); err != nil {
+		return err
+	}
 	// PASSIVE checkpoint syncs the ENTIRE WAL through step 7 (wal.c:2277) while
 	// backfilling up to step 4's read mark. Because nBackfill < mxFrame, the WAL
-	// does NOT restart on subsequent commits!
+	// does NOT restart on subsequent commits, and r.db is NOT synced (wal.c:2328-2335).
 	ckpt, err := sqlitex.Checkpoint(ctx, writer, "", sqlitex.CheckpointPassive)
 	if err != nil {
 		return err
@@ -250,7 +254,9 @@ func runPinnedNormalChild(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("ckpt=%s sameGen=%t end7=%d end9=%d\n", ckpt, wal7.Header.Salt1 == wal9.Header.Salt1, end7,
+	fmt.Printf("ckpt=%s partial=%t sameGen=%t end7=%d end9=%d\n", ckpt,
+		ckpt.Checkpointed > 0 && ckpt.Checkpointed < ckpt.LogFrames,
+		wal7.Header.Salt1 == wal9.Header.Salt1, end7,
 		int64(walfile.HeaderSize+wal9.LastCommitFrame*wal9.FrameSize()))
 	os.Exit(0)
 	return nil
@@ -874,11 +880,14 @@ func attackCRASH05(ctx context.Context, self string, r recipe.Recipe, hashes []r
 		"salt mismatch stops recovery at frame 1, keeping step 7 with integrity=ok", got, held)
 }
 
-// attackCRASH06 tests 9.2's portable ruleCut("NORMAL") generalization when a
-// concurrent reader prevents WAL restart after a PASSIVE checkpoint.
+// attackCRASH06 tests 9.2's corrected portable ruleCut("NORMAL") when a
+// concurrent reader prevents WAL restart after a partial PASSIVE checkpoint:
+// cut is end7 (wal.c:2277), r.db has unsynced partial-backfill writes (wal.c:2328-2335),
+// and both post- and pre-checkpoint database files recover step 7 cleanly at cut=end7
+// while the old hardcoded cut=32 fails.
 func attackCRASH06(ctx context.Context, r recipe.Recipe, hashes []recipe.FileHashes, baseDB, work string) {
 	if !trace.Supported {
-		report("CRASH-06", "testing 9.2 ruleCut(NORMAL)=32 assumption when a reader blocks WAL restart after checkpoint",
+		report("CRASH-06", "testing corrected 9.2 NORMAL rule when a reader blocks WAL restart after partial PASSIVE checkpoint",
 			"skipped on non-Linux", "LINUX-ONLY: strace unavailable on "+runtime.GOOS, true)
 		return
 	}
@@ -905,37 +914,52 @@ func attackCRASH06(ctx context.Context, r recipe.Recipe, hashes []recipe.FileHas
 		fatal("crash06 eval", err)
 	}
 	walSync := trace.SyncsOf(res.Log.Calls, realDB+"-wal")
+	dbSync := trace.SyncsOf(res.Log.Calls, realDB)
 
-	// Parse end7 from child output.
+	// Parse end7, partial, sameGen from child output.
 	var end7 int64
+	var partial, sameGen bool
 	for _, field := range strings.Fields(strings.TrimSpace(res.Stdout)) {
 		if v, ok := strings.CutPrefix(field, "end7="); ok {
 			end7, _ = strconv.ParseInt(v, 10, 64)
 		}
+		if v, ok := strings.CutPrefix(field, "partial="); ok {
+			partial = v == "true"
+		}
+		if v, ok := strings.CutPrefix(field, "sameGen="); ok {
+			sameGen = v == "true"
+		}
 	}
 
-	// Recover at strace's true FirstUnsynced vs 9.2's hardcoded ruleCut("NORMAL") = 32.
-	trueDB := filepath.Join(dir, "cut-true", "r.db")
-	ruleDB := filepath.Join(dir, "cut-rule32", "r.db")
+	// Recover at 9.2's corrected rule cut (end7) with post- and pre-checkpoint DB,
+	// and verify the old byte-32 cut still fails (proving the no-restart branch is exercised).
+	postDB := filepath.Join(dir, "cut-post", "r.db")
+	preDB := filepath.Join(dir, "cut-pre", "r.db")
+	old32DB := filepath.Join(dir, "cut-rule32", "r.db")
 	if err := errors.Join(
-		copyFile(dbp, trueDB, -1), copyFile(dbp+"-wal", trueDB+"-wal", walSync.FirstUnsynced),
-		copyFile(dbp, ruleDB, -1), copyFile(dbp+"-wal", ruleDB+"-wal", walfile.HeaderSize),
+		copyFile(dbp, postDB, -1), copyFile(dbp+"-wal", postDB+"-wal", end7),
+		copyFile(dbp+".before-ckpt", preDB, -1), copyFile(dbp+"-wal", preDB+"-wal", end7),
+		copyFile(dbp, old32DB, -1), copyFile(dbp+"-wal", old32DB+"-wal", walfile.HeaderSize),
 	); err != nil {
 		fatal("crash06 cuts", err)
 	}
-	_, matchTrue, errTrue := recoverAndMatch(ctx, r, hashes, trueDB)
-	_, matchRule, errRule := recoverAndMatch(ctx, r, hashes, ruleDB)
-	if errTrue != nil || errRule != nil {
-		fatal("crash06 recover", errors.Join(errTrue, errRule))
+	integPost, matchPost, errPost := recoverAndMatch(ctx, r, hashes, postDB)
+	integPre, matchPre, errPre := recoverAndMatch(ctx, r, hashes, preDB)
+	_, matchOld32, errOld32 := recoverAndMatch(ctx, r, hashes, old32DB)
+	if errPost != nil || errPre != nil || errOld32 != nil {
+		fatal("crash06 recover", errors.Join(errPost, errPre, errOld32))
 	}
 
-	// Does 9.2's portable ruleCut("NORMAL")=32 match strace's FirstUnsynced here?
-	// NO: walCheckpoint synced the WAL through end7, and the WAL never restarted!
-	ruleMatchesStrace := walSync.HasUnsynced && walSync.FirstUnsynced == walfile.HeaderSize
-	got := fmt.Sprintf("strace FirstUnsynced=%d (end7=%d) recovers step %d; 9.2 ruleCut=32 recovers step %d (%s)",
-		walSync.FirstUnsynced, end7, matchTrue.Step, matchRule.Step, strings.TrimSpace(res.Stdout))
-	report("CRASH-06", "synchronous=NORMAL commits after a reader-pinned PASSIVE checkpoint (no WAL restart)",
-		"9.2 portable ruleCut(NORMAL)=32 matches strace FirstUnsynced across all WAL NORMAL workloads", got, ruleMatchesStrace)
+	held := partial && sameGen &&
+		walSync.HasUnsynced && walSync.FirstUnsynced == end7 &&
+		dbSync.Syncs == 0 && dbSync.HasUnsynced &&
+		integPost == "ok" && matchPost.Found() && matchPost.Step == checkpointAfter &&
+		integPre == "ok" && matchPre.Found() && matchPre.Step == checkpointAfter &&
+		!matchOld32.Found()
+	got := fmt.Sprintf("strace wal FirstUnsynced=%d (end7=%d), dbSyncs=%d (unsynced=%d); cut=end7 recovers post=step %d (integ=%s) & pre=step %d (integ=%s); old cut=32 gives step %d (%s)",
+		walSync.FirstUnsynced, end7, dbSync.Syncs, len(dbSync.Unsynced), matchPost.Step, integPost, matchPre.Step, integPre, matchOld32.Step, strings.TrimSpace(res.Stdout))
+	report("CRASH-06", "synchronous=NORMAL commits after a reader-pinned partial PASSIVE checkpoint (no WAL restart)",
+		"corrected 9.2 NORMAL rule: strace FirstUnsynced==end7, dbSyncs=0 (unsynced partial backfill), both post- and pre-ckpt DBs recover step 7 at cut=end7 (old cut=32 fails)", got, held)
 }
 
 // attackCRASH07 tests edge cases of internal/trace.SyncsOf.

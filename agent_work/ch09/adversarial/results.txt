@@ -1,32 +1,32 @@
 # Chapter 9 adversarial suite (Gemini 4 Neon)
-# Started: 2026-11-21T02:42:03Z
+# Started: 2026-11-21T03:15:22Z
 # Scratch: _work/adv-ch09/
 
 ## group: capture-falsify
 sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
 ATTACK CAP-01 | concurrent stress of 4 live capture methods under active writer + PASSIVE checkpoints | EXPECT every capture passes integrity_check and matches an exact recipe step at its claimed equality level | GOT 32/32 captures matched exact recipe states across steps [4..20] (capErrs=0, mismatches=0) | HELD
-ATTACK CAP-02a | CLI .backup (no .timeout) racing fresh sqlite3 writer processes (each closes as last connection) | EXPECT 0 database-is-locked errors if CLI .backup needs no busy handler under WAL writers | GOT ok=30/40 locked=10 other=0 (sample="Error: database is locked") | BROKEN
+ATTACK CAP-02a | CLI .backup (no .timeout) racing fresh sqlite3 writer processes (each closes as last connection) | EXPECT reproduces database-is-locked errors (locked>0, other=0) due to sqlite3WalClose EXCLUSIVE lock without .timeout | GOT ok=31/40 locked=9 other=0 (sample="Error: database is locked") | HELD
 ATTACK CAP-02b | same CLI .backup race (no .timeout) with 1 persistent idle connection preventing sqlite3WalClose | EXPECT 0 database-is-locked errors once last-connection close EXCLUSIVE lock is prevented | GOT ok=40/40 locked=0 other=0 (sample="") | HELD
 ATTACK CAP-02c | deterministic EXCLUSIVE lock vs CLI .backup (timeout=0 vs 5000) and sqlitex.Backup (timeout=0) | EXPECT timeout=0 fails with SQLITE_BUSY/locked; .timeout 5000 waits and succeeds after lock release | GOT cli(timeout=0) locked=true; sqlitex.Backup(timeout=0) busy=true (database is locked: not an error (5) (SQLITE_BUSY)); cli(.timeout 5000) err=<nil> | HELD
-ATTACK CAP-03a | same-connection write+ROLLBACK after backup step 2 (copied=10) | EXPECT copied advances steadily [5,10,15,20] if same-connection operations never restart a backup | GOT copied sequence = [5 10 5 10] (restarted=true via pager.c:3185) | BROKEN
+ATTACK CAP-03a | same-connection write+ROLLBACK after backup step 2 (copied=10) | EXPECT copied resets to [5 10 5 10] via sqlite3BackupRestart (pager.c:3185), qualifying 9.1's same-connection commits rule | GOT copied sequence = [5 10 5 10] (restarted=true via pager.c:3185) | HELD
 ATTACK CAP-03b | same-connection empty BEGIN IMMEDIATE; COMMIT after backup step 2 (copied=10) | EXPECT copied advances steadily [5,10,15,20] without restarting | GOT copied sequence = [5 10 15 20] (restarted=false) | HELD
-ATTACK CAP-04 | concurrent VACUUM INTO while writer child commits steps 16..24 | EXPECT every VACUUM INTO succeeds without blocking writer and matches an exact recipe step (E3 ex. journal_mode, E1 canonical) | GOT 5/5 VACUUM INTO matched exact recipe steps [15 15 16 17 18] (commits overlapped with VACUUM INTO=4, writer errors=0) | HELD
+ATTACK CAP-04 | concurrent VACUUM INTO while writer child commits steps 16..24 | EXPECT every VACUUM INTO succeeds without blocking writer and matches an exact recipe step (E3 ex. journal_mode, E1 canonical) | GOT 5/5 VACUUM INTO matched exact recipe steps [15 15 16 17 19] (commits overlapped with VACUUM INTO=5, writer errors=0) | HELD
 ATTACK CAP-05 | file+WAL copy under held read txn while PASSIVE checkpoint tears live.db mid-copy | EXPECT walfile.Replay rebuilds exact E1 recipe step 10 despite mid-copy PASSIVE backfill | GOT ckpt=busy=0 log=79 checkpointed=62, rebuilt step=10 (E1), integrity=ok, err=<nil> | HELD
 ATTACK CAP-06a | must-fail: sqlite_dbpage split across two read txns around steps 7-8 | EXPECT inconsistent capture fails integrity_check or matches no recipe state | GOT step=-1 integrity="40 problem(s), the first: Freelist: freelist leaf count too big on page 36" err=<nil> | HELD
 ATTACK CAP-06b | must-fail: file+WAL copied without held read txn across TRUNCATE checkpoint | EXPECT replaying newer-generation WAL onto older base fails integrity_check or matches no recipe state | GOT step=-1 integrity="7 problem(s), the first: Page 29: never used" err=<nil> | HELD
 ATTACK CAP-07 | sqlitex.BackupWithSourceExec edge cases (0 step, ctx cancel, bad arg, source in write txn) | EXPECT all four invalid/boundary conditions return expected errors and leave connection clean | GOT zeroErr=true cancelErr=context canceled badArgErr=true inWriteBusy=true(database is locked: not an error (5) (SQLITE_BUSY)) rollbackErr=<nil> | HELD
-# capture-falsify finished in 11s
+# capture-falsify finished in 19s
 
 ## group: crash-power-falsify
 sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
-ATTACK CRASH-01 | real SIGKILL at seeded random times across 1200 iterations (OFF/NORMAL/FULL x 400) | EXPECT every reopened DB passes integrity_check and equals a recipe step in [lastAck, lastAck+1] | GOT 1200/1200 passed (killed_mid_run=1180, recovered_ack+1=176, failures=0) | HELD
+ATTACK CRASH-01 | real SIGKILL at seeded random times across 1200 iterations (OFF/NORMAL/FULL x 400) | EXPECT every reopened DB passes integrity_check and equals a recipe step in [lastAck, lastAck+1] | GOT 1200/1200 passed (killed_mid_run=876, recovered_ack+1=112, failures=0) | HELD
 ATTACK CRASH-02 | SIGKILL on r.db backfill pwrite64 and ftruncate calls inside PASSIVE & TRUNCATE checkpoints | EXPECT every mid-checkpoint kill recovers cleanly to step 7 with integrity_check=ok | GOT 22/22 mid-checkpoint kills (r.db backfill pwrite64 + ftruncate across PASSIVE/TRUNCATE) recovered step 7 with integrity=ok | HELD
 ATTACK CRASH-03 | SIGKILL inside walIndexRecover (pread64/pwrite64) plus double-kill during recovery | EXPECT subsequent open always recovers cleanly to step 11 with integrity_check=ok | GOT single-kill during recovery 10/10 ok (preads=142 pwrites=65); double-kill ok=true (step=11, integ=ok) | HELD
 ATTACK CRASH-04 | power-cut model truncating -wal mid-header and mid-frame (non-commit and commit frames) | EXPECT every partial header/frame is discarded cleanly, recovering the exact prior commit and matching walfile.Replay | GOT 15/15 mid-header and mid-frame cuts recovered exact prior committed step, integrity=ok, and matched walfile.Replay byte-for-byte | HELD
 ATTACK CRASH-05 | synchronous=NORMAL power cut keeping synced gen#2 header (0..32) over stale gen#1 frames (32..end) | EXPECT salt mismatch stops recovery at frame 1, keeping step 7 with integrity=ok | GOT walfile validFrames=0; SQLite recovered=step 7 (equal except the change counter at bytes 24-27 and 92-95) integrity=ok; bytes==walfile.Replay:true | HELD
-ATTACK CRASH-06 | synchronous=NORMAL commits after a reader-pinned PASSIVE checkpoint (no WAL restart) | EXPECT 9.2 portable ruleCut(NORMAL)=32 matches strace FirstUnsynced across all WAL NORMAL workloads | GOT strace FirstUnsynced=304912 (end7=304912) recovers step 7; 9.2 ruleCut=32 recovers step -1 (ckpt=busy=0 log=74 checkpointed=25 sameGen=true end7=304912 end9=494432) | BROKEN
+ATTACK CRASH-06 | synchronous=NORMAL commits after a reader-pinned partial PASSIVE checkpoint (no WAL restart) | EXPECT corrected 9.2 NORMAL rule: strace FirstUnsynced==end7, dbSyncs=0 (unsynced partial backfill), both post- and pre-ckpt DBs recover step 7 at cut=end7 (old cut=32 fails) | GOT strace wal FirstUnsynced=304912 (end7=304912), dbSyncs=0 (unsynced=14); cut=end7 recovers post=step 7 (integ=ok) & pre=step 7 (integ=ok); old cut=32 gives step -1 (ckpt=busy=0 log=74 checkpointed=25 partial=true sameGen=true end7=304912 end9=494432) | HELD
 ATTACK CRASH-07 | internal/trace.SyncsOf edge cases (fdatasync, failed fsync/pwrite64, other-path sync, writev, ftruncate, unfinished) | EXPECT failed/unfinished/other-path calls do not corrupt sync state; fdatasync clears; ftruncate uses new length | GOT case1=(syncs=1 unsynced=3 first=32 unfinished=true) case2=(unsynced=2 first=0) | HELD
-# crash-power-falsify finished in 44s
+# crash-power-falsify finished in 65s
 
 ## group: integrity-sweep
 sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
@@ -44,7 +44,7 @@ ATTACK INT-02c | 1-byte flip in freelist trunk unused tail (page 67, leafCount=1
 ATTACK INT-02d | 1-bit flip in database header reserved zero region (page 1, byte 80) | EXPECT integrity_check=ok, quick_check=ok, E3=equal, ONLY page manifest catches it | GOT integrity="ok" quick="ok" E3_caught=false manifest=[1] | HELD
 ATTACK INT-03 | coordinated account_id 54->55 flip on row 363 in BOTH table (p.66) and index (p.89) | EXPECT integrity_check=ok and quick_check=ok (structure & index consistent); E3 & manifest catch both pages | GOT integrity="ok" quick="ok" E3_caught=true manifest=[66 89] | HELD
 ATTACK INT-04 | must-fail boundary suite on dbfile.RecordColumn and capture.VerifyImage | EXPECT every invalid record/manifest/image is rejected without panic and multi-page corruption lists all differing pages | GOT RecordColumn bad=9/9 validZeroLen=true; VerifyImage badPS=true badSeq=true short=true long=true multiDiff=[1 6 118] | HELD
-# integrity-sweep finished in 6s
+# integrity-sweep finished in 5s
 
 ## group: walship-falsify
 sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
@@ -63,6 +63,6 @@ ATTACK SHIP-04 | multi-statement txn (3 inserts/1 commit), spilled ROLLBACK (cac
 ATTACK SHIP-05 | shrinking database under walship (DELETE 90% + plain VACUUM with SnapshotEvery=1 mirror check) | EXPECT walship replays shrinking WAL commit, passes periodic mirror check, and PlanFrom(initial) matches closed DB E1 | GOT size 483328->20480 bytes; periodicSnap=true; integrity=ok; E1(PlanFrom(12)==live)=true | HELD
 ATTACK SHIP-06 | non-default page sizes (1024, 8192 with overflow pages) under walship + ErrNotWAL enforcement | EXPECT both page sizes ship across checkpoints and restore E1; rollback config returns ErrNotWAL | GOT notWAL=true; ps=1024 E1=ok(10240B); ps=8192 E1=ok(81920B) | HELD
 ATTACK SHIP-07 | 8-way concurrent DirStore.PutIfAbsent race (50 rounds) + WriteDatabase sidecar refusal | EXPECT exactly 1 winner & 7 ErrExists per round, zero torn reads, zero .tmp leftovers, 4/4 sidecar refusals | GOT raceOK=50/50 tmpLeft=0 writeDBRefusals=4/4 | HELD
-# walship-falsify finished in 9s
+# walship-falsify finished in 7s
 
-# Total elapsed: 70s
+# Total elapsed: 96s
