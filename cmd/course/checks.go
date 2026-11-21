@@ -150,12 +150,13 @@ func runCheck(ctx context.Context, root string, args []string) error {
 		}
 		r.result("check gofmt", problems, fmt.Sprintf("%d Go file(s) formatted", count))
 	case "paths":
-		problems, count, err := repocheck.CheckPaths(root)
+		sweep, err := repocheck.SweepPaths(root)
 		if err != nil {
 			r.err("check paths", err)
 			break
 		}
-		r.result("check paths", problems, fmt.Sprintf("%d tracked file(s) free of machine-local paths", count))
+		printPathSweepReport(sweep)
+		r.result("check paths", sweep.Problems, fmt.Sprintf("%d tracked text file(s) free of machine-local paths and unresolved relative links (%d binary file(s) and %d upstream SQLite copies skipped, %d external link(s) reported)", sweep.Checked, len(sweep.Binary), len(sweep.UpstreamCopies), len(sweep.External)))
 	case "all":
 		flags := flag.NewFlagSet("check all", flag.ContinueOnError)
 		runs := flags.Int("runs", 2, "runs per experiment")
@@ -271,5 +272,20 @@ func checkEvidence(ctx context.Context, r *report, root, only string, runs int) 
 	}
 	if total == 0 {
 		fmt.Println("PASS check evidence: no experiments yet")
+	}
+}
+
+func printPathSweepReport(sweep repocheck.PathSweep) {
+	for _, name := range sweep.Binary {
+		fmt.Printf("INFO check paths: binary file skipped: %s\n", name)
+	}
+	for _, name := range sweep.UpstreamCopies {
+		fmt.Printf("INFO check paths: unmodified upstream copy listed in SOURCES.sha256, not scanned: %s\n", name)
+	}
+	for _, name := range sweep.IgnoredButTracked {
+		fmt.Printf("INFO check paths: tracked although .gitignore matches it: %s\n", name)
+	}
+	for _, link := range sweep.External {
+		fmt.Printf("EXTERNAL %s (%d occurrence(s), first at %s)\n", link.URL, link.Count, link.Where)
 	}
 }
