@@ -1,0 +1,708 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"encoding/hex"
+	"fmt"
+	"math"
+	"math/rand/v2"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+
+	"github.com/nickstrad/sqlite-internals/internal/equal"
+	"github.com/nickstrad/sqlite-internals/internal/recipe"
+	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+)
+
+const (
+	pageSize    = 4096
+	shuffleSeed = 3
+)
+
+var failures []string
+
+func check(ok bool, claim string) {
+	status := "ok"
+	if !ok {
+		status = "FAILED"
+		failures = append(failures, claim)
+	}
+	fmt.Printf("check %s: %s\n", status, claim)
+}
+
+func fatal(what string, err error) {
+	fmt.Printf("FATAL %s: %v\n", what, err)
+	os.Exit(1)
+}
+
+func must[T any](value T, err error) func(string) T {
+	return func(what string) T {
+		if err != nil {
+			fatal(what, err)
+		}
+		return value
+	}
+}
+
+type row struct {
+	table   equal.TableInfo
+	columns []string
+	values  []any
+}
+
+type content struct {
+	schema      []string
+	rows        []row
+	userVersion int64
+}
+
+func readContent(ctx context.Context, path string) content {
+	db := must(equal.OpenExisting(ctx, path))("open " + filepath.Base(path))
+	defer db.Close()
+	var c content
+	rows := must(db.QueryContext(ctx, "SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY rowid"))("schema")
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			fatal("schema", err)
+		}
+		c.schema = append(c.schema, s)
+	}
+	rows.Close()
+	err := equal.WalkLogical(ctx, db, equal.LogicalVisitor{Row: func(t equal.TableInfo, values []any) error {
+		if strings.HasPrefix(t.Name, "sqlite_") {
+			return fmt.Errorf("table %s: this lab copies user tables only", t.Name)
+		}
+		c.rows = append(c.rows, row{table: t, values: values})
+		return nil
+	}})
+	if err != nil {
+		fatal("read rows", err)
+	}
+	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&c.userVersion); err != nil {
+		fatal("user_version", err)
+	}
+	return c
+}
+
+func insertSQL(t equal.TableInfo) string {
+	var names, marks []string
+	if !t.WithoutRowid {
+		names = append(names, t.RowidColumn)
+		marks = append(marks, "?")
+	}
+	for _, c := range t.Columns {
+		names = append(names, equal.QuoteIdentifier(c))
+		marks = append(marks, "?")
+	}
+	return fmt.Sprintf("INSERT INTO %s(%s) VALUES(%s)", equal.QuoteIdentifier(t.Name), strings.Join(names, ", "), strings.Join(marks, ", "))
+}
+
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func execOrDie(ctx context.Context, e execer, query string, args ...any) {
+	if _, err := e.ExecContext(ctx, query, args...); err != nil {
+		fatal(query, err)
+	}
+}
+
+func openBuild(ctx context.Context, path, mode string) *sqlitex.DB {
+	if err := recipe.RemoveDatabase(path); err != nil {
+		fatal("remove", err)
+	}
+	options := recipe.Default().WithJournalMode(mode).SQLiteOptions()
+	options.Conn.Synchronous = sqlitex.SyncOff
+	return must(sqlitex.Open(ctx, path, options))("open " + filepath.Base(path))
+}
+
+func buildOneTransaction(ctx context.Context, path, mode string, c content) {
+	db := openBuild(ctx, path, mode)
+	tx := must(db.BeginTx(ctx, nil))("begin")
+	for _, s := range c.schema {
+		execOrDie(ctx, tx, s)
+	}
+	for _, r := range c.rows {
+		execOrDie(ctx, tx, insertSQL(r.table), r.values...)
+	}
+	execOrDie(ctx, tx, fmt.Sprintf("PRAGMA user_version = %d", c.userVersion))
+	if err := tx.Commit(); err != nil {
+		fatal("commit", err)
+	}
+	if err := db.Close(); err != nil {
+		fatal("close", err)
+	}
+}
+
+func buildPerStatement(ctx context.Context, path, mode string, c content, order []int) {
+	db := openBuild(ctx, path, mode)
+	for _, s := range c.schema {
+		execOrDie(ctx, db, s)
+	}
+	for _, i := range order {
+		r := c.rows[i]
+		execOrDie(ctx, db, insertSQL(r.table), r.values...)
+	}
+	execOrDie(ctx, db, fmt.Sprintf("PRAGMA user_version = %d", c.userVersion))
+	if err := db.Close(); err != nil {
+		fatal("close", err)
+	}
+}
+
+func sqlLiteral(value any) string {
+	switch v := value.(type) {
+	case nil:
+		return "NULL"
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case float64:
+		switch {
+		case math.IsInf(v, 1):
+			return "1e999"
+		case math.IsInf(v, -1):
+			return "-1e999"
+		}
+		text := strconv.FormatFloat(v, 'g', -1, 64)
+		if !strings.ContainsAny(text, ".eEn") {
+			text += ".0"
+		}
+		return text
+	case string:
+		return "'" + strings.ReplaceAll(v, "'", "''") + "'"
+	case []byte:
+		return "X'" + strings.ToUpper(hex.EncodeToString(v)) + "'"
+	}
+	fatal("literal", fmt.Errorf("unsupported value %T", value))
+	return ""
+}
+
+func dump(ctx context.Context, path string) string {
+	db := must(equal.OpenExisting(ctx, path))("open " + filepath.Base(path))
+	defer db.Close()
+	conn := must(db.Conn(ctx))("conn")
+	defer conn.Close()
+	execOrDie(ctx, conn, "BEGIN")
+	defer conn.ExecContext(ctx, "COMMIT")
+	var tables, indexes, others []string
+	var body strings.Builder
+	var sequence []string
+	pragmas := map[string]string{}
+	err := equal.WalkLogical(ctx, conn, equal.LogicalVisitor{
+		Schema: func(r equal.SchemaRow) error {
+			if !r.SQL.Valid || strings.HasPrefix(r.Name, "sqlite_") {
+				return nil
+			}
+			switch r.Type {
+			case "table":
+				tables = append(tables, r.SQL.String+";")
+			case "index":
+				indexes = append(indexes, r.SQL.String+";")
+			default:
+				others = append(others, r.SQL.String+";")
+			}
+			return nil
+		},
+		Row: func(t equal.TableInfo, values []any) error {
+			literals := make([]string, len(values))
+			for i, v := range values {
+				literals[i] = sqlLiteral(v)
+			}
+			line := strings.Replace(insertSQL(t), strings.TrimSuffix(strings.Repeat("?, ", len(values)), ", "), strings.Join(literals, ", "), 1) + ";\n"
+			switch {
+			case t.Name == "sqlite_sequence":
+				sequence = append(sequence, line)
+			case strings.HasPrefix(t.Name, "sqlite_"):
+				return fmt.Errorf("table %s: this capture handles sqlite_sequence only", t.Name)
+			default:
+				body.WriteString(line)
+			}
+			return nil
+		},
+		Pragma: func(name, value string) error {
+			pragmas[name] = value
+			return nil
+		},
+	})
+	if err != nil {
+		fatal("dump", err)
+	}
+	var out strings.Builder
+	fmt.Fprintf(&out, "PRAGMA page_size=%s;\nPRAGMA auto_vacuum=%s;\nPRAGMA encoding='%s';\n", pragmas["page_size"], strings.ToUpper(pragmas["auto_vacuum"]), pragmas["encoding"])
+	if pragmas["journal_mode"] == "wal" {
+		out.WriteString("PRAGMA journal_mode=WAL;\n")
+	}
+	out.WriteString("BEGIN;\n")
+	for _, s := range tables {
+		out.WriteString(s + "\n")
+	}
+	out.WriteString(body.String())
+	if len(sequence) > 0 {
+		out.WriteString("DELETE FROM sqlite_sequence;\n")
+		for _, s := range sequence {
+			out.WriteString(s)
+		}
+	}
+	for _, s := range append(indexes, others...) {
+		out.WriteString(s + "\n")
+	}
+	fmt.Fprintf(&out, "PRAGMA user_version=%s;\nPRAGMA application_id=%s;\nCOMMIT;\n", pragmas["user_version"], pragmas["application_id"])
+	return out.String()
+}
+
+func replay(ctx context.Context, script, path string) {
+	if err := recipe.RemoveDatabase(path); err != nil {
+		fatal("remove", err)
+	}
+	uri := must(sqlitex.FileURI(path, url.Values{}))("uri")
+	db := must(sql.Open("sqlite", uri))("open")
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, script); err != nil {
+		fatal("replay", err)
+	}
+	if err := db.Close(); err != nil {
+		fatal("close", err)
+	}
+}
+
+func vacuumInto(ctx context.Context, source, target string) {
+	if err := recipe.RemoveDatabase(target); err != nil {
+		fatal("remove", err)
+	}
+	db := must(equal.OpenExisting(ctx, source))("open " + filepath.Base(source))
+	if _, err := db.ExecContext(ctx, "VACUUM INTO ?", target); err != nil {
+		fatal("vacuum into", err)
+	}
+	if err := db.Close(); err != nil {
+		fatal("close", err)
+	}
+}
+
+func backupCopy(ctx context.Context, source, target string) {
+	if err := recipe.RemoveDatabase(target); err != nil {
+		fatal("remove", err)
+	}
+	db := must(equal.OpenExisting(ctx, source))("open " + filepath.Base(source))
+	conn := must(db.Conn(ctx))("conn")
+	if _, err := sqlitex.Backup(ctx, conn, target, -1, nil); err != nil {
+		fatal("backup", err)
+	}
+	conn.Close()
+	if err := db.Close(); err != nil {
+		fatal("close", err)
+	}
+}
+
+func short(h string) string {
+	if len(h) > 16 {
+		return h[:16]
+	}
+	return h
+}
+
+type build struct {
+	name      string
+	how       string
+	path      string
+	sha       string
+	logical   equal.Logical
+	dumpSHA   string
+	dbhash    string
+	canonical string
+	canonSHA  string
+}
+
+func atRest(path string) {
+	if err := recipe.CheckAtRest(path); err != nil {
+		fatal("at rest", err)
+	}
+}
+
+func locateDBHash() string {
+	tool, err := equal.LocateDBHash()
+	if err != nil {
+		fmt.Printf("NO-DBHASH: %v; the dbhash column is skipped (build it with: go run ./cmd/course build-tools)\n", err)
+		return ""
+	}
+	fmt.Printf("INFO: dbhash %s\n", displayPath(tool))
+	fmt.Println("dbhash: found (built from the pinned tree; it prints a SHA1 of the schema and every row it reads)")
+	return tool
+}
+
+func dbhashOf(ctx context.Context, tool, path string) string {
+	if tool == "" {
+		return "-"
+	}
+	h := must(equal.RunDBHash(ctx, tool, path))("dbhash " + filepath.Base(path))
+	atRest(path)
+	return h
+}
+
+func distinct(values []string) int {
+	seen := map[string]bool{}
+	for _, v := range values {
+		seen[v] = true
+	}
+	return len(seen)
+}
+
+func partA(ctx context.Context, dir, tool string) content {
+	fmt.Println()
+	fmt.Println("== A. the same final rows built four ways, then captured as an ordered logical dump and replayed (rung R2)")
+	r0 := filepath.Join(dir, "builds", "r0.db")
+	if err := os.MkdirAll(filepath.Dir(r0), 0o755); err != nil {
+		fatal("mkdir", err)
+	}
+	r := recipe.Default()
+	if err := r.Build(ctx, r0, r.Steps); err != nil {
+		fatal("build R0", err)
+	}
+	c := readContent(ctx, r0)
+	perTable := map[string]int{}
+	for _, row := range c.rows {
+		perTable[row.table.Name]++
+	}
+	fmt.Printf("content of R0 (recipe seed 1, 30 steps of inserts, updates and deletes): %d schema statements, rows accounts=%d documents=%d events=%d, user_version %d\n", len(c.schema), perTable["accounts"], perTable["documents"], perTable["events"], c.userVersion)
+	builds := []*build{{name: "r0", how: "the recipe: 31 transactions with updates and deletes, index created at step 5"}}
+	builds[0].path = r0
+	oneTx := filepath.Join(dir, "builds", "one-transaction.db")
+	buildOneTransaction(ctx, oneTx, "wal", c)
+	builds = append(builds, &build{name: "one-transaction", how: "schema and every row in one transaction, tables in order, ids ascending", path: oneTx})
+	perStatement := filepath.Join(dir, "builds", "per-statement.db")
+	inOrder := make([]int, len(c.rows))
+	for i := range inOrder {
+		inOrder[i] = i
+	}
+	buildPerStatement(ctx, perStatement, "wal", c, inOrder)
+	builds = append(builds, &build{name: "per-statement", how: "the same order, one transaction per statement", path: perStatement})
+	shuffled := filepath.Join(dir, "builds", "shuffled.db")
+	order := append([]int(nil), inOrder...)
+	rng := rand.New(rand.NewPCG(shuffleSeed, 0))
+	rng.Shuffle(len(order), func(i, j int) { order[i], order[j] = order[j], order[i] })
+	buildPerStatement(ctx, shuffled, "wal", c, order)
+	builds = append(builds, &build{name: "shuffled", how: fmt.Sprintf("one transaction per row, rows of all tables in a shuffled order (PCG seed %d)", shuffleSeed), path: shuffled})
+
+	captureDir := filepath.Join(dir, "capture")
+	if err := os.MkdirAll(captureDir, 0o755); err != nil {
+		fatal("mkdir", err)
+	}
+	script := dump(ctx, r0)
+	dumpPath := filepath.Join(captureDir, "r0.sql")
+	if err := os.WriteFile(dumpPath, []byte(script), 0o644); err != nil {
+		fatal("write dump", err)
+	}
+	lines := strings.Split(strings.TrimSuffix(script, "\n"), "\n")
+	fmt.Printf("capture: %s, %d bytes, %d lines, sha256 %s\n", "capture/r0.sql", len(script), len(lines), equal.SHA256Hex([]byte(script)))
+	for i, line := range lines {
+		if i < 9 || i >= len(lines)-4 {
+			if len(line) > 140 {
+				line = line[:140] + "..."
+			}
+			fmt.Printf("  %s\n", line)
+		} else if i == 9 {
+			fmt.Printf("  ... (%d INSERT lines)\n", len(lines)-13)
+		}
+	}
+	replayed := filepath.Join(dir, "builds", "replayed.db")
+	replay(ctx, string(must(os.ReadFile(dumpPath))("read dump")), replayed)
+	builds = append(builds, &build{name: "replayed", how: "the capture file replayed into an empty file (indexes created after the rows)", path: replayed})
+	backup := filepath.Join(dir, "builds", "backup.db")
+	backupCopy(ctx, r0, backup)
+	builds = append(builds, &build{name: "backup", how: "sqlite3_backup of R0 (a page copy, for the E2 row)", path: backup})
+
+	canonicalDir := filepath.Join(dir, "canonical")
+	if err := os.MkdirAll(canonicalDir, 0o755); err != nil {
+		fatal("mkdir", err)
+	}
+	for _, b := range builds {
+		atRest(b.path)
+		b.sha = must(equal.FileSHA256(b.path))("hash")
+		b.logical = must(equal.LogicalHashFile(ctx, b.path))("logical hash " + b.name)
+		atRest(b.path)
+		b.dumpSHA = equal.SHA256Hex([]byte(dump(ctx, b.path)))
+		b.dbhash = dbhashOf(ctx, tool, b.path)
+		b.canonical = filepath.Join(canonicalDir, b.name+".db")
+		vacuumInto(ctx, b.path, b.canonical)
+		atRest(b.path)
+		atRest(b.canonical)
+		b.canonSHA = must(equal.FileSHA256(b.canonical))("hash")
+		if again := must(equal.FileSHA256(b.path))("hash"); again != b.sha {
+			fatal("hash", fmt.Errorf("%s changed while it was hashed", b.name))
+		}
+	}
+	fmt.Println("builds:")
+	for _, b := range builds {
+		info := must(os.Stat(b.path))("stat")
+		fmt.Printf("  %-16s %s; %d bytes\n", b.name, b.how, info.Size())
+	}
+	fmt.Println("each build against R0 (E1 = file sha256, E2 = page diff ignoring header bytes 24-27, 40-43, 92-99, E3 = logical hash + integrity_check + foreign_key_check):")
+	fmt.Printf("  %-16s %-16s %-44s %-44s %s\n", "build", "sha256", "E1 vs r0", "E2 vs r0", "E3 vs r0")
+	var shas, logicals, dumps, hashes, canon []string
+	for _, b := range builds {
+		e1 := must(equal.CompareFiles(r0, b.path, pageSize))("E1")
+		e2 := must(equal.ComparePageFiles(r0, b.path, pageSize))("E2")
+		e3 := equal.CompareLogical(builds[0].logical, b.logical)
+		fmt.Printf("  %-16s %-16s %-44s %-44s %s\n", b.name, short(b.sha), verdict(e1), verdict(e2), logicalVerdict(e3))
+		if b.name != "backup" {
+			shas = append(shas, b.sha)
+		}
+		logicals = append(logicals, b.logical.SHA256)
+		dumps = append(dumps, b.dumpSHA)
+		hashes = append(hashes, b.dbhash)
+		canon = append(canon, b.canonSHA)
+		if b.name == "backup" {
+			check(!e1.Equal && e2.Equal, fmt.Sprintf("the backup copy differs from R0 in bytes (%s) but is equal at E2: only declared header bytes differ", e2))
+		}
+	}
+	fmt.Println("the same builds, logically and canonically:")
+	fmt.Printf("  %-16s %-16s %-16s %-40s %s\n", "build", "logical sha256", "dump sha256", "dbhash", "VACUUM INTO sha256")
+	for _, b := range builds {
+		fmt.Printf("  %-16s %-16s %-16s %-40s %s\n", b.name, short(b.logical.SHA256), short(b.dumpSHA), b.dbhash, short(b.canonSHA))
+	}
+	fmt.Printf("logical hash of R0: %s\n", builds[0].logical.Summary())
+	fmt.Printf("distinct file sha256 among r0, one-transaction, per-statement, shuffled, replayed: %d\n", distinct(shas))
+	check(builds[1].sha == builds[2].sha, "in WAL mode one transaction and one transaction per statement give byte-identical files: commit boundaries alone leave no trace when rows are only appended")
+	check(builds[3].sha != builds[1].sha && builds[0].sha != builds[1].sha && builds[0].sha != builds[3].sha, "insert order (shuffled) and history (R0's updates and deletes) each give a different file")
+	check(distinct(logicals) == 1, "every build has the same logical hash")
+	allE3 := true
+	for _, b := range builds {
+		if !equal.CompareLogical(builds[0].logical, b.logical).Equal {
+			allE3 = false
+		}
+	}
+	check(allE3, "every build is equal to R0 at E3 (logical hash, integrity_check ok, foreign_key_check unchanged)")
+	check(distinct(dumps) == 1, "the ordered logical capture is itself identical for every build: the capture depends on content, not history")
+	check(distinct(canon[:5]) == 1, "after VACUUM INTO every build, the replayed copy included, has the same sha256 (E1 between canonical forms)")
+	backupCanon := builds[5].canonical
+	ce1 := must(equal.CompareFiles(builds[0].canonical, backupCanon, pageSize))("E1")
+	ce2 := must(equal.ComparePageFiles(builds[0].canonical, backupCanon, pageSize))("E2")
+	fmt.Printf("canonical form of the backup vs of R0: E1 %s; E2 %s; schema cookies %s\n", verdict(ce1), verdict(ce2), cookies(builds[0].canonical, backupCanon))
+	check(!ce1.Equal && ce2.Equal && fmt.Sprint(ce2.IgnoredDiffering) == "[43]", "except the backup copy: the backup API sets the copy's schema cookie to (old destination cookie + 1) = 1 (backup.c:448), VACUUM INTO carries the cookie + 1, so its canonical form differs at byte 43 only")
+	if tool != "" {
+		check(distinct(hashes) == 1, "dbhash from the pinned tree also calls every build equal: it agrees with our logical hash on equality")
+	}
+	fmt.Printf("canonical form: %s\n", canonicalHeader(builds[0].canonical))
+	ok := true
+	for _, b := range builds {
+		l := must(equal.LogicalHashFile(ctx, b.canonical))("logical hash")
+		if l.SHA256 == b.logical.SHA256 {
+			ok = false
+		}
+		withoutMode := sameExceptJournalMode(b.logical, l)
+		if !withoutMode {
+			ok = false
+		}
+	}
+	check(ok, "VACUUM INTO keeps every row, the schema and user_version/application_id, but writes a rollback-mode file: its logical hash differs from the source only in journal_mode")
+	return c
+}
+
+func rollbackPair(ctx context.Context, dir string, c content) {
+	fmt.Println()
+	fmt.Println("== A2. the same two batchings in rollback mode (journal_mode=DELETE)")
+	one := filepath.Join(dir, "builds", "rollback-one-transaction.db")
+	per := filepath.Join(dir, "builds", "rollback-per-statement.db")
+	buildOneTransaction(ctx, one, "delete", c)
+	order := make([]int, len(c.rows))
+	for i := range order {
+		order[i] = i
+	}
+	buildPerStatement(ctx, per, "delete", c, order)
+	atRest(one)
+	atRest(per)
+	e1 := must(equal.CompareFiles(one, per, pageSize))("E1")
+	e2 := must(equal.ComparePageFiles(one, per, pageSize))("E2")
+	ia, ib := must(os.ReadFile(one))("read"), must(os.ReadFile(per))("read")
+	fmt.Printf("one transaction vs one per statement: E1 %s; E2 %s; change counters %d and %d\n", verdict(e1), verdict(e2), be32(ia[24:28]), be32(ib[24:28]))
+	check(!e1.Equal && e2.Equal, "in rollback mode the batching shows, but only in the change counter (bytes 24-27 and 92-95 count commits): E2 equal")
+}
+
+func sameExceptJournalMode(a, b equal.Logical) bool {
+	diff := equal.CompareLogical(a, b)
+	return len(diff.Differences) == 1 && strings.HasPrefix(diff.Differences[0], "pragma journal_mode")
+}
+
+func canonicalHeader(path string) string {
+	image := must(os.ReadFile(path))("read")
+	return fmt.Sprintf("%d bytes, header bytes 18-19 = %d,%d (1 = rollback journal), change counter %d, schema cookie %d",
+		len(image), image[18], image[19], be32(image[24:28]), be32(image[40:44]))
+}
+
+func be32(b []byte) uint32 {
+	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
+}
+
+func verdict(r equal.Result) string {
+	switch {
+	case r.Equal && len(r.IgnoredDiffering) > 0:
+		return fmt.Sprintf("equal except header bytes %v", r.IgnoredDiffering)
+	case r.Equal:
+		return "equal"
+	case r.SizeA != r.SizeB:
+		return fmt.Sprintf("differ (%d pages differ, sizes differ)", r.DifferingPages)
+	}
+	return fmt.Sprintf("differ (%d of %d pages)", r.DifferingPages, r.SizeA/int64(r.PageSize))
+}
+
+func logicalVerdict(r equal.LogicalResult) string {
+	if r.Equal {
+		return "equal"
+	}
+	return "differ: " + strings.Join(r.Differences, "; ")
+}
+
+func newDB(ctx context.Context, path string, statements ...string) string {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		fatal("mkdir", err)
+	}
+	if err := recipe.RemoveDatabase(path); err != nil {
+		fatal("remove", err)
+	}
+	options := sqlitex.DefaultOptions()
+	options.SingleConnection = true
+	options.Conn.SecureDelete = true
+	db := must(sqlitex.Open(ctx, path, options))("open")
+	for _, s := range statements {
+		execOrDie(ctx, db, s)
+	}
+	if err := db.Close(); err != nil {
+		fatal("close", err)
+	}
+	atRest(path)
+	return path
+}
+
+type pair struct {
+	name   string
+	a, b   []string
+	ours   string
+	dbhash bool
+}
+
+func partB(ctx context.Context, dir, tool string) {
+	fmt.Println()
+	fmt.Println("== B. pairs that differ in content where a weaker logical hash says equal")
+	pairs := []pair{
+		{"implicit rowids (1,2 vs 5,9)", []string{"CREATE TABLE t(v TEXT)", "INSERT INTO t(rowid, v) VALUES(1, 'x'), (2, 'y')"}, []string{"CREATE TABLE t(v TEXT)", "INSERT INTO t(rowid, v) VALUES(5, 'x'), (9, 'y')"}, "table t differs", true},
+		{"sqlite_sequence (1 vs 2)", []string{"CREATE TABLE t(id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT)", "INSERT INTO t(v) VALUES('x')"}, []string{"CREATE TABLE t(id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT)", "INSERT INTO t(v) VALUES('x')", "INSERT INTO t(v) VALUES('y')", "DELETE FROM t WHERE id = 2"}, "table sqlite_sequence differs", true},
+		{"user_version (1 vs 2)", []string{"CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT)", "INSERT INTO t VALUES(1, 'x')", "PRAGMA user_version = 1"}, []string{"CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT)", "INSERT INTO t VALUES(1, 'x')", "PRAGMA user_version = 2"}, "pragma user_version 1 vs 2", true},
+		{"integer 1 vs real 1.0", []string{"CREATE TABLE t(id INTEGER PRIMARY KEY, v)", "INSERT INTO t VALUES(1, 1)"}, []string{"CREATE TABLE t(id INTEGER PRIMARY KEY, v)", "INSERT INTO t VALUES(1, 1.0)"}, "table t differs", false},
+		{"value boundary ('a3','b' vs 'a','3b')", []string{"CREATE TABLE t(id INTEGER PRIMARY KEY, a TEXT, b TEXT)", "INSERT INTO t VALUES(1, 'a3', 'b')"}, []string{"CREATE TABLE t(id INTEGER PRIMARY KEY, a TEXT, b TEXT)", "INSERT INTO t VALUES(1, 'a', '3b')"}, "table t differs", true},
+		{"row moved between tables", []string{"CREATE TABLE a(v TEXT)", "CREATE TABLE b(v TEXT)", "INSERT INTO a(rowid, v) VALUES(1, 'x'), (2, 'y')", "INSERT INTO b(rowid, v) VALUES(1, 'z')"}, []string{"CREATE TABLE a(v TEXT)", "CREATE TABLE b(v TEXT)", "INSERT INTO a(rowid, v) VALUES(1, 'x')", "INSERT INTO b(rowid, v) VALUES(1, 'y'), (2, 'z')"}, "table a differs", true},
+	}
+	fmt.Printf("  %-40s %-6s %-6s %s\n", "pair", "ours", "dbhash", "our first difference")
+	for i, p := range pairs {
+		a := newDB(ctx, filepath.Join(dir, "pairs", fmt.Sprintf("%d-a.db", i+1)), p.a...)
+		b := newDB(ctx, filepath.Join(dir, "pairs", fmt.Sprintf("%d-b.db", i+1)), p.b...)
+		result, _, _, err := equal.CompareLogicalFiles(ctx, a, b)
+		if err != nil {
+			fatal("compare", err)
+		}
+		dbhashVerdict := "-"
+		if tool != "" {
+			ha, hb := dbhashOf(ctx, tool, a), dbhashOf(ctx, tool, b)
+			dbhashVerdict = sameWord(ha == hb)
+			check((ha == hb) == p.dbhash, fmt.Sprintf("%s: dbhash says %s", p.name, dbhashVerdict))
+		}
+		first := ""
+		if len(result.Differences) > 0 {
+			first = result.Differences[0]
+		}
+		fmt.Printf("  %-40s %-6s %-6s %s\n", p.name, sameWord(result.Equal), dbhashVerdict, first)
+		check(!result.Equal && strings.Contains(first, p.ours), fmt.Sprintf("%s: our logical hash tells the two apart", p.name))
+	}
+	fmt.Println("  sqldiff is not built by build-tools; the research probe found it reports integer 1 and real 1.0 as equal (docs/knowledge/determinism-and-rebuild.md, Q4)")
+}
+
+func sameWord(equalValues bool) string {
+	if equalValues {
+		return "equal"
+	}
+	return "differ"
+}
+
+func partC(ctx context.Context, dir, tool string) {
+	fmt.Println()
+	fmt.Println("== C. where VACUUM INTO stops being a canonical form")
+	cases := []struct {
+		name string
+		a, b []string
+	}{
+		{"tables created in another order", []string{"CREATE TABLE a(id INTEGER PRIMARY KEY, v TEXT)", "CREATE TABLE b(id INTEGER PRIMARY KEY, v TEXT)", "INSERT INTO a VALUES(1, 'x')", "INSERT INTO b VALUES(1, 'y')"},
+			[]string{"CREATE TABLE b(id INTEGER PRIMARY KEY, v TEXT)", "CREATE TABLE a(id INTEGER PRIMARY KEY, v TEXT)", "INSERT INTO a VALUES(1, 'x')", "INSERT INTO b VALUES(1, 'y')"}},
+		{"a table created and dropped in the history", []string{"CREATE TABLE a(id INTEGER PRIMARY KEY, v TEXT)", "INSERT INTO a VALUES(1, 'x')"},
+			[]string{"CREATE TABLE a(id INTEGER PRIMARY KEY, v TEXT)", "CREATE TABLE scratch(x)", "DROP TABLE scratch", "INSERT INTO a VALUES(1, 'x')"}},
+		{"an index created before vs after the rows", []string{"CREATE TABLE a(id INTEGER PRIMARY KEY, v TEXT)", "CREATE INDEX a_v ON a(v)", "INSERT INTO a VALUES(1, 'x'), (2, 'y')"},
+			[]string{"CREATE TABLE a(id INTEGER PRIMARY KEY, v TEXT)", "INSERT INTO a VALUES(1, 'x'), (2, 'y')", "CREATE INDEX a_v ON a(v)"}},
+	}
+	for i, c := range cases {
+		a := newDB(ctx, filepath.Join(dir, "limits", fmt.Sprintf("%d-a.db", i+1)), c.a...)
+		b := newDB(ctx, filepath.Join(dir, "limits", fmt.Sprintf("%d-b.db", i+1)), c.b...)
+		e3, _, _, err := equal.CompareLogicalFiles(ctx, a, b)
+		if err != nil {
+			fatal("compare", err)
+		}
+		ca, cb := strings.TrimSuffix(a, ".db")+"-vacuum.db", strings.TrimSuffix(b, ".db")+"-vacuum.db"
+		vacuumInto(ctx, a, ca)
+		vacuumInto(ctx, b, cb)
+		e1 := must(equal.CompareFiles(ca, cb, pageSize))("E1")
+		e2 := must(equal.ComparePageFiles(ca, cb, pageSize))("E2")
+		fmt.Printf("  %s: sources at E3: %s; VACUUM INTO outputs at E1: %s; at E2: %s; schema cookies %s\n", c.name, logicalVerdict(e3), verdict(e1), verdict(e2), cookies(ca, cb))
+		if tool != "" {
+			fmt.Printf("    dbhash of the sources: %s\n", sameWord(dbhashOf(ctx, tool, a) == dbhashOf(ctx, tool, b)))
+		}
+		switch i {
+		case 0:
+			check(e3.Equal && !e1.Equal && !e2.Equal, "same content, tables created in another order: logically equal, but VACUUM INTO copies tables in sqlite_schema order, so the canonical files differ beyond the header")
+		case 1:
+			check(e3.Equal && !e1.Equal && e2.Equal, "a schema change that left no trace in the content still raises the schema cookie, and VACUUM INTO carries the cookie (+1): the canonical files differ only at bytes 40-43")
+		case 2:
+			check(e3.Equal && e1.Equal, "an index built before or after the rows canonicalizes to the same bytes: VACUUM INTO rebuilds every index")
+		}
+	}
+}
+
+func cookies(a, b string) string {
+	ia, ib := must(os.ReadFile(a))("read"), must(os.ReadFile(b))("read")
+	return fmt.Sprintf("%d and %d", be32(ia[40:44]), be32(ib[40:44]))
+}
+
+func main() {
+	ctx := context.Background()
+	sqlitex.MustPinCheckMemory(ctx)
+	dir := sqlitex.MustWorkDir("3.3")
+	fmt.Printf("INFO: work dir %s\n", displayPath(dir))
+	tool := locateDBHash()
+	c := partA(ctx, dir, tool)
+	rollbackPair(ctx, dir, c)
+	partB(ctx, dir, tool)
+	partC(ctx, dir, tool)
+	fmt.Println()
+	if len(failures) > 0 {
+		fmt.Printf("SAME ROWS FAILED: %d claim(s) did not hold\n", len(failures))
+		for _, f := range failures {
+			fmt.Printf("  - %s\n", f)
+		}
+		os.Exit(1)
+	}
+	fmt.Println("SAME ROWS OK")
+}
+
+func displayPath(path string) string {
+	root, err := sqlitex.RepoRoot()
+	if err != nil {
+		return path
+	}
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	relative, err := filepath.Rel(root, path)
+	if err != nil || strings.HasPrefix(relative, "..") {
+		return path
+	}
+	return filepath.ToSlash(relative)
+}
