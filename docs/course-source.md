@@ -1,6 +1,6 @@
 # SQLite Internals — AI-Guided Source Study Course
 
-Source: Nick's Google Doc (document ID 1Pu-RHTNmXu0ldjE7hPGbzxHmjXG3cn4tdBtKM58pa1A), read by Twin 2026-11-20. This file is the faithful text of that doc and is the course spec.
+Source: Nick's original course specification, copied 2026-11-20. This file is the faithful text of that document and is the course spec.
 
 Subtitle: A source-verified, experiment-driven curriculum for building platforms that manage many SQLite databases.
 

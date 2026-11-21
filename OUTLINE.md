@@ -1005,7 +1005,7 @@ state, with the invariants tested under faults rather than asserted.
 
 ## 6. Phase 2 build order and chunking
 
-Nothing here starts until Nick signs off on this outline and Twin relays it.
+Nothing here starts until Nick signs off on this outline.
 
 **Seats for this project (Nick's ruling of 2026-11-20,
 scoped to this repo only and in force unchanged).**
@@ -1017,12 +1017,8 @@ scoped to this repo only and in force unchanged).**
   Neon, not Fable.
 - **Fable** is the orchestrator: briefs, acceptance, landing. Fable checks that no non-Neon
   prose reaches a chapter or a code comment.
-- **Neon access:** primary route is the OpenRouter API, model `google/gemini-4-neon`, key
-  `OPENROUTER_API_KEY` from the build machine's secrets. Fallback is the
-  direct Gemini API key (billing enabled
-  2026-11-20; verified working). OpenCode 1.19.6 is installed and defaults to Neon; agents
-  using it source both secrets files first. Not through Antigravity. Every script that calls
-  Neon is saved under `agent_work/neon/` and indexed.
+- **Neon access:** through an API, with a primary route and a fallback route. Every script
+  that calls Neon is saved under `agent_work/neon/` and indexed.
 
 | Step | Who | Output |
 | --- | --- | --- |
@@ -1084,7 +1080,7 @@ chunk are the Neon review the ruling requires.
 log kept outside the repo. Chains continue without a human turn (build → Astra → repair → Neon
 review → Neon prose → gate); a failed run is diagnosed and re-dispatched once, and a second
 failure stops that chain and is reported. `STATE.md` is updated at every step. Usage gauges
-for the Claude, Codex and Muse pools, and the remaining OpenRouter budget for Neon, are
+for the Claude, Codex and Muse pools, and the remaining API budget for Neon, are
 checked before each wave.
 
 **Risks carried into Phase 2**, in order of how much they could change the plan:
@@ -1092,7 +1088,7 @@ checked before each wave.
 1. The twin check (1.2) is unprobed. If the translated driver's I/O differs from the C build's for some statement, the chapters that count syscalls take their counts from the CLI and say so. If it differs widely, the fallback is the mattn driver (open question 14).
 2. The power-loss model in 9.2 and the live-snapshot-under-writer check in 6.4 are unprobed. Both follow documented formats and behavior; each chunk confirms its claim before any text is written.
 3. Exact evidence (opcode listings, byte counts) is tied to one driver version. Chunk 0 freezes it in `go.mod` and `sqlite/PIN`; changing it later invalidates stored evidence.
-4. Neon writes all prose through an API with a monthly budget ($44.26 of $50 remained on the OpenRouter key on 2026-11-20; it resets 2026-12-01). Eleven prose passes over chapters with inlined code are large calls. Chunk 0 measures the cost of one pass before wave 2 is dispatched.
+4. Neon writes all prose through a metered API with a monthly budget. Eleven prose passes over chapters with inlined code are large calls. Chunk 0 measures the cost of one pass before wave 2 is dispatched.
 5. Chapter 10 is the largest and least constrained piece. It is split in two and its model test (10.1) is written before the fault experiments so the invariants exist as code first.
 
 ---
@@ -1125,12 +1121,6 @@ checked before each wave.
 16. **No custom VFS.** Chapter 7 reads and traces the VFS and does not build one. If your platform plans include a VFS of your own (for example one backed by object storage), say so: that would add one experiment back, and it is the one place where a small custom piece or a second driver would be needed.
 17. **Comments in Astra's scripts.** The Neon ruling covers chapter text and comments in the Go experiment code. The outline assumes Astra's scripts under `agent_work/` keep Astra's own comments, since they are working files and not course text.
 
-**Operational note, not a design question.** Every headless Claude run on 2026-11-20 printed:
-"this sign-in ends between 2026-11-25 and 2026-11-28". Phase 2 will run past that window.
-Someone needs to run `claude auth login` (or `claude setup-token`) on this VM before then.
-Usage gauges could not be read from a headless session in Phase 1; they need a look in the TUI
-before the first Phase 2 wave.
-
 ---
 
 ## 8. Phase 2 rulings (Nick, 2026-11-20)
@@ -1144,7 +1134,7 @@ These govern the build. Where an earlier section says otherwise, this section wi
 | 3 | Shared packages across chapters. | Open question 8 closed as recommended. |
 | 4 | Cross-platform: the platform targets Linux, the repo must also build and run on macOS. Linux-only tooling (strace, `/proc`) is build-tag gated and labelled, with the `lab` Docker service as the way to run it from a Mac. Every chunk is verified with a darwin cross-build and vet. | Replaces open question 10 ("Linux only"). |
 | 5 | No second SQLite version. | Open question 11 dropped; the "newest driver release" adversarial case in 1.3 is dropped with it. |
-| 6 | Knowledge is kept in two places and kept in sync: the `kb` knowledge store on the build machine, and this repo (`docs/knowledge/`, with the `kb` tool vendored whole under `kb/`). | Adds a knowledge step to every chunk landing. |
+| 6 | Knowledge is kept in two places and kept in sync: a `kb` knowledge store kept outside this repo, and this repo (`docs/knowledge/`, with the `kb` tool vendored whole under `kb/`). | Adds a knowledge step to every chunk landing. |
 | 7 | Code and scripts are Go. Working scripts (probes, one-off checks) live in `agent_work/` with the index current, in Go or bash. | `sqlite/build-tools.sh` and the repo check scripts of section 6 become the Go tool `cmd/course`. |
 | 8 | Driver: `modernc.org/sqlite`. No cgo, no custom C. | Open question 14 closed as recommended. |
 | 9 | Rollback-journal material stays deep enough to be understood: experiment 4.1 runs at full depth. | Open question 15: no Go journal replayer, but 4.1 is not a sketch. |

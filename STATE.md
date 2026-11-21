@@ -7,10 +7,12 @@ deterministically, well enough to build platforms holding thousands of SQLite fi
 can be remade as needed; state capture and deterministic rebuild is the through-line.
 Plan: OUTLINE.md (revision 2). What changed from revision 1: OUTLINE-CHANGES.md.
 
-Status: **Phase 2 (build) IN PROGRESS** since 2026-11-20. Nick signed off OUTLINE.md revision 2
-with rulings (OUTLINE.md section 8). Chunks 0, 1 and 2 have landed. Neon credit was restored
-2026-11-20 23:30 UTC (direct Gemini route; OpenRouter stays empty until 2026-12-01) and all Neon
-stages are running again since 2026-11-21 00:45 UTC.
+Status: **Phase 2 (build) IN PROGRESS** since 2026-11-20. Chunk 0, chapters 1–9 and the capstone
+service core (10a) have landed. **BLOCKED on Neon since 2026-11-21 07:27 UTC**: the direct Gemini
+route answers "Your project is temporarily rate-limited to prevent exceeding its monthly
+spending cap" and OpenRouter is empty until 2026-12-01 (see blockers). Everything left needs
+Neon: 10b review, attacks, re-review and the chapter 10 text; the publishing chunk's README and
+comments.
 
 Rulings applied (details: OUTLINE.md section 8):
 - Upstream github.com/nickstrad/sqlite-internals (public); every chunk lands on main and is pushed.
@@ -23,9 +25,15 @@ Rulings applied (details: OUTLINE.md section 8):
 - Go for all code and scripts; working scripts in `agent_work/` (Go or bash), indexed.
 - Driver modernc.org/sqlite v1.60.1, no cgo/C. Rollback experiment 4.1 at full depth.
 - WAL is the platform default; per-chapter evaluation:
+  - Chapter 3: WAL holds. All experiment databases are WAL except 3.1 part D and 3.3 part A2
+    (rollback mode shown as the contrast). WAL frames serve as the independent record of which
+    pages a write changed.
   - Chapter 4: 4.1 is rollback mode by subject (the planned exception, ruling 9). The platform
     stays WAL; 4.1 shows the two places a WAL platform still meets rollback mode: files created
     or imported without the WAL switch, and the switch commit itself. 4.2 runs in WAL.
+  - Chapter 3: WAL holds. All experiment databases are WAL except 3.1 part D and 3.3 part A2
+    (rollback mode shown as the contrast). WAL frames serve as the independent record of which
+    pages a write changed.
   - Chapter 4: 4.1 is rollback mode by subject (the planned exception, ruling 9). The platform
     stays WAL; 4.1 shows the two places a WAL platform still meets rollback mode: files created
     or imported without the WAL switch, and the switch commit itself. 4.2 runs in WAL.
@@ -34,8 +42,19 @@ Rulings applied (details: OUTLINE.md section 8):
     part of the database while any connection is open, never ship `-shm`, watch WAL size,
     detect WAL generations by salt change. Exception from the source (not tested): no WAL on
     network filesystems (shared memory needed).
+  - Chapter 6: WAL holds and the evidence favours it for concurrency; rollback mode appears
+    only as the contrast (6.1 A, 6.2 D, 6.3 B). Caveat recorded in the chapter:
+    `locking_mode=EXCLUSIVE` breaks "the writer never blocks readers".
   - Chapter 7: WAL holds. Care points: a custom VFS must implement the shared-memory methods
     (io_methods version 2) or `journal_mode=wal` silently stays `delete`.
+  - Chapter 9: WAL holds; no experiment runs in rollback mode. WAL allows live capture
+    without stopping the writer (9.1) and segment shipping (9.4). Recorded conditions: at
+    `synchronous=NORMAL` a power cut loses the commits since the last checkpoint (FULL loses
+    none); `VACUUM INTO` of a WAL database yields a rollback-mode file.
+  - Chapter 8: WAL holds, with measured costs and conditions: 3 descriptors per idle connection
+    instead of 1, and a closed WAL database is NOT a single file at rest in five cases (another
+    process has it open, a statement left open, a killed writer, persist-WAL, a rename while
+    open) — the chapter's `CheckAtRest` is the rule before any copy.
 - VFS viability verdict: **VIABLE** (probe `agent_work/probes/vfs-viability/RESULT.md`, chunk 0): a
   writable Go forwarding VFS registers with modernc in pure Go; read-only `fs.FS` VFS also works.
   Chapter 7 gains experiments 7.3 (Go VFS shim: call counts + fault injection) and 7.4
@@ -70,42 +89,49 @@ Done:
   kb location `.kb/`, orchestration and Neon scripts (`agent_work/orch`, `agent_work/neon`),
   rulings recorded in OUTLINE.md section 8.
 
-Chunk status (build → Neon prose → Neon review → repair → re-review → adversarial → accept → land):
+Chunk status. Pipeline per chunk: Opus build → Neon review + Neon adversarial → one Opus
+repair → Neon re-review → Neon closing prose → acceptance gate → merge and push. Chunks 0, 1, 2,
+4 and 7 ran the older order (prose before review) and closed with a Neon closing rewrite.
 
 | Chunk | State | Review | Adversarial | Landed |
 | --- | --- | --- | --- | --- |
 | 0 foundation | done | Neon FAIL → repair → PASS | 38 held / 0 broken | merged cf58cb8 |
 | 1 chapter 1 | done | Neon FAIL → one Opus repair → PASS | 48 held / 0 broken after repair (run 1: 11 broken; claims narrowed) | merged 2dcf743 |
 | 2 chapter 2 | done | Neon FAIL → one Opus repair → PASS | 36 held / 0 broken after repair (run 1: 14 broken) | merged 68afd03 |
-| 2, 3, 4, 5, 7, 6, 8, 9, 10a, 10b, publishing | not started | | | |
-
-Where each open chunk stands (worktrees `../sqlite-internals-work/<name>`, branches
-`chunk/<name>`; chain logs `sqlite-p2-<name>-chainA.log` / `-chainB.log` in the run directory;
-a finished part A leaves `sqlite-p2-<name>.stageA`, a finished part B `sqlite-p2-<name>-accept.txt`):
-
-| Chunk | State (2026-11-21 01:45 UTC) |
-| --- | --- |
-| 3 | part A: review NITS, run 1 16 held / 14 broken; Opus repair running |
-| 6 | part A: review FAIL, run 1 43 held / 6 broken; Opus repair running |
-| 8 | part A running (review + adversarial) |
-| 9 | built (e825529, base = 6 + 3 merged); part A not started |
-| 10a, 10b | to build after 8 and 9 finish part A |
-| pub | site generator + workflow built on `chunk/pub` (5bf7893), not on main; README/home text, review, adversarial still to do; lands last after the self-contained sweep |
-| 1 closing rewrite | done (66fca8e, merged) |
+| 3 chapter 3 | done | Neon NITS → one Opus repair → PASS | 30 held / 0 broken after repair (run 1: 14 broken) | merged 4e1e290 |
 | 4 chapter 4 | done | Neon FAIL → one Opus repair → NITS | 32 held / 0 broken after repair (run 1: 12 broken) | merged f500664 |
-| 2 closing rewrite | done (dd5a9b4, merged) |
+| 5 chapter 5 | done | Neon FAIL → one Opus repair → PASS | 28 held / 0 broken after repair (run 1: 7 broken) | merged 2629fec |
+| 6 chapter 6 | done | Neon FAIL → one Opus repair → PASS | 49 held / 0 broken after repair (run 1: 6 broken) | merged e4af9e0 |
+| 7 chapter 7 | done | Neon FAIL → one Opus repair → PASS | 34 held / 0 broken after repair | merged 751e198 |
+| 8 chapter 8 | done | Neon FAIL → one Opus repair → PASS | 29 held / 0 broken after repair (run 1: 9 broken) | merged 3f54929 |
+| 9 chapter 9 | done | Neon FAIL → one Opus repair → NITS | 40 held / 0 broken after repair (run 1: 5 broken) | merged a64e85e |
+| 10a capstone service core | done | Neon FAIL → one Opus repair → PASS | 27 held / 0 broken after repair (run 1: 9 broken) | merged 3b2ef92 |
 
-Closing prose record (commit of each chapter's closing Neon pass): chapter 5 — 394203d (single late prose pass); chapter 7 — c645979 (closing rewrite); chapter 4 — a9fff51 (closing rewrite); chapter 4 — a9fff51 (closing rewrite); chapter 1 — 66fca8e and chapter 2 — dd5a9b4 (retroactive closing rewrites, merged on main).
+Chapters 1 and 2 also received their retroactive Neon closing rewrites (66fca8e, dd5a9b4, merged).
+A separate small fix (`equal.LogicalHash` always ends its read transaction) is merged, with a
+Neon review PASS (`agent_work/fixeq/`).
 
-Next steps, in order: land 4, 3, 6, 8 as their chains finish (each branch merges main before
-its part B); run part A for 6 and 8; closing rewrites for 1 and 2; build 10a and 10b; chain 9,
-10a, 10b; then pub, the self-contained sweep, and the done file.
+Open chunks (worktrees `../sqlite-internals-work/<name>`, branches `chunk/<name>`; chain logs
+`sqlite-p2-<name>-chainA.log` / `-chainB.log` in the run directory; a finished part A leaves
+`sqlite-p2-<name>.stageA`, a finished part B `sqlite-p2-<name>-accept.txt`):
+
+| Chunk | State (2026-11-21 06:10 UTC) |
+| --- | --- |
+| 10b | built (Opus, 04c6ff9, main merged in); part A stopped at its first step: Neon review not written, Neon adversarial suite partly written and committed as partial. Resume: `agent_work/orch/stageA.sh ch10b …` from `review` (same arguments as in `sqlite-p2-ch10b-chainA.log`'s launch, see the progress file), then `stageB.sh ch10b … late` |
+| pub | review 1 FAIL → repair → review 2 FAIL (new blocker in `internal/site/check.go`) → arbitration by Muse Wonder Full: FAIL STANDS (`agent_work/pub/ARBITRATION.md` on the branch) → Opus repair round 2 scoped to the arbiter's checklist running, done, then Neon re-review 3: NITS, 48 held / 0 broken; part B (Neon writes README as the book home + comments) and landing come last, after the self-contained sweep |
+
+Closing prose record (commit of each chapter's closing Neon pass): chapter 5 — 394203d (single late prose pass); chapter 7 — c645979 (closing rewrite); chapter 3 — e71fa8c (single late prose pass); chapter 4 — a9fff51 (closing rewrite); chapter 6 — d394e64, chapter 8 — dfd1dfd and chapter 9 — b58a1a0 (single late prose passes); 10a — 09037a8 (comments only; no chapter text in that chunk); chapter 3 — e71fa8c (single late prose pass); chapter 4 — a9fff51 (closing rewrite); chapter 6 — d394e64, chapter 8 — dfd1dfd and chapter 9 — b58a1a0 (single late prose passes); 10a — 09037a8 (comments only; no chapter text in that chunk); chapter 1 — 66fca8e and chapter 2 — dd5a9b4 (retroactive closing rewrites, merged on main).
+
+Next steps, in order: 10b build → part A → part B (chapter 10 text and comments) → land; then pub part B (README as the book home, comments), the self-contained sweep, landing pub (this publishes the site), and the done file.
 
 Open decisions / blockers:
-- Neon spend: the direct Gemini route has $125 prepay (added 2026-11-20) under a $100 monthly
-  spend cap of which $23.33 was used. At about $9–10 per chunk the remaining chunks need roughly
-  $100, so the cap (about $77 left) may bind before the build ends. Owner: Nick (raise the cap
-  if Neon starts failing again). The balance is not visible from the build machine.
+- **Nick: Neon is stopped by the Gemini project's monthly spending cap** (reached 2026-11-21
+  07:27 UTC; the prepay credit is not the limit, the cap is — it was $100 on 2026-11-20).
+  Raise the project's spend cap in AI Studio (or raise the OpenRouter key limit); nothing else
+  is needed. Still to run on Neon: for 10b a review, the rest of the attack suite, a re-review
+  and the chapter 10 prose pass; for the publishing chunk the README/home page and comments —
+  about 6 runs, roughly $15–25 at the measured rate. Per ruling 12 no other model may do this
+  work, so it waits. `agent_work/neon/probe.sh` (with OpenCode on PATH) says when a route is back.
 - Nick or Twin: the Claude sign-in on the build VM ends between 2026-11-25 and 2026-11-28.
 
 Resume: read this file, OUTLINE.md (section 8 first), then `git log` and `git worktree list`.

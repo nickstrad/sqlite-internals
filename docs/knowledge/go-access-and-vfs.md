@@ -1,6 +1,6 @@
 # Go access strategy and VFS feasibility (research for the outline)
 
-Research agent findings, 2026-11-20. Everything below was run on vm-1 (Go 1.26.8, gcc 13.3,
+Research agent findings, 2026-11-20. Everything below was run on one Linux amd64 test machine (Go 1.26.8, gcc 13.3,
 Linux 6.8, 4 vCPU) against the pin, SQLite 3.53.4, source id
 `2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc`.
 Probes are in `agent_work/probes/go-access-vfs/`, and its `README.md` gives every run command.
@@ -117,7 +117,7 @@ Package shape (built and run):
   DBStatus. `trace.go` (69 lines) handles the vfstrace/wal_hook callbacks into Go through
   `//export`.
 
-Build times on vm-1 (4 vCPU):
+Build times on the test machine (4 vCPU):
 
 | Build | Time |
 | --- | --- |
@@ -320,7 +320,7 @@ ordered stream**. The parent maps fds back to names. Excerpt (`samples/strace-me
   calls that issue no syscall (xShmBarrier, a shm lock already held in-process, xAccess
   results), and the return codes SQLite saw.
 - strace cannot inject faults. It is deterministic here (two runs gave identical output). It
-  needs `/usr/bin/strace` (present), and ptrace works as root on vm-1.
+  needs `/usr/bin/strace` (present), and ptrace works as root on the test machine.
 
 ### VFS route comparison
 

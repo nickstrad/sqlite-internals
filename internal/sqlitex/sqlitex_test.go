@@ -720,6 +720,38 @@ func TestUnstampedEmptyDatabaseIsStampedButUsedOneIsNot(t *testing.T) {
 	}
 }
 
+// TestSettingPlacementsCoverEveryCourseSetting checks all 14 declared settings, their file-vs-connection home, and SettingPlacementFor lookups.
+func TestSettingPlacementsCoverEveryCourseSetting(t *testing.T) {
+	want := map[string]SettingHome{
+		"page_size": SettingInFile, "journal_mode=wal": SettingInFile, "auto_vacuum": SettingInFile,
+		"encoding": SettingInFile, "user_version": SettingInFile, "application_id": SettingInFile,
+		"default_cache_size": SettingInFile, "journal_mode=delete|truncate|persist|memory|off": SettingPerConnection,
+		"synchronous": SettingPerConnection, "foreign_keys": SettingPerConnection, "cache_size": SettingPerConnection,
+		"busy_timeout": SettingPerConnection, "wal_autocheckpoint": SettingPerConnection, "secure_delete": SettingPerConnection,
+	}
+	placements := SettingPlacements()
+	if len(placements) != len(want) {
+		t.Fatalf("got %d placements, want %d", len(placements), len(want))
+	}
+	for _, p := range placements {
+		home, ok := want[p.Name]
+		if !ok || home != p.Home {
+			t.Errorf("%s: home %q, want %q (known %v)", p.Name, p.Home, home, ok)
+		}
+		if (p.Home == SettingInFile) != (p.HeaderBytes != "") {
+			t.Errorf("%s: header bytes %q with home %s", p.Name, p.HeaderBytes, p.Home)
+		}
+		got, found := SettingPlacementFor(p.Name)
+		if !found || got != p {
+			t.Errorf("SettingPlacementFor(%q) = %+v, %v", p.Name, got, found)
+		}
+	}
+	if _, found := SettingPlacementFor("mmap_size"); found {
+		t.Error("mmap_size is not a course setting")
+
+	}
+}
+
 // TestDSNWithVFS verifies Options.VFS emits a vfs= URI parameter and reaches SQLite's VFS selection.
 func TestDSNWithVFS(t *testing.T) {
 	o := DefaultOptions()
@@ -756,18 +788,67 @@ func TestDSNWithVFS(t *testing.T) {
 	}
 }
 
-// TestDisplayPath verifies repo-internal paths render relative and external paths stay unchanged.
-func TestDisplayPath(t *testing.T) {
-	root, err := RepoRoot()
+// TestBackupWithSourceExecMirrorsSameConnectionWrites verifies that an UPDATE committed through SourceExecer between backup steps is mirrored without restarting the backup and that unconvertible arguments fail.
+func TestBackupWithSourceExecMirrorsSameConnectionWrites(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	options := DefaultOptions()
+	options.SingleConnection = true
+	db, err := Open(ctx, filepath.Join(dir, "source.db"), options)
 	if err != nil {
-		t.Skip(err)
+		t.Fatal(err)
 	}
-	if got := DisplayPath(filepath.Join(root, "internal", "sqlitex")); got != "internal/sqlitex" {
-		t.Fatal(got)
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, "CREATE TABLE t(id INTEGER PRIMARY KEY, v BLOB)"); err != nil {
+		t.Fatal(err)
 	}
-	outside := t.TempDir()
-	resolved, _ := filepath.EvalSymlinks(outside)
-	if got := DisplayPath(outside); got != outside && got != resolved {
-		t.Fatal(got)
+	for i := 1; i <= 40; i++ {
+		if _, err := db.ExecContext(ctx, "INSERT INTO t VALUES (?, zeroblob(3000))", i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	destination := filepath.Join(dir, "copy.db")
+	steps, err := BackupWithSourceExec(ctx, conn, destination, 5, func(step BackupStep, exec SourceExecer) error {
+		if step.Step != 2 {
+			return nil
+		}
+		for _, statement := range []string{"BEGIN IMMEDIATE", "UPDATE t SET v = ? WHERE id = ?", "COMMIT"} {
+			var args []any
+			if strings.HasPrefix(statement, "UPDATE") {
+				args = []any{[]byte("changed"), 1}
+			}
+			if _, err := exec.ExecContext(ctx, statement, args...); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i < len(steps); i++ {
+		if steps[i].Remaining >= steps[i-1].Remaining {
+			t.Fatalf("remaining did not fall at step %d: %+v", i+1, steps)
+		}
+	}
+	copyDB, err := sql.Open("sqlite", "file:"+destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer copyDB.Close()
+	var v []byte
+	if err := copyDB.QueryRow("SELECT v FROM t WHERE id = 1").Scan(&v); err != nil || string(v) != "changed" {
+		t.Fatalf("the copy misses the same-connection write: %q %v", v, err)
+	}
+	if _, err := BackupWithSourceExec(ctx, conn, filepath.Join(dir, "bad.db"), 5, func(step BackupStep, exec SourceExecer) error {
+		_, err := exec.ExecContext(ctx, "SELECT ?", struct{}{})
+		return err
+	}); err == nil {
+		t.Fatal("an unconvertible argument was accepted")
 	}
 }

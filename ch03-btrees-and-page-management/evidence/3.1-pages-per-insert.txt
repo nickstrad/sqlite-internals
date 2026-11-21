@@ -1,0 +1,133 @@
+sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
+INFO: work dir _work/3.1
+settings: page_size=4096, journal_mode=wal (part D: delete), synchronous=OFF (no effect on file bytes; it only skips fsync), wal_autocheckpoint=0, one connection, a PRAGMA wal_checkpoint(TRUNCATE) after every insert
+
+== A. appends: one row per transaction into an empty table, a page manifest after every insert (WAL, checkpoint before each manifest)
+arithmetic (from cell size and page size, before inserting anything):
+  row = (id INTEGER PRIMARY KEY, v BLOB of 1000 bytes); the id is the rowid, so the record stores it as NULL
+  record header = 1 (header-size varint) + 1 (serial type 0, NULL) + 2 (serial type 2012 = blob of 1000 bytes) = 4 bytes
+  payload = 4 header + 1000 body = 1004 bytes; table-leaf max local payload at usable size 4096 is 4061, so no overflow page
+  cell = 2 (payload-size varint) + rowid varint (1 byte for rowid <= 127, 2 bytes for 128..16383) + 1004 = 1007 or 1008 bytes, plus a 2-byte cell pointer = 1009 or 1010
+  a leaf page other than page 1 has 4096 - 8 (leaf header) = 4088 bytes for pointers and cells
+  rows per leaf = floor(4088 / 1010) = 4 (4 x 1010 = 4040 fits; 5 x 1009 = 5045 does not)
+  prediction: inserts 1..4 fill the root leaf; insert #5 (rowid 10) does not fit, so it is the first split, and every 4 inserts after it another leaf fills: splits at inserts #5, #9, #13, ... (#4 m + 1)
+  each split adds one divider cell to the root: 4-byte child page number + varint of the left leaf's largest rowid, plus a 2-byte pointer
+  the root as an interior page has 4096 - 12 = 4084 bytes; 15 dividers of 7 bytes (keys <= 127) + 497 of 8 bytes = 4081 bytes fit, one more does not
+  prediction: divider 513 arrives with the split at insert #2053 (rowid 4106); the root overflows and the tree gains a third level
+table t: root page 2 (sqlite_schema.rootpage), page count 2
+2061 inserts done; final page count 520, depth 3
+check ok: the last manifest equals capture.BuildManifest of the same image (unchanged pages reuse the previous sha256 only to save time)
+changed pages per insert -> number of inserts:
+  1 page(s): 1546 insert(s)
+  3 page(s): 513 insert(s)
+  4 page(s): 1 insert(s)
+  5 page(s): 1 insert(s)
+splits (inserts that added pages): 515, at inserts #5, #9, #13, ..., #2061
+check ok: the first split happens at insert #5 (rowid 10), as the arithmetic predicts
+check ok: every split happens exactly where predicted: insert #4 m + 1, every 4 inserts
+check ok: every insert that does not split changes exactly one page
+check ok: that one page is the table leaf that now holds the new rowid, never page 1 (page 1 is not written)
+check ok: most inserts change one page (1546 of 2061)
+
+first split, depth 1 -> 2: insert #5 (rowid 10): 4 page(s) changed [1(table-leaf) 2(table-leaf->table-interior) 3(new table-leaf) 4(new table-leaf)]; WAL frames for this commit: [1 2 3 4]; depth 2; root page 2
+    page 1 before: page 1 header: in-header size 2, freelist 0; sqlite_schema leaf with 1 cell(s)
+    page 1 after:  page 1 header: in-header size 4, freelist 0; sqlite_schema leaf with 1 cell(s)
+    page 2 before: table-leaf cells=4 keys=2,4,6,8 content-start=68 unused=52
+    page 2 after:  table-interior cells=1 keys=8 content-start=4091 unused=4077 children=[3 4]
+    page 3 before: (not in the file)
+    page 3 after:  table-leaf cells=4 keys=2,4,6,8 content-start=68 unused=52
+    page 4 before: (not in the file)
+    page 4 after:  table-leaf cells=1 keys=10 content-start=3089 unused=3079
+first append split at depth 2: insert #9 (rowid 18): 3 page(s) changed [1(table-leaf) 2(table-interior) 5(new table-leaf)]; WAL frames for this commit: [1 2 5]; depth 2; root page 2
+    page 1 before: page 1 header: in-header size 4, freelist 0; sqlite_schema leaf with 1 cell(s)
+    page 1 after:  page 1 header: in-header size 5, freelist 0; sqlite_schema leaf with 1 cell(s)
+    page 2 before: table-interior cells=1 keys=8 content-start=4091 unused=4077 children=[3 4]
+    page 2 after:  table-interior cells=2 keys=8,16 content-start=4086 unused=4070 children=[3 4 5]
+    page 5 before: (not in the file)
+    page 5 after:  table-leaf cells=1 keys=18 content-start=3089 unused=3079
+next append split: insert #13 (rowid 26): 3 page(s) changed [1(table-leaf) 2(table-interior) 6(new table-leaf)]; WAL frames for this commit: [1 2 6]; depth 2; root page 2
+an ordinary insert: insert #14 (rowid 28): 1 page(s) changed [6(table-leaf)]; WAL frames for this commit: [6]; depth 2; root page 2
+    page 6 before: table-leaf cells=1 keys=26 content-start=3089 unused=3079
+    page 6 after:  table-leaf cells=2 keys=26,28 content-start=2082 unused=2070
+check ok: the tree gains its third level at insert #2053 (rowid 4106), as the arithmetic predicts
+depth 2 -> 3: insert #2053 (rowid 4106): 5 page(s) changed [1(table-leaf) 2(table-interior) 516(new table-leaf) 517(new table-interior) 518(new table-interior)]; WAL frames for this commit: [1 2 516 517 518]; depth 3; root page 2
+    page 1 before: page 1 header: in-header size 515, freelist 0; sqlite_schema leaf with 1 cell(s)
+    page 1 after:  page 1 header: in-header size 518, freelist 0; sqlite_schema leaf with 1 cell(s)
+    page 2 before: table-interior cells=512 keys=8..4096 content-start=1039 unused=3 children=[3 4 5 ... 515]
+    page 2 after:  table-interior cells=1 keys=2064 content-start=4090 unused=4076 children=[517 518]
+    page 516 before: (not in the file)
+    page 516 after:  table-leaf cells=1 keys=4106 content-start=3088 unused=3078
+    page 517 before: (not in the file)
+    page 517 after:  table-interior cells=257 keys=8..2056 content-start=2569 unused=2043 children=[3 4 5 ... 260]
+    page 518 before: (not in the file)
+    page 518 after:  table-interior cells=255 keys=2072..4104 content-start=2566 unused=2044 children=[261 262 263 ... 516]
+check ok: the first split is also the first depth change: the root, a new page holding the root's old cells, a new leaf, and page 1
+check ok: an append split at depth 2 changes three pages: page 1 (database size), the parent (one new divider) and the new leaf; the full leaf is not rewritten
+check ok: the root stays page 2 through both depth changes and always equals sqlite_schema.rootpage
+check ok: integrity_check = ok after every one of the 2061 inserts
+check ok: for every insert the WAL frames of its commit name exactly the pages the manifest shows changed: pages changed = frames shipped
+WAL frames for 2061 inserts: 3094 (12747280 bytes of frames at 4120 bytes each); the table itself is 520 pages
+
+== B. a middle insert into a full leaf
+20 appends (rowids 2..40): page count 7, depth 2
+  root: table-interior cells=4 keys=8,16,24,32 content-start=4076 unused=4056 children=[3 4 5 6 7]
+  leaf page 3: table-leaf cells=4 keys=2,4,6,8 content-start=68 unused=52
+  leaf page 4: table-leaf cells=4 keys=10,12,14,16 content-start=68 unused=52
+  leaf page 5: table-leaf cells=4 keys=18,20,22,24 content-start=68 unused=52
+  leaf page 6: table-leaf cells=4 keys=26,28,30,32 content-start=68 unused=52
+  leaf page 7: table-leaf cells=4 keys=34,36,38,40 content-start=68 unused=52
+middle split: insert #21 (rowid 11): 5 page(s) changed [1(table-leaf) 2(table-interior) 4(table-leaf) 5(table-leaf) 8(new table-leaf)]; WAL frames for this commit: [1 2 3 4 5 8]; depth 2; root page 2
+    page 1 before: page 1 header: in-header size 7, freelist 0; sqlite_schema leaf with 1 cell(s)
+    page 1 after:  page 1 header: in-header size 8, freelist 0; sqlite_schema leaf with 1 cell(s)
+    page 2 before: table-interior cells=4 keys=8,16,24,32 content-start=4076 unused=4056 children=[3 4 5 6 7]
+    page 2 after:  table-interior cells=5 keys=8,14,20,24,32 content-start=4071 unused=4049 children=[3 4 5 8 6 7]
+    page 4 before: table-leaf cells=4 keys=10,12,14,16 content-start=68 unused=52
+    page 4 after:  table-leaf cells=4 keys=10,11,12,14 content-start=68 unused=52
+    page 5 before: table-leaf cells=4 keys=18,20,22,24 content-start=68 unused=52
+    page 5 after:  table-leaf cells=3 keys=16,18,20 content-start=1075 unused=1061
+    page 8 before: (not in the file)
+    page 8 after:  table-leaf cells=2 keys=22,24 content-start=2082 unused=2070
+check ok: a split in the middle rewrites the full leaf and its siblings (3 leaf pages changed), not just one new page
+check ok: every changed page is in the commit's WAL frames
+WAL frames whose page bytes did not change: [3]
+  page 3: sha256 before c0995adc833eadb1, after c0995adc833eadb1
+check ok: here the WAL ships more frames than pages changed: balance_nonroot rewrote a sibling leaf with the same cells it already held, and a written page is a shipped frame even when its bytes are unchanged
+check ok: integrity_check = ok after the middle split
+leaves after the middle split (page:cells, in key order): 3:4 4:4 5:3 8:2 6:4 7:4
+
+== C. the same kind of insert into a table with two indexes
+changed pages per insert -> number of inserts:
+  3 page(s): 188 insert(s)
+  5 page(s): 10 insert(s)
+  6 page(s): 2 insert(s)
+insert #50 changed: 3(index-leaf) 4(index-leaf) 7(table-leaf)
+check ok: with two indexes the common insert changes three pages: the table leaf and one leaf in each index
+check ok: WAL frames equal the changed pages and integrity_check = ok for all 200 inserts
+
+== D. the same appends in rollback mode (journal_mode=DELETE)
+rollback: insert #1 (rowid 2): 2 page(s) changed [1(table-leaf) 2(table-leaf)]; no WAL (rollback mode); depth 1; root page 2
+rollback: insert #2 (rowid 4): 2 page(s) changed [1(table-leaf) 2(table-leaf)]; no WAL (rollback mode); depth 1; root page 2
+  2 page(s), page 1 among them: true: 10 insert(s)
+  3 page(s), page 1 among them: true: 1 insert(s)
+  4 page(s), page 1 among them: true: 1 insert(s)
+check ok: in rollback mode every commit also rewrites page 1
+check ok: an insert that adds no page changes exactly two pages: page 1 and the table leaf that holds the new rowid
+check ok: on those inserts page 1 differs only in the change counter (bytes 24-27) and version-valid-for (bytes 92-95)
+
+== E. where "most inserts change one page" stops holding (one row per transaction, WAL, the same manifest after every insert)
+  random keys, 1000-byte rows (4 per leaf): 250 inserts; one page: 86; added a page: 70; several pages, none added: 94; pages changed per insert 1..6; final depth 2, 71 leaves holding 2..4 rows
+    inserts that added a page at depth 2, by pages changed: 5 pages: 40, 6 pages: 29
+  random keys, 40-byte rows (about 85 per leaf): 600 inserts; one page: 566; added a page: 7; several pages, none added: 27; pages changed per insert 1..6; final depth 2, 8 leaves holding 43..85 rows
+    inserts that added a page at depth 2, by pages changed: 5 pages: 1, 6 pages: 5
+  ascending keys, 5000-byte rows (each overflows): 25 inserts; one page: 0; added a page: 25; several pages, none added: 0; pages changed per insert 3..5; final depth 2, 7 leaves holding 1..4 rows
+    inserts that added a page at depth 2, by pages changed: 3 pages: 15, 4 pages: 5
+  ascending keys, 400-byte rows, WITHOUT ROWID: 30 inserts; one page: 23; added a page: 3; several pages, none added: 4; pages changed per insert 1..5; final depth 2, 4 leaves holding 4..9 rows
+    inserts that added a page at depth 2, by pages changed: 5 pages: 2
+check ok: random keys with 4 rows per leaf: only 86 of 250 inserts change one page; 70 split and 94 more change several pages without adding one (balance_nonroot moves cells between siblings)
+check ok: random keys with small rows: most inserts change one page again (566 of 600): the rule depends on how many rows fit in a leaf, not on the key order alone
+check ok: a row larger than the leaf's local limit also writes its overflow pages and page 1 (the file grows): no insert changes one page, each changes 3..5
+check ok: a WITHOUT ROWID table is an index b-tree, and balance_quick serves table leaves only: its append splits at depth 2 go through balance_nonroot and change more than three pages
+check ok: in all four, every changed page is in its commit's WAL frames
+check ok: integrity_check = ok after every insert of all four
+
+PAGES PER INSERT OK

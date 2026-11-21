@@ -70,6 +70,13 @@ Per-chunk working scripts are indexed in `agent_work/chNN/INDEX.md`; adversarial
 | `verify/crossbuild.sh` | linux build+vet+test, darwin/arm64 and darwin/amd64 build+vet, gofmt | all (ruling 4) | Opus builder chunk 0, 2026-11-20 | Run at every chunk acceptance |
 | `probes/vfs-viability/` | Is a custom VFS possible on modernc v1.60.1 without cgo? | 7 | Opus builder chunk 0, 2026-11-20 | Yes: writable forwarding VFS in pure Go; read-only `fs.FS` VFS; see RESULT.md |
 | `probes/seaweedfs-s3/` | SeaweedFS 4.48 S3 semantics (conditional put, listing, read-after-write) and Go client choice | 10 | Opus builder chunk 0, 2026-11-20 | See RESULT.md; aws-sdk-go-v2 chosen |
+| `orch/lib.sh` | Shared helpers for the chain scripts: wait for a run with a deadline, re-dispatch a failed run once, run an adversarial suite and keep its raw output | all | Fable orchestrator, 2026-11-21 | Used by stageA.sh, stageB.sh and pub-round2.sh |
+| `orch/stageA.sh` | Chain part A under the late-prose ordering: Neon review + Neon adversarial → run 1 → one Opus repair → run 2 → Neon re-review and attack alignment → run 3 | 3, 4, 5, 6, 8, 9, 10a, 10b, pub | Fable orchestrator, 2026-11-21 | Each chunk's result line is in STATE.md's chunk table |
+| `orch/stageB.sh` | Chain part B: Neon's closing prose (`late` = the single prose pass, `closing` = closing rewrite of an existing chapter), commit under Neon's name, then the acceptance gate | all chapters | Fable orchestrator, 2026-11-21 | Every chapter's closing prose commit is listed in STATE.md |
+| `orch/status.sh` | One line per chunk: part A result, gate result, runs still alive | all | Fable orchestrator, 2026-11-21 | Orchestrator's view while chains run |
+| `orch/pub-round2.sh` | Publishing chunk after arbitration: Opus repair round 2 → adversarial run 4 → Neon re-review 3 → run 5 | pub | Fable orchestrator, 2026-11-21 | Review 3 NITS; 48 held / 0 broken |
+| `orch/accept.sh`, `finalize.sh`, `land.sh`, `repair.sh`, `rereview.sh`, `neon-trio.sh`, `post-neon.sh` | Acceptance gate; landing (merge, build and test the merged tree, knowledge entry, STATE row, push); the old-ordering chain steps used for chunks 0, 1, 2, 7 | all | Fable orchestrator, 2026-11-20/21 | land.sh refuses a merge whose tree does not build and test |
+| `neon/probe.sh` | Is any Neon route usable right now (needs OpenCode on PATH) | all | Fable orchestrator, 2026-11-20 | Direct route available since 2026-11-20 23:30 UTC |
 
 ## Per-chunk working files
 
@@ -81,3 +88,9 @@ Per-chunk working scripts are indexed in `agent_work/chNN/INDEX.md`; adversarial
 | 5 chapter 5 | [ch05/INDEX.md](ch05/INDEX.md) | [REVIEW-1](ch05/REVIEW-1.md) → [REVIEW-2](ch05/REVIEW-2.md): Neon FAIL → one Opus repair → PASS | [RESULTS](ch05/adversarial/RESULTS.md): 28 held / 0 broken after repair (run 1: 7 broken) |
 | 7 chapter 7 | [ch07/INDEX.md](ch07/INDEX.md) | [REVIEW-1](ch07/REVIEW-1.md) → [REVIEW-2](ch07/REVIEW-2.md): Neon FAIL → one Opus repair → PASS | [RESULTS](ch07/adversarial/RESULTS.md): 34 held / 0 broken after repair |
 | 4 chapter 4 | [ch04/INDEX.md](ch04/INDEX.md) | [REVIEW-1](ch04/REVIEW-1.md) → [REVIEW-2](ch04/REVIEW-2.md): Neon FAIL → one Opus repair → NITS | [RESULTS](ch04/adversarial/RESULTS.md): 32 held / 0 broken after repair (run 1: 12 broken) |
+| 3 chapter 3 | [ch03/INDEX.md](ch03/INDEX.md) | [REVIEW-1](ch03/REVIEW-1.md) → [REVIEW-2](ch03/REVIEW-2.md): Neon NITS → one Opus repair → PASS | [RESULTS](ch03/adversarial/RESULTS.md): 30 held / 0 broken after repair (run 1: 14 broken) |
+| 6 chapter 6 | [ch06/INDEX.md](ch06/INDEX.md) | [REVIEW-1](ch06/REVIEW-1.md) → [REVIEW-2](ch06/REVIEW-2.md): Neon FAIL → one Opus repair → PASS | [RESULTS](ch06/adversarial/RESULTS.md): 49 held / 0 broken after repair (run 1: 6 broken) |
+| 8 chapter 8 | [ch08/INDEX.md](ch08/INDEX.md) | [REVIEW-1](ch08/REVIEW-1.md) → [REVIEW-2](ch08/REVIEW-2.md): Neon FAIL → one Opus repair → PASS | [RESULTS](ch08/adversarial/RESULTS.md): 29 held / 0 broken after repair (run 1: 9 broken) |
+| fix: equal.LogicalHash | [fixeq/INDEX.md](fixeq/INDEX.md) | [REVIEW-1](fixeq/REVIEW-1.md): Neon PASS | regression test `internal/equal/latecancel_test.go` (no separate attack suite) |
+| 9 chapter 9 | [ch09/INDEX.md](ch09/INDEX.md) | [REVIEW-1](ch09/REVIEW-1.md) → [REVIEW-2](ch09/REVIEW-2.md): Neon FAIL → one Opus repair → NITS | [RESULTS](ch09/adversarial/RESULTS.md): 40 held / 0 broken after repair (run 1: 5 broken) |
+| 10a capstone service core | [ch10a/INDEX.md](ch10a/INDEX.md) | [REVIEW-1](ch10a/REVIEW-1.md) → [REVIEW-2](ch10a/REVIEW-2.md): Neon FAIL → one Opus repair → PASS | [RESULTS](ch10a/adversarial/RESULTS.md): 27 held / 0 broken after repair (run 1: 9 broken) |

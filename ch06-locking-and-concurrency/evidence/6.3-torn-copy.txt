@@ -1,0 +1,52 @@
+sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
+INFO: work dir _work/6.3
+
+== A. WAL mode: a writer commits recipe steps 6-10 and checkpoints after step 8 (wal_autocheckpoint=0)
+step  1  writer     recipe-step 6                        -> SQLITE_OK
+step  2  writer     recipe-step 7                        -> SQLITE_OK
+step  3  writer     recipe-step 8                        -> SQLITE_OK
+step  4  writer     checkpoint PASSIVE                   -> SQLITE_OK busy=0 log=61 checkpointed=61
+step  5  writer     recipe-step 9                        -> SQLITE_OK
+step  6  writer     recipe-step 10                       -> SQLITE_OK
+step  7  copier     copy db main-only.db                 -> SQLITE_OK 323584 bytes
+step  8  copier     copy -wal wal-at-copy                -> SQLITE_OK 251352 bytes
+
+-- A1. the database file alone, copied with plain reads between commits
+copy main-only.db: 323584 bytes (79 pages)
+  integrity_check: ok
+  user_version: 8; 50 accounts, 336 events, 25 documents
+  equals: step 8 (equal except the change counter at bytes 24-27 and 92-95)
+check ok: the copy of the database file without its -wal opens cleanly and passes integrity_check
+check ok: but it equals recipe step 8, the last checkpoint, not step 10, the last commit: commits 9-10 are silently missing
+INFO: database file at copy time: 323584 bytes
+
+-- A2. the database file copied in two halves while a checkpoint writes into it between them
+step  9  writer     query SELECT (page_count / 2) * page_size FROM pragma_page_count, pragma_page_size -> SQLITE_OK 204800
+step 10  copier     copy-range db torn.db 0 204800       -> SQLITE_OK bytes 0-204800
+step 11  writer     checkpoint PASSIVE                   -> SQLITE_OK busy=0 log=40 checkpointed=40
+check ok: the checkpoint copied every WAL frame (steps 9-10) into the database file
+step 12  copier     copy-range db torn.db 204800 end     -> SQLITE_OK bytes 204800-409600
+copy torn.db: 409600 bytes (100 pages)
+  integrity_check: 25 problem(s), the first 3:
+    wrong # of entries in index events_by_account
+    row 335 missing from index events_by_account
+    row 336 missing from index events_by_account
+  user_version: 8; 50 accounts, 336 events, 25 documents
+  equals: no recipe step
+check ok: the torn copy fails integrity_check or equals no recipe state
+
+== B. rollback mode (journal_mode=delete) as the contrast: the database file copied in two halves while a commit (step 6) writes into it between them
+step 13  writer     query SELECT (page_count / 2) * page_size FROM pragma_page_count, pragma_page_size -> SQLITE_OK 102400
+step 14  copier     copy-range db torn.db 0 102400       -> SQLITE_OK bytes 0-102400
+step 15  writer     recipe-step 6                        -> SQLITE_OK
+step 16  copier     copy-range db torn.db 102400 end     -> SQLITE_OK bytes 102400-245760
+copy torn.db: 245760 bytes (60 pages)
+  integrity_check: 6 problem(s), the first 3:
+    Freelist: freelist leaf count too big on page 35
+    Freelist: invalid page number 52
+    Tree 3 page 24 cell 0: overflow list length is 1 but should be 3
+  user_version: 5; 31 accounts, 251 events, 15 documents
+  equals: no recipe step
+check ok: the torn copy fails integrity_check or equals no recipe state
+
+TORN COPY OK

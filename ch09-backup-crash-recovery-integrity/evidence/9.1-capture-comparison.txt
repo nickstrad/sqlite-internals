@@ -1,0 +1,104 @@
+sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
+INFO: work dir _work/9.1
+== part A: a quiet database (recipe step 6, no writer)
+closed-file copy                     vs the source: E1 yes  E2 yes  E3 yes  E3-except-journal_mode yes  E1-after-VACUUM-INTO yes
+check ok: closed-file copy reaches exactly the expected levels on a quiet database
+backup API                           vs the source: E1 no   E2 yes  E3 yes  E3-except-journal_mode yes  E1-after-VACUUM-INTO no 
+check ok: backup API reaches exactly the expected levels on a quiet database
+VACUUM INTO                          vs the source: E1 no   E2 no   E3 no   E3-except-journal_mode yes  E1-after-VACUUM-INTO yes
+check ok: VACUUM INTO reaches exactly the expected levels on a quiet database
+pages in a read transaction          vs the source: E1 yes  E2 yes  E3 yes  E3-except-journal_mode yes  E1-after-VACUUM-INTO yes
+check ok: pages in a read transaction reaches exactly the expected levels on a quiet database
+file + WAL under a held transaction  vs the source: E1 yes  E2 yes  E3 yes  E3-except-journal_mode yes  E1-after-VACUUM-INTO yes
+check ok: file + WAL under a held transaction reaches exactly the expected levels on a quiet database
+backup API: E2 pages: equal ignoring header bytes 24-27, 40-43, 92-99 (bytes differ only at [27 43 95])
+backup API after VACUUM INTO vs the source after VACUUM INTO: E2 pages: equal ignoring header bytes 24-27, 40-43, 92-99 (bytes differ only at [43])
+schema cookie: backup 1, source 4
+check ok: the backup's VACUUM INTO form differs from the source's only at byte 43, the schema cookie
+VACUUM INTO: E3 differs only in journal_mode: rollback for the copy, wal for the source
+
+== part B: the same database while a writer child commits recipe steps (one fresh connection per step, wal_autocheckpoint=0)
+-- plain copy of the live database file (the -wal is not copied)
+step  1  writer     recipe-session 7                     -> SQLITE_OK
+plain copy of the live file          equals recipe step 6 (the writer has committed 7): E1 yes  E2 yes  E3 yes  E3-except-journal_mode yes  E1-after-VACUUM-INTO yes
+check ok: the plain copy is byte-identical (E1) to an older recipe step (6), not to the committed step 7
+-- every page through sqlite_dbpage in one read transaction, in two halves; the writer commits between them
+step  2  writer     recipe-session 8                     -> SQLITE_OK
+pages in a read transaction          equals recipe step 7 (want 7): E1 yes  E2 yes  E3 yes  E3-except-journal_mode yes  E1-after-VACUUM-INTO yes
+check ok: under the writer, pages in a read transaction equals recipe step 7 at exactly the expected levels
+-- copy of the database file, a commit, then a copy of the -wal, all inside one read transaction; rebuilt by WAL replay
+step  3  writer     recipe-session 9                     -> SQLITE_OK
+file + WAL under a held transaction  equals recipe step 9 (want 9): E1 yes  E2 yes  E3 yes  E3-except-journal_mode yes  E1-after-VACUUM-INTO yes
+check ok: under the writer, file + WAL under a held transaction equals recipe step 9 at exactly the expected levels
+-- VACUUM INTO while the writer child holds the write lock with step uncommitted, then the writer commits
+step  4  writer     begin immediate                      -> SQLITE_OK
+step  5  writer     recipe-exec 10                       -> SQLITE_OK
+VACUUM INTO finished while the writer held its write transaction open
+step  6  writer     commit                               -> SQLITE_OK
+VACUUM INTO                          equals recipe step 9 (want 9): E1 no   E2 no   E3 no   E3-except-journal_mode yes  E1-after-VACUUM-INTO yes
+check ok: under the writer, VACUUM INTO equals recipe step 9 at exactly the expected levels
+-- backup API, 5 pages per step; after step 2 and step 3 the backup's own connection commits a recipe step, after step 5 the writer child does
+   backup step  1: remaining  95 of 100, copied   5
+   backup step  2: remaining  90 of 100, copied  10; the backup's own connection commits step 11
+   backup step  3: remaining  93 of 108, copied  15; the backup's own connection commits step 12
+   backup step  4: remaining  98 of 118, copied  20
+step  7  writer     recipe-session 13                    -> SQLITE_OK
+   backup step  5: remaining  93 of 118, copied  25; the writer child commits step 13
+   backup step  6: remaining 119 of 124, copied   5
+   backup step  7: remaining 114 of 124, copied  10
+   backup step  8: remaining 109 of 124, copied  15
+   backup step  9: remaining 104 of 124, copied  20
+   backup step 10: remaining  99 of 124, copied  25
+   backup step 11: remaining  94 of 124, copied  30
+   backup step 12: remaining  89 of 124, copied  35
+   backup step 13: remaining  84 of 124, copied  40
+   backup step 14: remaining  79 of 124, copied  45
+   backup step 15: remaining  74 of 124, copied  50
+   backup step 16: remaining  69 of 124, copied  55
+   backup step 17: remaining  64 of 124, copied  60
+   backup step 18: remaining  59 of 124, copied  65
+   backup step 19: remaining  54 of 124, copied  70
+   backup step 20: remaining  49 of 124, copied  75
+   backup step 21: remaining  44 of 124, copied  80
+   backup step 22: remaining  39 of 124, copied  85
+   backup step 23: remaining  34 of 124, copied  90
+   backup step 24: remaining  29 of 124, copied  95
+   backup step 25: remaining  24 of 124, copied 100
+   backup step 26: remaining  19 of 124, copied 105
+   backup step 27: remaining  14 of 124, copied 110
+   backup step 28: remaining   9 of 124, copied 115
+   backup step 29: remaining   4 of 124, copied 120
+   backup step 30: remaining   0 of 124, copied 124
+check ok: through the backup's own commits the copy keeps advancing 5 pages per step (no restart), although the remaining count rose when those commits grew the database
+check ok: after the writer child's commit the next step starts again from page 1: the backup restarted
+backup API                           equals recipe step 13 (want 13): E1 no   E2 yes  E3 yes  E3-except-journal_mode yes  E1-after-VACUUM-INTO no 
+check ok: under the writer, backup API equals recipe step 13 at exactly the expected levels
+-- backup API, 5 pages per step, the writer child commits after every step; give up after 8 steps
+   backup step  1: remaining 119 of 124; the writer child commits step 14
+step  8  writer     recipe-session 14                    -> SQLITE_OK
+   backup step  2: remaining 127 of 132; the writer child commits step 15
+step  9  writer     recipe-session 15                    -> SQLITE_OK
+   backup step  3: remaining 139 of 144; the writer child commits step 16
+step 10  writer     recipe-session 16                    -> SQLITE_OK
+   backup step  4: remaining 155 of 160; the writer child commits step 17
+step 11  writer     recipe-session 17                    -> SQLITE_OK
+   backup step  5: remaining 157 of 162; the writer child commits step 18
+step 12  writer     recipe-session 18                    -> SQLITE_OK
+   backup step  6: remaining 165 of 170; the writer child commits step 19
+step 13  writer     recipe-session 19                    -> SQLITE_OK
+   backup step  7: remaining 166 of 171; the writer child commits step 20
+step 14  writer     recipe-session 20                    -> SQLITE_OK
+   backup step  8: remaining 179 of 184; the writer child commits step 21
+step 15  writer     recipe-session 21                    -> SQLITE_OK
+check ok: with a commit by another connection after every step the backup never finished: after 8 steps the smallest remaining count was 119
+
+== summary
+method                               | strongest level                    | safe under writer | blocks the writer
+closed-file copy                     | E1                                 | no                | the database must be closed
+backup API                           | E2                                 | yes               | no (commits ran between steps)
+VACUUM INTO                          | E3 but journal_mode; E1 canonical  | yes               | no (ran while the writer held its write transaction)
+pages in a read transaction          | E1                                 | yes               | no (a commit ran inside the read transaction)
+file + WAL under a held transaction  | E1 after WAL replay                | yes               | no (a commit ran inside the read transaction)
+check ok: under the writer every capture except the plain file copy equals the exact recipe state it should; the plain copy equals an older one
+
+CAPTURE COMPARISON OK
