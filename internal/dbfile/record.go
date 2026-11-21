@@ -188,3 +188,34 @@ func DecodeText(raw []byte, encoding uint32) (string, error) {
 	}
 	return "", fmt.Errorf("unknown text encoding %d", encoding)
 }
+
+func RecordColumn(payload []byte, column int) (start, length int, serialType uint64, err error) {
+	headerSize, n, err := Varint(payload)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("record header size: %w", err)
+	}
+	if headerSize < uint64(n) || headerSize > uint64(len(payload)) {
+		return 0, 0, 0, fmt.Errorf("record header size %d is outside %d..%d", headerSize, n, len(payload))
+	}
+	header := payload[n:headerSize]
+	start = int(headerSize)
+	for i := 0; len(header) > 0; i++ {
+		t, used, err := Varint(header)
+		if err != nil {
+			return 0, 0, 0, fmt.Errorf("record column %d serial type: %w", i, err)
+		}
+		header = header[used:]
+		size, err := SerialTypeLength(t)
+		if err != nil {
+			return 0, 0, 0, fmt.Errorf("record column %d: %w", i, err)
+		}
+		if i == column {
+			if start+size > len(payload) {
+				return 0, 0, 0, fmt.Errorf("record column %d ends at %d, past the %d-byte payload", i, start+size, len(payload))
+			}
+			return start, size, t, nil
+		}
+		start += size
+	}
+	return 0, 0, 0, fmt.Errorf("record has no column %d", column)
+}
