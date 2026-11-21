@@ -11,6 +11,9 @@ git merge -q --no-ff chunk/$ch -m "Merge $label: $built
 Review: $review. Adversarial: $adv.
 
 Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
+export PATH="/usr/local/go/bin:$HOME/go/bin:$PATH"
+if ! (go build ./... && go vet ./internal/... ./cmd/... && go test ./internal/... ./cmd/... >/tmp/land-$ch-test.out 2>&1); then
+  echo "post-merge build/test failed (see /tmp/land-$ch-test.out); merge undone"; git reset -q --hard ORIG_HEAD; exit 1; fi
 sha=$(git rev-parse --short HEAD)
 agent_work/orch/knowledge.sh "$ch" "sqlite-internals-$ch-findings" "$ktitle" "$ksum" "$ktags"
 r2=""; [ -f agent_work/$ch/REVIEW-2.md ] && r2=" → [REVIEW-2]($ch/REVIEW-2.md)"
