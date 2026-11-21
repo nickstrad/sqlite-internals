@@ -10,7 +10,7 @@ Branch `chunk/pub`. Spec: OUTLINE.md §8 rows "A, B" and "C" plus the publishing
 | `internal/site/site.go` | page discovery, chapter/experiment/rung model, link resolution, `Build` |
 | `internal/site/markdown.go` | goldmark setup, GitHub-compatible heading ids, plain-text extraction, experiment "Code · Evidence" lines, include-marker rewriting, link rewriting |
 | `internal/site/page.go` | the UI label set `UILabels`, page view model, HTML rendering through `page.html` |
-| `internal/site/check.go` | `CheckSite`: scans the rendered HTML (HTML comments removed first) for every `href`/`src` and `id` attribute, double- or single-quoted; fails on broken internal links, missing anchors, and an `id` used twice on one page |
+| `internal/site/check.go` | `CheckSite`: reads `href`/`src`/`id` attributes from the opening tags of the rendered HTML only (a quote-aware tag scanner, `openingTagAttributes`; text, code, comments and `script`/`style`/`textarea`/`title` bodies contribute nothing); fails on broken internal links, missing anchors, and an `id` used twice on one page |
 | `internal/site/page.html` | the one HTML template (embedded) |
 | `internal/site/style.css` | the one stylesheet (embedded, copied to `style.css` in the output) |
 | `internal/site/site_test.go` | unit tests on a fixture repo |
@@ -331,8 +331,11 @@ Sections 2, 3 and 8 above are already corrected in place; this section adds the 
 home there.
 
 ### `site -check` (`CheckSite`) now also
-- reads `href`/`src`/`id` attributes written with single quotes (`<a href='…'>`), not only double quotes (adversarial LINK-04);
-- removes HTML comments before scanning, so `<!-- id="x" -->` defines no anchor (LINK-05) and `<!-- <a href="/b/todo/"> -->` is not a link (LINK-06);
+- reads attributes only from real opening tags, via `openingTagAttributes` (repair round 2; no new dependency). It walks the HTML: `<!--…-->` comments, end tags, `<!…>`/`<?…>` are skipped; `<` not followed by an ASCII letter is text; inside a tag, `>` within a `"…"` or `'…'` value does not end the tag (`title="a>b" href='…'` is still read); whitespace around `=` is allowed; double-quoted, single-quoted and unquoted values are read and entity-decoded; tag and attribute names are case-insensitive (`<A HREF='…'>`, `ID=`); after a `script`, `style`, `textarea` or `title` start tag the body up to its end tag is skipped. Consequences:
+  - single-quoted attributes on real tags count (adversarial LINK-04);
+  - text that only looks like an attribute — `WHERE id = 'alpha'` in a code block, in a `<p>` or in inline `<code>`, or an escaped `&lt;a href='…'&gt;` example — defines no id and no link (LINK-11a), so a `#alpha` link with only such text on the page fails with `missing anchor` (LINK-11b). Round 1's document-wide regex matched these because goldmark escapes `"` to `&quot;` but leaves `'` raw in text;
+  - HTML comments contribute nothing: `<!-- id="x" -->` defines no anchor (LINK-05) and `<!-- <a href="/b/todo/"> -->` is not a link (LINK-06);
+  - an unterminated tag or comment at end of file ends the scan (nothing after it is read);
 - fails on an `id` used twice on one page: `<page>: duplicate id "<id>"` (LINK-10b). The README-heading collision with the generated "Reading path"/"Reference" sections still resolves to `-1` ids, so it is not a duplicate;
 - ignores `?query` when locating the target file (LINK-07);
 - strips every leading `/` after the base, so `/book//ch01-a/#x` is checked against `ch01-a/index.html`'s ids (review finding 4).

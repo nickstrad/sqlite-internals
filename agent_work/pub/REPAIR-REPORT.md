@@ -70,3 +70,52 @@ markers, §8 check-paths behaviour, API, summary line, correction 1 now resolved
 | pre-repair binary vs repaired binary, same repo, `diff -r` of output | identical (no rendering change on the real book) |
 | `go run ./agent_work/pub/serve-check -dir _site -base /sqlite-internals/ "" ch01… ch02… ch04… ch05… ch07…` | fetched 24 URLs, all 200 |
 | `bash agent_work/pub/adversarial/run-all.sh` | 45 HELD, 1 BROKEN (PATH-03, answered above); results in `adversarial/results.txt`, 23 s |
+
+# Round 2 (after arbitration)
+
+Scope: the six "Required actions" of `ARBITRATION.md` (FAIL STANDS on Review 2 finding 1), nothing else.
+Fix: `internal/site/check.go` — the three regexes (`idAttrPattern`, `linkAttrPattern`, `htmlCommentPattern`) and
+`attrValue` are removed; `CheckSite` now takes attributes from `openingTagAttributes`, a small quote-aware
+opening-tag scanner (no new dependency; `go.mod` unchanged). `CheckSite` signature, problem strings and
+`checkLink` are untouched.
+
+| checklist item | done (commit) | test |
+| --- | --- | --- |
+| 1. ids/links only from real opening tags; text, `<pre><code>`, inline `<code>`, escaped `&lt;…&gt;`, `script`/`style` bodies, comments contribute nothing | `9170c6f` | `TestCheckSiteIgnoresAttributeTextInCode`, `TestCheckSiteIgnoresAttributeTextInProseAndInlineCode`, `TestCheckSiteHTMLEdges` (comment ghost); LINK-05/06 HELD |
+| 2. `>` in quoted value does not end tag; whitespace around `=`; `"`/`'`/unquoted values; case-insensitive names | `9170c6f` | `TestCheckSiteTagScanner` (`title="a>b"`, `<A HREF=…>`, `<DIV ID=…>`, `href=/b/missing-unquoted/`, `id=bare`, `src = '…'`, `alt='x > y'`) |
+| 3. duplicate ids and anchors over real tag ids only | `9170c6f` | `TestCheckSiteTagScanner` (`id="real"` + `ID="real"` → duplicate), `TestCheckSiteBrokenAnchorBesideSQLText`; LINK-10b HELD, LINK-11b HELD (`missing anchor #alpha in #alpha`) |
+| 4. nothing else observable changes | `9170c6f` | `TestCheckSiteHTMLEdges` unchanged and passing; real book `23 page(s), 1045 link(s) resolve` under both bases; rendering code (`site.go`, `markdown.go`, `page.html`) not touched |
+| 5a. repeated `WHERE id = 'alpha'` in `<pre><code>` → no duplicate | `9170c6f` | `TestCheckSiteIgnoresAttributeTextInCode` |
+| 5b. escaped single-quoted `href`/`src` in `<pre><code>` → no broken link | `9170c6f` | `TestCheckSiteIgnoresAttributeTextInCode` |
+| 5c. broken `#alpha` beside SQL `id = 'alpha'` → missing anchor | `9170c6f` | `TestCheckSiteBrokenAnchorBesideSQLText` |
+| 5d. same text in `<p>` and inline `<code>` ignored | `9170c6f` | `TestCheckSiteIgnoresAttributeTextInProseAndInlineCode` (also `script`/`style` bodies) |
+| 5e. real single-quoted attributes caught; existing edge expectations unchanged | `9170c6f` | `TestCheckSiteHTMLEdges` (unchanged), `TestCheckSiteTagScanner` |
+| 5f. `>` in quoted value before `href`; uppercase `HREF`/`ID`; unquoted `href` | `9170c6f` | `TestCheckSiteTagScanner` |
+| 6. re-run and record; build-notes wording | this commit | commands below; `build-notes.md` file table row and §9 "`site -check` now also" rewritten to describe the tag scanner (document-wide scanning wording removed) |
+
+All four new tests were confirmed to FAIL against the pre-fix `check.go` (HEAD `6003091`) and pass after.
+
+Scanner behaviour Neon should know (also in build-notes §9): `script`, `style`, `textarea`, `title` bodies are
+skipped up to their end tag; `<` not followed by an ASCII letter is text; end tags, `<!…>` and `<?…>` are skipped;
+an unterminated tag or comment at end of file ends the scan; an attribute written with no value (`<a href>`) has
+the empty value and is therefore reported as `empty link`.
+
+## Stale comments for Neon
+
+None. The `.go` files of this chunk carry no comments; no chapter text exists for this chunk. The removed
+identifiers (`idAttrPattern`, `linkAttrPattern`, `htmlCommentPattern`, `attrValue`) are mentioned nowhere else in
+the repo. Round 1's "Facts that changed" bullet for `internal/site/check.go` ("single-quoted attrs; HTML comments
+ignored") is still true but now comes from the tag scanner, not regexes.
+
+## Commands run (round 2)
+
+| command | result |
+| --- | --- |
+| `gofmt -l internal cmd agent_work/pub` | empty |
+| `go build ./... && go vet ./... && go test ./...` | PASS (all packages ok) |
+| `bash agent_work/verify/crossbuild.sh` | CROSSBUILD OK |
+| `go run ./cmd/course site -check -base /sqlite-internals/` | PASS site -check: 23 page(s), 1045 link(s) resolve |
+| `go run ./cmd/course site -check -base /` | PASS site -check: 23 page(s), 1045 link(s) resolve |
+| `go run ./cmd/course check paths` | PASS: 184 tracked text file(s), 0 binary, 17 upstream copies skipped, 7 external links |
+| `SQLITE_SRC=… go run ./cmd/course check all -skip-evidence` | exit 0: sources, spans, inline, gofmt (154 files), paths all PASS |
+| `bash agent_work/pub/adversarial/run-all.sh` (foreground, 18 s) | 48 HELD, 0 BROKEN; LINK-11a now HELD (`PASS … 6 page(s), 35 link(s)`), LINK-11b now HELD (`FAIL … missing anchor #alpha in #alpha`); LINK-04/05/06/10b HELD; results in `adversarial/results.txt`, copied to `results-run4.txt` |
