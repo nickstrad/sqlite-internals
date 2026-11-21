@@ -23,6 +23,10 @@ type Level int
 const (
 	// E1Bytes checks exact byte-for-byte equality via SHA-256 and locates the first differing page.
 	E1Bytes Level = 1
+	// E2Pages compares every page while ignoring a declared list of volatile header byte ranges.
+	E2Pages Level = 2
+	// E3Logical hashes schema, rows (with explicit rowids and storage classes), and persistent pragmas.
+	E3Logical Level = 3
 )
 
 // String returns the human-readable label for equality level l.
@@ -30,12 +34,17 @@ func (l Level) String() string {
 	switch l {
 	case E1Bytes:
 		return "E1 bytes"
+	case E2Pages:
+		return "E2 pages"
+	case E3Logical:
+		return "E3 logical"
 	}
 	return fmt.Sprintf("E%d", int(l))
 }
 
 // Result summarizes the outcome of comparing two database images or files at a
-// given Level, including both SHA-256 digests, sizes, and differing-page counts.
+// given Level, including both SHA-256 digests, sizes, differing-page counts,
+// and (for E2Pages) any ignored header byte ranges and differing offsets within them.
 type Result struct {
 	Level              Level
 	Equal              bool
@@ -46,10 +55,15 @@ type Result struct {
 	PageSize           int
 	FirstDifferingPage int
 	DifferingPages     int
+	Ignored            []ByteRange
+	IgnoredDiffering   []int
 }
 
 // String formats r as a single-line equality verdict for experiment output.
 func (r Result) String() string {
+	if r.Equal && len(r.IgnoredDiffering) > 0 {
+		return fmt.Sprintf("%s: equal ignoring header bytes %s (bytes differ only at %s)", r.Level, FormatRanges(r.Ignored), formatOffsets(r.IgnoredDiffering))
+	}
 	if r.Equal {
 		return fmt.Sprintf("%s: equal (sha256 %s)", r.Level, r.SHA256A)
 	}
