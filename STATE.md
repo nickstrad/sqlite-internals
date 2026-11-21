@@ -7,13 +7,11 @@ deterministically, well enough to build platforms holding thousands of SQLite fi
 can be remade as needed; state capture and deterministic rebuild is the through-line.
 Plan: OUTLINE.md (revision 2). What changed from revision 1: OUTLINE-CHANGES.md.
 
-Status: **Phase 2 (build) STOPPED, waiting for Nick** (2026-11-21 08:25 UTC). Chunk 0, chapters
-1–9 and the capstone service core (10a) have landed. Neon is throttled by the Gemini project's
-monthly spending cap: since 07:27 UTC small calls sometimes answer, but every working run is cut
-off after a few minutes ("temporarily rate-limited to prevent exceeding its monthly spending
-cap"); the 10b chain was tried twice (07:27 and 08:00) and stopped both times at its first
-step. OpenRouter is empty until 2026-12-01. Everything left needs Neon (see blockers), so no
-unblocked work remains.
+Status: **Phase 2 (build) running again** (2026-11-21 12:50 UTC). Chunk 0, chapters 1–9 and the
+capstone service core (10a) have landed. Neon answered again at 12:48 UTC, so chunk 10b's part A
+(Neon review + attack suite → Opus repair → Neon re-review) was relaunched with
+`agent_work/orch/resume-ch10b.sh`. If Neon is cut off again by the Gemini spending cap, the
+blocker below applies unchanged.
 
 Rulings applied (details: OUTLINE.md section 8):
 - Upstream github.com/nickstrad/sqlite-internals (public); every chunk lands on main and is pushed.
