@@ -1,0 +1,22 @@
+# Chapter 8 — Connection and database lifecycle — adversarial results (orchestrator's record)
+
+Run 1 — 2026-11-21, on the Opus build, `run-all.sh`. Raw output: `results-run1.txt`.
+20 HELD, 9 BROKEN. Every BROKEN line went to the repair round to be fixed or answered:
+
+| Attack | What was tried | Expected | Got |
+| --- | --- | --- | --- |
+| OPN-05 | audit Experiment 8.1 settings-json machine-readable output | all 14 placements present and all 12 observed[i].placement structs populated to match sqlitex.SettingPlacementFor | placements=14 observed=12 empty_observed_placements=12 mismatched=0 |
+| IDL-03a | open 50 WAL connections each with 1000-table schema and 5 prepared statements, check 8.2's 256 KiB/conn uncounted memory margin | descriptors = 3*N, RSS growth >= sum(CACHE+SCHEMA+STMT), and uncounted <= 256 KiB/conn | fds=150/150 schema_per_conn=251601B cache_per_conn=166188B stmt_per_conn=28240B sum=21.3MiB rss_growth=36.9MiB uncounted_per_conn=319KiB |
+| IDL-06a | pass int64*1024 overflowing KiB values (2^54 and 2^53) to procstat.ParseStatus and procstat.ParsePSRSS | both parsers reject overflowing KiB sizes with an error instead of wrapping to 0 or negative bytes | ParseStatus=(rss=0,anon=-9223372036854775808,err=<nil>) ParsePSRSS=(rss=-9223372036854775808,err=<nil>) |
+| IDL-06b | call procstat.DescriptorsUnder("/") and procstat.DescriptorsUnder(relativePath) while a file is open inside relativePath | DescriptorsUnder("/") finds open files under root (>0) and DescriptorsUnder(relativePath) resolves relative dir to find probe.txt (1) | root_matches=0(err=<nil>) rel_path="_work/adv-ch08/idle-cost-limits/idl06-rel" rel_matches=0(err=<nil>) |
+| MGR-03a | run connmgr with Capacity=200 under RLIMIT_NOFILE=128 over 80 WAL DBs (all open entries idle) | no fd leak on EMFILE, existing open DB stays servable, and manager automatically evicts an idle entry to keep serving new DBs | fail_at_db=40 open_len=40 fds_before=126 fds_after=126 existing_ok=true auto_recovered=false manual_evict_unblocked=true close_err=<nil> err="connmgr: open db-0040: open /root/Software/sqlite-internal |
+| ATR-01b | call connmgr.CheckAtRest while another process holds an open WAL connection with PRAGMA locking_mode=EXCLUSIVE (and contrast rollback-mode reader) | build-notes claims every open WAL connection keeps -shm so CheckAtRest catches it (AtRest=false); rollback-mode reader is documented invisible | wal_exclusive_reader=(AtRest=true,shm_exists=false) rollback_reader=(AtRest=true) |
+| ATR-02 | evict a rollback-mode DB from connmgr while a *sql.Rows cursor is still open, then attempt a write from a second process | Evict reports not-at-rest and preserves the open cursor's POSIX SHARED lock (second process gets SQLITE_BUSY both before and after) | evict_at_rest=true child_write_before=(ok=false,code=5) child_write_after_evict=(ok=true,code=0) |
+| ATR-03 | trigger Open failures on an unrecorded junk file and on a recorded DB reopen, then check connmgr.Stats() | UnverifiedOpens + VerifiedReopens == Misses (failed opens increment only OpenFailures, not UnverifiedOpens or VerifiedReopens) | misses=1 open_failures=2 unverified_opens=2 verified_reopens=1 sum=3 |
+| ATR-04 | call connmgr.Acquire(cancelledCtx, "b") when Capacity=1 holds healthy idle DB "a" | fails immediately with context.Canceled without evicting healthy DB "a" (evictions=0, open=[a]) | err=connmgr: open b: open _work/adv-ch08/atrest-and-connmgr-edge/atr04/b.db: context canceled evictions=1 open_ids=[] |
+
+Run 2 — after the Opus repair round (e9dadf2): 27 HELD, 2 BROKEN (`results-run2.txt`).
+The repair report (`../REPAIR-REPORT.md`) says for each run-1 finding whether it was fixed or answered. Still BROKEN in run 2:
+
+- IDL-03a — open 50 WAL connections each with 1000-table schema and 5 prepared statements, check 8.2's 256 KiB/conn uncounted memory margin
+- MGR-03a — run connmgr with Capacity=200 under RLIMIT_NOFILE=128 over 80 WAL DBs (all open entries idle)

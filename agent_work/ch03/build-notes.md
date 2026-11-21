@@ -1,12 +1,16 @@
 # Chunk 3 build notes (plain data for the prose pass)
 
-Builder: Claude Opus 5.5, branch `chunk/ch03`, 2026-11-20. Machine: linux/amd64, Go 1.26.8, ext4.
+Builder: Claude Opus 5.5, branch `chunk/ch03`, 2026-11-20. Repair round (review 1 + adversarial
+run 1): Claude Opus 5.5, 2026-11-21; every fact below is updated to the repaired code and the
+evidence regenerated after it (see `REPAIR-REPORT.md` for the finding-by-finding list).
+Machine: linux/amd64, Go 1.26.8, ext4.
 dbhash used for the evidence: `_tools/bin/dbhash`, a `./configure && make dbhash` build of the
 pinned tree (the same binary `go run ./cmd/course build-tools` produces). No CLI is needed by any
 chapter-3 experiment. darwin: cross-built and cross-vetted only, never run.
 All three experiments were also run inside the Debian `lab` container
 (`docker compose run --rm -T lab go run ./ch03-btrees-and-page-management/experiments/<name>`, its
-dbhash in `/opt/course-tools/bin`): EXACT output identical to the host's for all three.
+dbhash in `/opt/course-tools/bin`): EXACT output identical to the host's for all three (build
+round; the repair round re-ran on the host only).
 
 All source line numbers are at the pin (3.53.4). `go run ./cmd/course check spans ch03` passes (22
 spans); `check sources ch03` passes (2 files: `btree.c`, `btreeInt.h`, copied whole from
@@ -46,6 +50,15 @@ evidence apart from `INFO:` lines).
      byte 43 only (cookies 5 and 2). So "one sha256 after canonicalization" holds for the four
      builds and the replay, not for a backup copy.
    - part C3: an index created before vs after the rows canonicalizes to identical bytes.
+   - VACUUM INTO also copies the default cache size (header bytes 48-51, `aCopy[]`
+     `BTREE_DEFAULT_CACHE_SIZE`). Two files that differ only in `PRAGMA default_cache_size`
+     canonicalize to different bytes (adversarial EQ-03). E3 now hashes `default_cache_size` too
+     (seventh logical pragma), so E3 equality plus the same schema history does give E1-equal
+     canonical forms.
+   - part C1 (repair round): the R2 capture writes CREATE TABLE statements in `sqlite_schema` rowid
+     order (creation order), so replaying the capture of a source whose tables were created out of
+     name order canonicalizes to the source's own canonical bytes (E1 equal). The two sources'
+     captures differ: the capture records creation order.
    Platform consequence: comparing canonical forms at E1 needs the same schema history (creation
    order and number of schema changes); otherwise compare canonical forms at E2, or at E3.
 3. **The outline's 3.3 evidence "dbhash agrees with our logical hash on equality" holds for the
@@ -76,15 +89,82 @@ evidence apart from `INFO:` lines).
    149–228`: the comment it cites ends at 210; 211-228 are the `MX_CELL_SIZE` and `MX_CELL`
    macros. Kept as the outline has it. All other outline spans are exact.
 
-Everything else in the chapter-3 section was confirmed. The [unprobed] claims of 3.1 ("most
-inserts change one page", "an insert that fills a leaf changes several", "the tree gains a level
-while the root keeps its page number") all hold; details below. The [probed] claims of 3.2 and
-3.3 hold with corrections 1-3.
+7. **"Most inserts change one page" holds for appends and for small rows, not in general**
+   (adversarial SPL-01, SPL-03, SPL-05; now 3.1 part E). One row per transaction, WAL:
+   - random keys, 1000-byte rows (4 per leaf), 250 inserts: one page 86, added a page 70, several
+     pages without adding one 94 (balance_nonroot moving cells between siblings), 1..6 pages each.
+   - random keys, 40-byte rows (about 85 per leaf), 600 inserts: one page 566 — most again. The
+     rule depends on how many rows fit in a leaf.
+   - ascending keys, 5000-byte rows (each overflows; max local 4061): one page 0 of 25; every
+     insert writes the leaf, its overflow page(s) and page 1 (the file grows): 3..5 pages.
+   - ascending keys into a WITHOUT ROWID table (an index b-tree), 400-byte rows: the two inserts
+     that added a page at depth 2 changed 5 pages each. `balance_quick` requires a table leaf
+     (`intKeyLeaf`, btree.c 9185-9189), so index b-trees always split through `balance_nonroot`.
+     3.1's "an append split at depth 2 changes three pages" is about rowid tables only.
+8. **"The file never shrinks on its own" holds only with `auto_vacuum=NONE`** (SQLite's default,
+   the recipe's; adversarial DEL-02; now 3.2 auto_vacuum part). 200 rows, DELETE of 150:
+   NONE 52 → 52 pages (freelist 37), `PRAGMA incremental_vacuum` does nothing; FULL 53 → 16 pages
+   at the DELETE's own commit, freelist 0; INCREMENTAL 53 → 53 (freelist 37), then
+   `PRAGMA incremental_vacuum` → 16. (FULL and INCREMENTAL files start one page larger: the
+   pointer-map page.)
+9. **"A freed page keeps its old bytes unless secure_delete is on" is true of the database file
+   only.** With WAL, the frames the INSERT wrote stay in the `-wal` after the DELETE commits
+   (adversarial DEL-05; now 3.2 WAL part): 40 rows inserted then deleted with secure_delete=ON
+   and wal_autocheckpoint=0: all 40 readable in the `-wal` after the DELETE, still 40 after
+   `wal_checkpoint(PASSIVE)` (it copies the zeroed pages into the database file but does not
+   erase the WAL), 0 after `wal_checkpoint(TRUNCATE)`, 0 in the database file at rest.
+10. **The build round's 3.2 check "page_count grows only in a transaction that started with an
+    empty freelist" was too strong** (adversarial DEL-06). It held for the 4-row batches, but the
+    rule is per page allocation: a transaction that needs more pages than the freelist holds takes
+    the freelist first and then grows the file in the same transaction (3.2 large-transaction
+    part: freelist 2 → 0 and page_count 12 → 18 in one 32-row transaction). The check now reads
+    "every transaction that added pages ended with an empty freelist".
+
+Everything else in the chapter-3 section was confirmed. The [unprobed] claims of 3.1 ("an insert
+that fills a leaf changes several", "the tree gains a level while the root keeps its page number")
+hold; "most inserts change one page" holds with correction 7. The [probed] claims of 3.2 and 3.3
+hold with corrections 1-3 and 8-10.
 
 ## Shared package changes (all in `internal/equal`; every other package untouched)
 
 Backward compatible: nothing existing was removed or renamed. `equal.go` gained two constants,
 two `Result` fields and two `String()` branches; everything else is new files.
+
+Repair-round changes (all in `internal/equal`, regression tests in `repair_test.go` and the
+updated `pages_test.go` / `logical_test.go`):
+- `ChangedPages` now reports a page only when its sha256 differs or it exists in one manifest
+  only. A role change with identical bytes (a leaf freed under secure_delete=OFF, which SQLite
+  does not write) is no longer a "changed page" (adversarial SPL-07b: 17 reported vs 5 byte
+  changes and 5 WAL frames). The roles are still carried for display.
+- Every query reads `main` explicitly (`main.sqlite_schema`, `pragma_table_info(?, 'main')`,
+  `pragma_index_list(?, 'main')`, `FROM main."t"`, `PRAGMA main.<name>`, `PRAGMA
+  main.integrity_check`, `PRAGMA main.foreign_key_check`): a TEMP table with the same name no
+  longer shadows the main table on a caller's connection (review 8, adversarial EQ-08).
+- Rowid alias: when columns named `rowid`, `_rowid_` and `oid` all exist, the walk uses the
+  INTEGER PRIMARY KEY column if the table has one (exactly one pk column, declared type
+  `INTEGER`, no `pk`-origin index in `pragma_index_list` — `INTEGER PRIMARY KEY DESC`, `INT
+  PRIMARY KEY` and composite keys are not aliases); only otherwise "hide the rowid" (adversarial
+  EQ-04). The row then carries the key twice (as the rowid and as the column).
+- `LogicalPragmas` gained `default_cache_size` (adversarial EQ-03; header bytes 48-51, copied by
+  VACUUM INTO). On a fresh file it reads -2000.
+- `EncodeValue(any) []byte` keeps its signature; a Go type with no storage class (int, bool,
+  int32, …) is no longer encoded as empty bytes but as tag `U` + length-prefixed type name + tag
+  `v` + length-prefixed `%#v` text, so it never collides with a storage-class encoding or with
+  another unsupported value (review 7, adversarial EQ-08). The hash itself still refuses such
+  values (`StorageClassOf`), and the internal encoder returns an error for them.
+- `LogicalHash` ends its read transaction with `context.WithoutCancel(ctx)`: `COMMIT` on success,
+  `ROLLBACK` on error, so a canceled context no longer leaves the transaction open on the
+  connection (review 4, adversarial EQ-09).
+- `HasLiveSideFile(path)`: true when a non-empty `-wal` or `-journal` exists. `LogicalHashFile`
+  opens such a database `mode=ro` (otherwise `mode=rw` as before), and `RunDBHash` passes dbhash a
+  `file:…?mode=ro` URI (dbhash opens with `SQLITE_OPEN_URI`, dbhash.c 433-436). Before, both
+  opened read-write and the close checkpointed the WAL into the file and deleted it (adversarial
+  EQ-05). Measured in the unit test: database file and `-wal` byte-identical after both; the hash
+  includes the WAL's rows; dbhash of the live snapshot equals dbhash of the checkpointed source.
+  Side effect: a read-only open creates a `-shm` beside the snapshot if none existed. A hot
+  rollback journal is not tested (a read-only open cannot roll it back and should fail).
+- `CompareLogical` also reports pragmas present only in the second result, and compares the
+  foreign_key_check lists with `slices.Equal`.
 
 ### Level constants and `Result` (equal.go)
 
@@ -110,8 +190,9 @@ two `Result` fields and two `String()` branches; everything else is new files.
 
 ### Page changes between manifests (changes.go)
 
-- `ChangedPages(before, after Manifest) []PageChange` — pages whose sha256 or role differ, plus
-  pages present in only one manifest, sorted by page number. `PageChange{Page, RoleBefore,
+- `ChangedPages(before, after Manifest) []PageChange` — pages whose sha256 differs, plus pages
+  present in only one manifest, sorted by page number (repair round: a role change alone no
+  longer counts). `PageChange{Page, RoleBefore,
   RoleAfter}`; `Added()`, `Removed()`; `String()` gives `4(new table-leaf)`,
   `2(table-leaf->table-interior)`, `6(table-leaf)`, `9(gone, was overflow)`.
   `FormatPageChanges`, `PageNumbers`. Used by 3.1; meant for ch05's "frames vs pages" too.
@@ -121,7 +202,7 @@ two `Result` fields and two `String()` branches; everything else is new files.
 What is hashed, in this order, into one sha256 stream (`LogicalFormat` = "sqlite-internals logical
 hash v1" is written first):
 
-1. Schema: `SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type, name`. `rootpage`
+1. Schema: `SELECT type, name, tbl_name, sql FROM main.sqlite_schema ORDER BY type, name`. `rootpage`
    is left out (physical). `sql` NULL (autoindexes) is hashed as NULL. Each field is tagged and
    length-prefixed.
 2. Tables: `pragma_table_list` rows with `schema='main'`, type `table` or `shadow`, excluding
@@ -130,8 +211,9 @@ hash v1" is written first):
    depend on its module; its shadow tables are hashed as tables).
    Per table: name, rowid/without-rowid flag, column count and names, then every row:
    - rowid table: `SELECT <rowid alias>, +"c1", +"c2", … FROM "t" ORDER BY <rowid alias>`; the
-     alias is the first of `rowid`, `_rowid_`, `oid` that is not a column name (error "columns
-     named rowid, _rowid_ and oid hide the rowid" if all three are taken). The rowid is always
+     alias is the first of `rowid`, `_rowid_`, `oid` that is not a column name; if all three are
+     column names, the INTEGER PRIMARY KEY column if there is one; otherwise error "columns
+     named rowid, _rowid_ and oid hide the rowid". The rowid is always
      hashed, which is what catches implicit-rowid differences.
    - WITHOUT ROWID table: `SELECT +"c1", … ORDER BY <primary key columns in pk order>`.
    - The unary `+` on each column is there so the driver sees an expression with no declared
@@ -140,13 +222,14 @@ hash v1" is written first):
      storage class: nil → NULL, int64 → INTEGER, float64 → REAL, string → TEXT, []byte → BLOB
      (`StorageClassOf`; any other Go type is an error). Unit test checks this against `typeof()`
      including a DATETIME column holding text.
-   - Value encoding (`EncodeValue`): tag byte `N`, `I` + 8-byte big-endian two's complement, `R` +
+   - Value encoding (`EncodeValue`; unsupported Go types: see repair-round changes): tag byte `N`, `I` + 8-byte big-endian two's complement, `R` +
      8-byte big-endian IEEE-754 bits (so 1 vs 1.0 and 0.0 vs -0.0 differ), `T` / `B` + 8-byte
      length + bytes. Rows are `R` + value count; a table ends with `E` + row count. Length
      prefixes and separators are what close dbhash's two extra blind spots (correction 3).
 3. Persistent pragmas, in `LogicalPragmas` order: `page_size`, `encoding`, `auto_vacuum` (none /
    full / incremental), `user_version`, `application_id`, `journal_mode` reduced to `wal` or
-   `rollback` (bytes 18-19 are persistent; the rollback flavours are per connection).
+   `rollback` (bytes 18-19 are persistent; the rollback flavours are per connection),
+   `default_cache_size` (added in the repair round). All read as `PRAGMA main.<name>`.
 
 Plus, outside the hash: `integrity_check` (lines joined with " / ") and `foreign_key_check` (one
 sorted line per row: `c rowid=2 parent=p fkid=0`).
@@ -159,13 +242,16 @@ API:
   and the hash read the same content the same way. `TableInfo{Name, Kind, WithoutRowid,
   RowidColumn, Columns}`; `TableSelect` returns the SELECT used; `QuoteIdentifier` doubles `"`.
 - `LogicalHash(ctx, *sql.Conn) (Logical, error)`: runs everything inside one `BEGIN … COMMIT`
-  (a read transaction, so a concurrent writer cannot split the snapshot). `Logical{SHA256,
+  (a read transaction, so a concurrent writer cannot split the snapshot); ROLLBACK instead when
+  the walk fails, and the end statement ignores the caller's cancellation. `Logical{SHA256,
   SchemaSHA256, SchemaRows, Tables []{Name, Rows, SHA256}, Pragmas, Integrity,
   ForeignKeyCheck}`; `Summary()` prints it on one line; `TableByName`, `Pragma`.
 - `LogicalHashFile(ctx, path)`: refuses a missing file (`ErrNoDatabase`, and does not create
-  it), opens with `OpenExisting` = plain driver, `mode=rw` (not `ro`: a read-only open of a WAL
-  database leaves `-wal`/`-shm` behind, ch02 platform note), one connection, no settings changed;
-  hashes, closes. Test: the file's sha256 is unchanged and no side file is left.
+  it). A database at rest opens like `OpenExisting` = plain driver, `mode=rw` (not `ro`: a
+  read-only open of a WAL database at rest leaves `-wal`/`-shm` behind, ch02 platform note); a
+  database with a live `-wal` or `-journal` opens `mode=ro` (repair round). One connection, no
+  settings changed; hashes, closes. Tests: at rest, the file's sha256 is unchanged and no side
+  file is left; live WAL snapshot, the file and its `-wal` are unchanged.
 - `CompareLogical(a, b) LogicalResult{Level E3Logical, Equal, SHA256A, SHA256B, Differences}`:
   equal only if the streams are equal AND both integrity checks are "ok" AND the two
   foreign_key_check lists are equal. `Differences` names what differs: `schema differs (4 vs 5
@@ -182,7 +268,8 @@ API:
   exits 0 even when it cannot open a file (it prints to stderr and continues, dbhash.c:440), so
   any stderr output is an error. dbhash opens databases read-write (dbhash.c:434-438, "so hot
   journals can recover"), so on a WAL database at rest it leaves no side files; 3.3 checks the
-  file is still at rest after every run.
+  file is still at rest after every run. When `HasLiveSideFile` is true, `RunDBHash` hands dbhash
+  a `mode=ro` URI instead, so the run cannot checkpoint or roll back the file (repair round).
 
 ### Tests (`go test ./internal/equal`, about 7-9 s)
 
@@ -190,7 +277,15 @@ API:
   19, 23, 28, 39, 44, 91, 100, and bytes 24/95 of later pages → differ, page named); size
   difference; page size 0 and empty range refused. A real `sqlite3_backup` copy is E1-different
   and E2-equal, all differing bytes inside the declared list.
-- `ChangedPages`: added, removed, role change, identical manifests.
+- `ChangedPages`: added, removed, role change with new bytes, role change with the same bytes
+  (not reported), identical manifests.
+- Repair round (`repair_test.go`): IPK named `rowid` hashed and its value used as the rowid;
+  `INTEGER PRIMARY KEY DESC`, `INT PRIMARY KEY` and a composite key still refused; TEMP table
+  shadowing `main.t` on the caller's connection gives the same hash as the file alone; a context
+  that ends after 1..80 `Done()` calls never leaves the read transaction open (and a failed walk
+  neither); `default_cache_size` 2000 vs default differs at E3; unsupported Go types encode
+  non-empty and distinct; a live WAL snapshot hashed by `LogicalHashFile` and `RunDBHash` keeps
+  its database file and `-wal` byte-identical.
 - E3 blind spots, each with our hash and (when dbhash is found) dbhash: implicit rowid (dbhash
   blind), sqlite_sequence (blind), user_version (blind), integer 1 vs real 1.0 (dbhash sees it),
   value boundary (blind), row moved between tables (blind). All six: ours differ. dbhash was found
@@ -200,7 +295,7 @@ API:
 - WITHOUT ROWID table with a quoted odd name, a table whose columns are named `rowid` and
   `_rowid_` (alias falls back to `oid`), and the refusal when all three are taken.
 - Schema difference (an extra index), foreign_key_check difference (an orphan row inserted with
-  foreign keys off; two orphan databases are equal to each other), integrity failure, the six
+  foreign keys off; two orphan databases are equal to each other), integrity failure, the seven
   pragmas present with the expected values (`journal_mode` wal, `application_id` 1397836120).
 - Missing file refused and not created; hashing leaves the file and its side files unchanged.
 - Storage classes vs `typeof()`; nine encodings (NULL, int 1, real 1, text "1", blob "1", -0.0,
@@ -327,8 +422,8 @@ Claim: most inserts change one page; an insert that fills a leaf changes several
 overflows the tree gains a level while the root keeps its page number; the changed pages are the
 WAL frames shipped. Placed at steps 3 and 5.
 
-Run: `go run ./ch03-btrees-and-page-management/experiments/3.1-pages-per-insert` (≈ 31 s here,
-150 MB RSS). Evidence `evidence/3.1-pages-per-insert.txt` (115 lines). Exit 0, last line
+Run: `go run ./ch03-btrees-and-page-management/experiments/3.1-pages-per-insert` (≈ 21-35 s
+here depending on load, 150 MB RSS). Evidence `evidence/3.1-pages-per-insert.txt` (133 lines). Exit 0, last line
 `PAGES PER INSERT OK`. Portable (no CLI, no strace).
 
 Method: one connection, WAL, `synchronous=OFF`, `wal_autocheckpoint=0`. After each one-row
@@ -367,8 +462,9 @@ How to read the output:
   check.
 - Histogram: 1 page: 1546 inserts; 3 pages: 513; 4 pages: 1; 5 pages: 1. Splits: 515, at #5, #9,
   #13, …, #2061. Checks: first split at #5 as predicted; every split at #4m + 1; every non-split
-  insert changes exactly one page and it is a table leaf (page 1 is not written in WAL mode);
-  most inserts change one page (1546 of 2061).
+  insert changes exactly one page and it is the table leaf that now holds the new rowid, never
+  page 1 (repair round: the check reads the leaf's cells for the rowid and excludes page 1; it
+  used to accept any table leaf); most inserts change one page (1546 of 2061).
 - **First split, depth 1 → 2 (insert #5)**: pages `[1 2 3 4]`, WAL frames `[1 2 3 4]`. Layout:
   page 1 in-header size 2 → 4; page 2 table-leaf with keys 2,4,6,8 (content-start 68, unused 52) →
   table-interior with 1 cell (key 8), children [3 4], unused 4077; page 3 new, a copy of the old
@@ -390,7 +486,8 @@ How to read the output:
   pages for every insert.
 - `WAL frames for 2061 inserts: 3094 (12747280 bytes …); the table itself is 520 pages` — the
   WAL shipped about 6 times the table's size.
-- **Part B (middle split)**: 20 appends (rowids 2..40) → 5 full leaves 3-7 under root 2 (layout
+- **Part B (middle split)**: (repair round: the page reads for the unchanged-frame lines are
+  error-checked, and the check also asserts the before and after bytes are equal) 20 appends (rowids 2..40) → 5 full leaves 3-7 under root 2 (layout
   printed). Insert rowid 11 into leaf 4 (keys 10..16, full): pages changed `[1 2 4 5 8]`, WAL
   frames `[1 2 3 4 5 8]`. After: leaf 4 keys 10,11,12,14; leaf 5 keys 16,18,20 (unused 1061);
   new leaf 8 keys 22,24 (unused 2070); root gets 5 dividers 8,14,20,24,32, children
@@ -402,9 +499,29 @@ How to read the output:
   #50 changed `3(index-leaf) 4(index-leaf) 7(table-leaf)`. WAL frames = changed pages and
   integrity ok throughout.
 - **Part D (rollback mode)**: same appends with `journal_mode=DELETE`: every commit includes page
-  1 (change counter): 2 pages: 10 inserts, 3: 1 (append split), 4: 1 (first split).
+  1 (change counter): 2 pages: 10 inserts, 3: 1 (append split), 4: 1 (first split). Repair
+  round, three checks instead of one: every commit rewrites page 1; every insert that adds no
+  page changes exactly two pages (page 1 and the leaf holding the new rowid); on those inserts
+  page 1 differs from before only inside bytes 24-27 and 92-95 (`equal.CompareImagesIgnoring`
+  of page 1 with those two ranges: equal, with some ignored byte differing).
+- **Part E (repair round, correction 7): where "most inserts change one page" stops holding.**
+  Four tables, each its own file, columns `(k INTEGER PRIMARY KEY, v BLOB)`, one row per
+  transaction, the same manifest/WAL/integrity measurement as part A after every insert. Keys
+  shuffled with PCG seed 11. Per workload the line gives: inserts; one page; added a page;
+  several pages, none added; min..max pages changed; final depth; leaves and their row counts;
+  then the inserts that added a page while the tree was at depth 2, grouped by pages changed.
+  - random 1000-byte (250): 86 / 70 / 94, 1..6; depth 2, 71 leaves of 2..4 rows; at depth 2:
+    5 pages 40, 6 pages 29.
+  - random 40-byte (600): 566 / 7 / 27, 1..6; 8 leaves of 43..85 rows; 5 pages 1, 6 pages 5.
+  - ascending 5000-byte (25): 0 / 25 / 0, 3..5; 7 leaves of 1..4 rows; 3 pages 15, 4 pages 5
+    (every insert adds pages: overflow pages).
+  - ascending WITHOUT ROWID 400-byte (30): 23 / 3 / 4, 1..5; 4 leaves of 4..9 rows; 5 pages 2.
+  Checks: random large rows → fewer than half change one page and some change several without
+  adding one; random small rows → most change one page; overflowing rows → none changes one
+  page, each ≥ 3; WITHOUT ROWID → every split at depth 2 changes more than 3 pages; every
+  changed page is in its commit's WAL frames; integrity ok after every insert.
 
-Outline claims: all confirmed (corrections 4 and 5 refine the wording).
+Outline claims: confirmed, with corrections 4, 5 and 7 refining the wording.
 
 ## Experiment 3.2 delete-and-reuse
 
@@ -412,8 +529,8 @@ Claim: deleting rows moves emptied pages to the freelist, later inserts reuse th
 file grows, the file never shrinks on its own, a freed page keeps its old bytes unless
 `secure_delete` is on. Placed at step 5.
 
-Run: `go run ./ch03-btrees-and-page-management/experiments/3.2-delete-and-reuse` (≈ 3.5 s, 150 MB
-RSS). Evidence `evidence/3.2-delete-and-reuse.txt` (75 lines). Exit 0, last line `DELETE AND
+Run: `go run ./ch03-btrees-and-page-management/experiments/3.2-delete-and-reuse` (≈ 5 s, 150 MB
+RSS). Evidence `evidence/3.2-delete-and-reuse.txt` (96 lines). Exit 0, last line `DELETE AND
 REUSE OK`. Portable.
 
 Method: the same sequence twice, `secure_delete=OFF` then `ON`, each in its own directory. WAL,
@@ -434,11 +551,15 @@ How to read the output (OFF block; the ON block has the same numbers except the 
    pages 30 and 55-78, all 25 former freelist pages. Deleted rows still readable: 104 (ON: 0).
 4. 30 transactions of 4 rows: batch 1 freelist 25 → 24 with page_count unchanged … batch 25
    freelist 1 → 0, page_count 102; batches 26-30 grow the file one page each (102 → 107).
-   Check: page_count grew only in transactions that started with an empty freelist.
+   Check (reworded in the repair round, correction 10): page_count grows only once the freelist
+   is used up — every transaction that added pages ended with an empty freelist.
 5. `DELETE FROM t WHERE id >= 1001` (220 rows): 107 pages, freelist 55 (trunk 102), size
-   unchanged.
-6. `VACUUM`: 208896 bytes = 51 pages (196 rows = 49 leaves + root + page 1), freelist 0, no
-   deleted marker left. Check: pages ≤ pages − freelist before.
+   unchanged. Repair round: the NEW- and GROW- markers of these 220 rows are searched too: OFF
+   217 of 220 readable on 55 pages (54 freelist leaves, 1 trunk); ON 0.
+6. `VACUUM`: 208896 bytes = 51 pages (196 rows = 49 leaves + root + page 1), freelist 0. Check:
+   pages ≤ pages − freelist before. Repair round: the post-VACUUM search covers all 424 deleted
+   rows (204 SECRET- of step 2 + 220 NEW-/GROW- of step 5): 0 found, OFF and ON (it used to search
+   only the SECRET- range, review 9). A search line with no page found no longer ends in ": ".
 - Comparison: file sizes identical for OFF and ON at every step `[417792 417792 417792 438272
   438272 208896]`; deleted rows readable after the delete OFF 199 / ON 0, after the reuse OFF 104
   / ON 0; WAL frames of the delete OFF 5 / ON 54.
@@ -448,8 +569,26 @@ Why 5 vs 54: without secure_delete, a page freed as a freelist leaf is marked "d
 the two partial leaves; with it, every freed page is zeroed, so it is written. The same rule
 explains the stale bytes: an unwritten page keeps what was on disk.
 
-Outline claims: all confirmed. Added: the WAL-frame cost of secure_delete; where the stale bytes
-are by page role; that the trunk page and partially emptied leaves also hold stale bytes.
+Comparison block: new check "the second delete leaves its rows readable too without
+secure_delete"; the ON check now reads "nowhere in the database file at rest" and covers the
+second delete as well.
+
+Three parts after the comparison (repair round):
+- **A transaction larger than the freelist** (secure_delete=ON, WAL): 40 rows, DELETE ids 1..8 →
+  freelist 2, page_count 12; one transaction of 32 rows → freelist 2 → 0, page_count 12 → 18.
+  Check: the freelist is used first, then the file grows in the same transaction (correction 10).
+- **auto_vacuum** (each mode a fresh file created with that mode, sessions closed between steps,
+  sizes from the file at rest): numbers in correction 8. Checks: NONE never shrinks and
+  `incremental_vacuum` does nothing; FULL shrinks at the DELETE's commit, freelist 0;
+  INCREMENTAL keeps the freelist until `PRAGMA incremental_vacuum`.
+- **secure_delete=ON and the -wal**: numbers in correction 9. The `-wal` is read with
+  `os.ReadFile` while the connection is open (SQLite holds no POSIX lock on the `-wal`); the
+  database file only after close. Checks: all 40 deleted rows readable in the `-wal` after the
+  DELETE and after a PASSIVE checkpoint; 0 after `wal_checkpoint(TRUNCATE)` and in the file.
+
+Outline claims: confirmed with corrections 8-10. Added: the WAL-frame cost of secure_delete; where
+the stale bytes are by page role; that the trunk page and partially emptied leaves also hold
+stale bytes; that the `-wal` keeps deleted rows until it is reset.
 
 ## Experiment 3.3 same-rows-different-bytes (rung R2)
 
@@ -458,17 +597,26 @@ insert order give different files; all have one logical hash; their ordered logi
 byte-identical; VACUUM INTO gives one sha256 for all of them and for the replayed capture — with
 the limits of correction 2. Placed at step 6. Completes `internal/equal` (E2, E3).
 
-Run: `go run ./ch03-btrees-and-page-management/experiments/3.3-same-rows-different-bytes` (≈ 6 s,
-150 MB RSS). Evidence `evidence/3.3-same-rows-different-bytes.txt` (98 lines). Exit 0, last line
+Run: `go run ./ch03-btrees-and-page-management/experiments/3.3-same-rows-different-bytes` (≈ 6-11
+s, 150 MB RSS). Evidence `evidence/3.3-same-rows-different-bytes.txt` (100 lines). Exit 0, last line
 `SAME ROWS OK`. Portable; dbhash optional.
 
 Capture / rebuild / canonical form: capture = an ordered SQL dump written in Go from
 `equal.WalkLogical` (`capture/r0.sql`: file pragmas, `PRAGMA journal_mode=WAL`, BEGIN, CREATE TABLE
-in name order, every row as `INSERT INTO "t"(rowid, "c1", …) VALUES(…)` in table-name and rowid
+in `sqlite_schema` rowid order (creation order; repair round — it was name order, adversarial
+R2-02), every row as `INSERT INTO "t"(rowid, "c1", …) VALUES(…)` in table-name and rowid
 order with typed literals — integers in decimal, reals with the shortest round-trip form plus
-`.0` when needed, text quoted with `''`, blobs `X'…'` — then `sqlite_sequence` rows if any, then
-indexes, views and triggers, `user_version`, `application_id`, COMMIT); rebuild = executing that
-script on a fresh file with the plain driver; canonical form = `VACUUM INTO`.
+`.0` when needed, text quoted with `''` and split at each NUL byte into `'a'||char(0)||'b'`
+(repair round, adversarial R2-03b: a raw NUL ended the SQL text), blobs `X'…'` — then `sqlite_sequence` rows if any, then
+indexes, views and triggers (each group in `sqlite_schema` rowid order), `user_version`,
+`application_id`, COMMIT); rebuild = executing that script on a fresh file with the plain driver;
+canonical form = `VACUUM INTO`. Repair round: each INSERT line is built from the column list and
+the literals directly (`insertStatement`), not by replacing the `?` marks of the prepared
+statement, which corrupted identifiers containing `?` (review 5, adversarial R2-03b); a rowid
+alias that is a real column (the INTEGER PRIMARY KEY case above) is quoted. Unit tests
+`main_test.go`: a source with embedded NULs, tables `"t?"("?")` WITHOUT ROWID and
+`"pair"("?, ?")`, an IPK named `rowid` and tables created zebra before alpha: dump, replay, E3
+equal, the replay dumps to the same script, and both VACUUM INTO outputs are E1-equal.
 Limits of this capture, deliberately: tables named `sqlite_*` other than `sqlite_sequence`
 (e.g. `sqlite_stat1`) are refused with an error; NaN cannot occur (SQLite stores NaN as NULL);
 `-0.0` would be written as `-0.0` and SQLite may store it as 0 — not exercised.
@@ -484,22 +632,28 @@ How to read the output:
   (WAL, secure_delete ON) with synchronous OFF (the sha256 values were the same with FULL).
 - Table 1 (against r0): sha256 prefix; E1 (`differ (268 pages differ, sizes differ)` …); E2 the
   same except the backup (`equal except header bytes [27 43 95]`); E3 `equal` for all.
-- Table 2: logical sha256 `1a656547…` for all six; dump sha256 `92d38985…` for all six; dbhash
+- Table 2: logical sha256 `3de6a887…` for all six (was `1a656547…` before `default_cache_size`
+  joined the hash); dump sha256 `92d38985…` for all six; dbhash
   `9bee1689…` for all six; VACUUM INTO sha256 `927e39a4…` for five, `9324d944…` for the backup.
-- Then: the R0 logical summary (pragmas: page_size 4096, UTF-8, none, 30, 1397836120, wal;
-  integrity ok; 0 fk rows); 4 distinct file sha256; checks (correction 1); same logical hash;
-  E3-equal; the capture is identical for every build ("the capture depends on content, not
-  history"); one canonical sha256 for the five; the backup's canonical form differs at byte 43
+- Then: the R0 logical summary (pragmas: page_size 4096, UTF-8, none, 30, 1397836120, wal,
+  default_cache_size -2000; integrity ok; 0 fk rows); 4 distinct file sha256; checks (correction
+  1); same logical hash; E3-equal; the capture is identical for every build ("it depends on
+  content and the schema's creation order, not on insert order, batching or updates" — reworded
+  in the repair round); one canonical sha256 for the five; the backup's canonical form differs at byte 43
   (cookies 5 and 2); dbhash agrees on equality; canonical form header: 1089536 bytes, bytes 18-19
   = 1,1, change counter 1, schema cookie 5; VACUUM INTO keeps rows, schema, user_version and
   application_id but its logical hash differs only in `journal_mode` (rollback).
 - **Part A2.** Same two batchings in rollback mode: E1 differ (1 of 266 pages), E2 equal
   (`[26 27 94 95]`), change counters 3 and 1463.
-- **Part B.** Six pairs, table `pair / ours / dbhash / our first difference`, one check line for
-  dbhash's verdict and one for ours. sqldiff is not built by build-tools; its 1 vs 1.0 blind spot
+- **Part B.** Six pairs, table `pair / ours / dbhash / our first difference`, then (repair round:
+  after the table, no longer interleaved with its rows) one check line for dbhash's verdict and
+  one for ours per pair. sqldiff is not built by build-tools; its 1 vs 1.0 blind spot
   is cited from the research report, not re-run.
 - **Part C.** The three canonical-form limits of correction 2, with dbhash of the sources (equal
-  in all three).
+  in all three). Repair round, under C1: "captures of the two sources: differ; the second
+  source's capture replayed and canonicalized vs the second source's canonical form at E1:
+  equal" and its check (the capture records creation order, so the R2 replay of a source
+  canonicalizes to the source's own bytes).
 
 Outline claims: E3 equal and one logical hash — CONFIRMED; one sha256 after canonicalization
 shared by the replayed copy — CONFIRMED for the builds (correction 2 for backup copies and other
@@ -524,7 +678,8 @@ Middle split (3.1 B), rowid 11 into leaf 4 = [10,12,14,16]: written [1 2 3 4 5 8
 5 8]; leaves after: 3 [2..8], 4 [10,11,12,14], 5 [16,18,20], 8 [22,24], 6, 7 unchanged; root
 dividers 8,14,20,24,32.
 
-Rollback mode (3.1 D): every commit also rewrites page 1 (2 pages per ordinary insert).
+Rollback mode (3.1 D): every commit also rewrites page 1 (2 pages per ordinary insert; page 1
+changes only in bytes 24-27 and 92-95).
 
 ## Platform implications (facts)
 
@@ -535,7 +690,7 @@ Rollback mode (3.1 D): every commit also rewrites page 1 (2 pages per ordinary i
 - Shipped ≥ changed: a frame can carry an unchanged page (correction 4). A WAL shipper must not
   assume every frame is a change, and a page-diff replicator (sqlite3_rsync style) can ship less.
 - Rollback mode writes page 1 at every commit (2 pages per ordinary insert, plus the journal).
-- Files do not shrink on delete; freed pages are reused before the file grows (3.2: 50 freed, 25
+- Files do not shrink on delete (with auto_vacuum NONE, correction 8); freed pages are reused before the file grows (3.2: 50 freed, 25
   reused, growth only after the freelist is empty); `VACUUM` returns the space (107 → 51 pages).
 - `secure_delete=OFF`: 199 of 204 deleted rows are still readable in the file after the delete,
   104 after reuse — on freelist leaves, the trunk, and freeblocks of live leaves. Any page-level
@@ -552,6 +707,16 @@ Rollback mode (3.1 D): every commit also rewrites page 1 (2 pages per ordinary i
   script (sha256 `92d38985…`). It is about 1.8× the database size here because blobs are hex.
 - Use our E3 logical hash, not dbhash, to decide "same content": dbhash misses implicit rowids,
   `sqlite_sequence`, `user_version`, value boundaries and rows moved between tables.
+- (repair round) Pages per insert depend on row size and key order: random keys with a few rows
+  per leaf make most inserts rebalance (86 of 250 touched one page), overflowing rows always
+  write several pages, and WITHOUT ROWID / index b-trees never take the cheap append split.
+- (repair round) `auto_vacuum=FULL` shrinks the file at the deleting commit; `INCREMENTAL` on
+  `PRAGMA incremental_vacuum`; the recipe's NONE never.
+- (repair round) secure_delete does not scrub the `-wal`: a copy of the `-wal` (or a WAL
+  shipper) carries deleted rows until the WAL is reset; 3.2 shows the TRUNCATE checkpoint.
+- (repair round) Hashing a live WAL snapshot (database file + non-empty `-wal`) must open it
+  read-only; a read-write open checkpoints it on close. `LogicalHashFile` and `RunDBHash` do
+  this now.
 
 ## WAL-default evaluation (ruling 10) for this chapter
 
@@ -580,13 +745,14 @@ image has dbhash in `/opt/course-tools/bin`).
 
 ## Runtimes (this VM, 4 cores, shared)
 
-3.1 ≈ 31 s (it was 54 s before the hash reuse; most of the rest is 2061 censuses, integrity
-checks and `sqlite_dbpage` reads), 3.2 ≈ 3.5 s, 3.3 ≈ 6 s; `go run ./cmd/course check evidence
+3.1 ≈ 21-35 s with part E (it was 54 s before the hash reuse; most of the rest is 2061 + 905
+censuses, integrity checks and `sqlite_dbpage` reads), 3.2 ≈ 5 s, 3.3 ≈ 6-11 s; `go run ./cmd/course check evidence
 ch03` (six runs) 52 s. All under 160 MB RSS.
 
 ## Working scripts
 
-None kept: every probe while building was a run of the experiments themselves. A CPU profile of
+None kept: every probe while building or repairing was a run of the experiments or unit tests
+themselves. A CPU profile of
 3.1 (pprof, temporary edit, reverted) found the sha256 cost that led to the hash reuse.
 `agent_work/ch03/INDEX.md` lists this notes file.
 
@@ -598,3 +764,14 @@ None kept: every probe while building was a run of the experiments themselves. A
 - Neon's adversarial starting list: 3.1 random insert orders / other row sizes / two indexes (part
   C already shows the index case); 3.2 stale bytes in a plain copy and a backup, VACUUM (part 6
   already shows VACUUM); 3.3 blind spots (part B already shows all four plus two more).
+
+## Repair round 1: notes for Neon
+
+- Adversarial run 2 (after the repair): 22 HELD, 8 BROKEN. Six of the BROKEN lines (SPL-01,
+  SPL-03, SPL-05, DEL-02, DEL-05, DEL-06) expect the unqualified claims; their measurements now
+  appear as checked corrections 7-10. The other two (R2-02, R2-03b) test a verbatim copy of the
+  build-round dump kept inside the attack file, not the experiment's code (details in
+  `REPAIR-REPORT.md`).
+- `EncodeValue` kept its one-result signature on purpose: the EQ-08 attack calls it that way.
+- `check all` fails only on pre-existing items outside chapter 3 (ch01/ch02 inline checks on
+  this branch's older ch01/ch02 code; `_tools/bin/kb` tracked binary in `check paths`).

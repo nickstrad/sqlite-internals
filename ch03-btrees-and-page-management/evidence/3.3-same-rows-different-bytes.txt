@@ -38,19 +38,19 @@ each build against R0 (E1 = file sha256, E2 = page diff ignoring header bytes 24
 check ok: the backup copy differs from R0 in bytes (E2 pages: equal ignoring header bytes 24-27, 40-43, 92-99 (bytes differ only at [27 43 95])) but is equal at E2: only declared header bytes differ
 the same builds, logically and canonically:
   build            logical sha256   dump sha256      dbhash                                   VACUUM INTO sha256
-  r0               1a656547f69ec8f3 92d3898538e25714 9bee16896cb395b91df1ef4de2cbf4095ab44d13 927e39a45becbb84
-  one-transaction  1a656547f69ec8f3 92d3898538e25714 9bee16896cb395b91df1ef4de2cbf4095ab44d13 927e39a45becbb84
-  per-statement    1a656547f69ec8f3 92d3898538e25714 9bee16896cb395b91df1ef4de2cbf4095ab44d13 927e39a45becbb84
-  shuffled         1a656547f69ec8f3 92d3898538e25714 9bee16896cb395b91df1ef4de2cbf4095ab44d13 927e39a45becbb84
-  replayed         1a656547f69ec8f3 92d3898538e25714 9bee16896cb395b91df1ef4de2cbf4095ab44d13 927e39a45becbb84
-  backup           1a656547f69ec8f3 92d3898538e25714 9bee16896cb395b91df1ef4de2cbf4095ab44d13 9324d9446d407e55
-logical hash of R0: logical sha256 1a656547f69ec8f317999eea804fc26cd345cd69631d0e6c3092703de22f0953; schema rows 4; table rows accounts=183 documents=96 events=1177; page_size=4096 encoding=UTF-8 auto_vacuum=none user_version=30 application_id=1397836120 journal_mode=wal; integrity_check ok; foreign_key_check 0 row(s)
+  r0               3de6a8870f70a57c 92d3898538e25714 9bee16896cb395b91df1ef4de2cbf4095ab44d13 927e39a45becbb84
+  one-transaction  3de6a8870f70a57c 92d3898538e25714 9bee16896cb395b91df1ef4de2cbf4095ab44d13 927e39a45becbb84
+  per-statement    3de6a8870f70a57c 92d3898538e25714 9bee16896cb395b91df1ef4de2cbf4095ab44d13 927e39a45becbb84
+  shuffled         3de6a8870f70a57c 92d3898538e25714 9bee16896cb395b91df1ef4de2cbf4095ab44d13 927e39a45becbb84
+  replayed         3de6a8870f70a57c 92d3898538e25714 9bee16896cb395b91df1ef4de2cbf4095ab44d13 927e39a45becbb84
+  backup           3de6a8870f70a57c 92d3898538e25714 9bee16896cb395b91df1ef4de2cbf4095ab44d13 9324d9446d407e55
+logical hash of R0: logical sha256 3de6a8870f70a57c3fe28ce66a186325180876f77a1358c1717dbc4bc26cf2f0; schema rows 4; table rows accounts=183 documents=96 events=1177; page_size=4096 encoding=UTF-8 auto_vacuum=none user_version=30 application_id=1397836120 journal_mode=wal default_cache_size=-2000; integrity_check ok; foreign_key_check 0 row(s)
 distinct file sha256 among r0, one-transaction, per-statement, shuffled, replayed: 4
 check ok: in WAL mode one transaction and one transaction per statement give byte-identical files: commit boundaries alone leave no trace when rows are only appended
 check ok: insert order (shuffled) and history (R0's updates and deletes) each give a different file
 check ok: every build has the same logical hash
 check ok: every build is equal to R0 at E3 (logical hash, integrity_check ok, foreign_key_check unchanged)
-check ok: the ordered logical capture is itself identical for every build: the capture depends on content, not history
+check ok: the ordered logical capture is itself identical for every build: it depends on content and the schema's creation order, not on insert order, batching or updates
 check ok: after VACUUM INTO every build, the replayed copy included, has the same sha256 (E1 between canonical forms)
 canonical form of the backup vs of R0: E1 differ (1 of 266 pages); E2 equal except header bytes [43]; schema cookies 5 and 2
 check ok: except the backup copy: the backup API sets the copy's schema cookie to (old destination cookie + 1) = 1 (backup.c:448), VACUUM INTO carries the cookie + 1, so its canonical form differs at byte 43 only
@@ -64,23 +64,23 @@ check ok: in rollback mode the batching shows, but only in the change counter (b
 
 == B. pairs that differ in content where a weaker logical hash says equal
   pair                                     ours   dbhash our first difference
-check ok: implicit rowids (1,2 vs 5,9): dbhash says equal
   implicit rowids (1,2 vs 5,9)             differ equal  table t differs (2 vs 2 rows)
+  sqlite_sequence (1 vs 2)                 differ equal  table sqlite_sequence differs (1 vs 1 rows)
+  user_version (1 vs 2)                    differ equal  pragma user_version 1 vs 2
+  integer 1 vs real 1.0                    differ differ table t differs (1 vs 1 rows)
+  value boundary ('a3','b' vs 'a','3b')    differ equal  table t differs (1 vs 1 rows)
+  row moved between tables                 differ equal  table a differs (2 vs 1 rows)
+check ok: implicit rowids (1,2 vs 5,9): dbhash says equal
 check ok: implicit rowids (1,2 vs 5,9): our logical hash tells the two apart
 check ok: sqlite_sequence (1 vs 2): dbhash says equal
-  sqlite_sequence (1 vs 2)                 differ equal  table sqlite_sequence differs (1 vs 1 rows)
 check ok: sqlite_sequence (1 vs 2): our logical hash tells the two apart
 check ok: user_version (1 vs 2): dbhash says equal
-  user_version (1 vs 2)                    differ equal  pragma user_version 1 vs 2
 check ok: user_version (1 vs 2): our logical hash tells the two apart
 check ok: integer 1 vs real 1.0: dbhash says differ
-  integer 1 vs real 1.0                    differ differ table t differs (1 vs 1 rows)
 check ok: integer 1 vs real 1.0: our logical hash tells the two apart
 check ok: value boundary ('a3','b' vs 'a','3b'): dbhash says equal
-  value boundary ('a3','b' vs 'a','3b')    differ equal  table t differs (1 vs 1 rows)
 check ok: value boundary ('a3','b' vs 'a','3b'): our logical hash tells the two apart
 check ok: row moved between tables: dbhash says equal
-  row moved between tables                 differ equal  table a differs (2 vs 1 rows)
 check ok: row moved between tables: our logical hash tells the two apart
   sqldiff is not built by build-tools; the research probe found it reports integer 1 and real 1.0 as equal (docs/knowledge/determinism-and-rebuild.md, Q4)
 
@@ -88,6 +88,8 @@ check ok: row moved between tables: our logical hash tells the two apart
   tables created in another order: sources at E3: equal; VACUUM INTO outputs at E1: differ (3 of 3 pages); at E2: differ (3 of 3 pages); schema cookies 3 and 3
     dbhash of the sources: equal
 check ok: same content, tables created in another order: logically equal, but VACUUM INTO copies tables in sqlite_schema order, so the canonical files differ beyond the header
+    captures of the two sources: differ; the second source's capture replayed and canonicalized vs the second source's canonical form at E1: equal
+check ok: the capture writes CREATE TABLE in sqlite_schema order, so it records the creation order too: the replay of a source canonicalizes to the source's own canonical bytes
   a table created and dropped in the history: sources at E3: equal; VACUUM INTO outputs at E1: differ (1 of 2 pages); at E2: equal except header bytes [43]; schema cookies 2 and 4
     dbhash of the sources: equal
 check ok: a schema change that left no trace in the content still raises the schema cookie, and VACUUM INTO carries the cookie (+1): the canonical files differ only at bytes 40-43

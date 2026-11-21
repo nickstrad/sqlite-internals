@@ -720,6 +720,74 @@ func TestUnstampedEmptyDatabaseIsStampedButUsedOneIsNot(t *testing.T) {
 	}
 }
 
+// TestSettingPlacementsCoverEveryCourseSetting checks all 14 declared settings, their file-vs-connection home, and SettingPlacementFor lookups.
+func TestSettingPlacementsCoverEveryCourseSetting(t *testing.T) {
+	want := map[string]SettingHome{
+		"page_size": SettingInFile, "journal_mode=wal": SettingInFile, "auto_vacuum": SettingInFile,
+		"encoding": SettingInFile, "user_version": SettingInFile, "application_id": SettingInFile,
+		"default_cache_size": SettingInFile, "journal_mode=delete|truncate|persist|memory|off": SettingPerConnection,
+		"synchronous": SettingPerConnection, "foreign_keys": SettingPerConnection, "cache_size": SettingPerConnection,
+		"busy_timeout": SettingPerConnection, "wal_autocheckpoint": SettingPerConnection, "secure_delete": SettingPerConnection,
+	}
+	placements := SettingPlacements()
+	if len(placements) != len(want) {
+		t.Fatalf("got %d placements, want %d", len(placements), len(want))
+	}
+	for _, p := range placements {
+		home, ok := want[p.Name]
+		if !ok || home != p.Home {
+			t.Errorf("%s: home %q, want %q (known %v)", p.Name, p.Home, home, ok)
+		}
+		if (p.Home == SettingInFile) != (p.HeaderBytes != "") {
+			t.Errorf("%s: header bytes %q with home %s", p.Name, p.HeaderBytes, p.Home)
+		}
+		got, found := SettingPlacementFor(p.Name)
+		if !found || got != p {
+			t.Errorf("SettingPlacementFor(%q) = %+v, %v", p.Name, got, found)
+		}
+	}
+	if _, found := SettingPlacementFor("mmap_size"); found {
+		t.Error("mmap_size is not a course setting")
+
+	}
+}
+
+// TestDSNWithVFS verifies Options.VFS emits a vfs= URI parameter and reaches SQLite's VFS selection.
+func TestDSNWithVFS(t *testing.T) {
+	o := DefaultOptions()
+	o.VFS = "unix-none"
+	dsn, err := DSN("/x/t.db", o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(dsn, "vfs=unix-none") || !strings.HasPrefix(dsn, "file:/x/t.db?") {
+		t.Fatal(dsn)
+	}
+	o.VFS = ""
+	dsn, err = DSN("/x/t.db", o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(dsn, "vfs=") {
+		t.Fatal(dsn)
+	}
+	dir := t.TempDir()
+	_, err = Open(context.Background(), filepath.Join(dir, "w.db"), Options{File: DefaultFileSettings(), Conn: DefaultConnSettings(), SingleConnection: true, VFS: "unix-dotfile"})
+	if err == nil || !strings.Contains(err.Error(), "SQLite reports delete") {
+		t.Fatalf("WAL through unix-dotfile: %v", err)
+	}
+	file := DefaultFileSettings()
+	file.JournalMode = JournalDelete
+	db, err := Open(context.Background(), filepath.Join(dir, "v.db"), Options{File: file, Conn: DefaultConnSettings(), SingleConnection: true, VFS: "unix-dotfile"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("CREATE TABLE t(x)"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestBackupWithSourceExecMirrorsSameConnectionWrites(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

@@ -47,7 +47,7 @@ journal_mode=wal, busy_timeout=120000ms on both connections
 step 29  writer-1   begin immediate                      -> SQLITE_OK
 step 30  writer-1   exec INSERT INTO lab(who) VALUES ('writer-1') -> SQLITE_OK
 step 31  writer-2   begin immediate                      .. sent, not waiting for the answer
-step 31  writer-2   begin immediate                      .. no answer yet
+step 31  writer-2   begin immediate                      .. no answer after 250ms
 step 32  writer-1   commit                               -> SQLITE_OK
 step 31  writer-2   begin immediate                      -> SQLITE_OK
 check ok: BEGIN IMMEDIATE did not return while the other writer held the lock, and returned SQLITE_OK after it committed
@@ -58,7 +58,7 @@ step 35  writer-1   begin immediate                      -> SQLITE_OK
 step 36  writer-1   exec INSERT INTO lab(who) VALUES ('writer-1') -> SQLITE_OK
 step 37  writer-2   begin deferred                       -> SQLITE_OK
 step 38  writer-2   exec INSERT INTO lab(who) VALUES ('writer-2') .. sent, not waiting for the answer
-step 38  writer-2   exec INSERT INTO lab(who) VALUES ('writer-2') .. no answer yet
+step 38  writer-2   exec INSERT INTO lab(who) VALUES ('writer-2') .. no answer after 250ms
 step 39  writer-1   commit                               -> SQLITE_OK
 step 38  writer-2   exec INSERT INTO lab(who) VALUES ('writer-2') -> SQLITE_OK
 check ok: the first statement of a deferred transaction waits like BEGIN IMMEDIATE and then succeeds
@@ -99,35 +99,45 @@ check ok: and the reader then reads the committed row
 == E. two writers apply recipe steps 6-15 alternately with BEGIN IMMEDIATE and busy_timeout 120000ms; each step starts while the other writer holds the lock
 step 61  writer-1   begin immediate                      -> SQLITE_OK
 step 62  writer-1   recipe-exec 6                        -> SQLITE_OK
-step 63  writer-2   recipe-step 7                        .. sent, not waiting for the answer
-step 63  writer-2   recipe-step 7                        .. no answer yet
+step 63  writer-2   begin immediate                      .. sent, not waiting for the answer
+step 63  writer-2   begin immediate                      .. no answer after 250ms
 step 64  writer-1   commit                               -> SQLITE_OK
-step 63  writer-2   recipe-step 7                        -> SQLITE_OK
-step 65  writer-2   begin immediate                      -> SQLITE_OK
-step 66  writer-2   recipe-exec 8                        -> SQLITE_OK
-step 67  writer-1   recipe-step 9                        .. sent, not waiting for the answer
-step 67  writer-1   recipe-step 9                        .. no answer yet
-step 68  writer-2   commit                               -> SQLITE_OK
-step 67  writer-1   recipe-step 9                        -> SQLITE_OK
+step 63  writer-2   begin immediate                      -> SQLITE_OK
+step 65  writer-2   recipe-exec 7                        -> SQLITE_OK
+step 66  writer-2   commit                               -> SQLITE_OK
+step 67  writer-2   begin immediate                      -> SQLITE_OK
+step 68  writer-2   recipe-exec 8                        -> SQLITE_OK
+step 69  writer-1   begin immediate                      .. sent, not waiting for the answer
+step 69  writer-1   begin immediate                      .. no answer after 250ms
+step 70  writer-2   commit                               -> SQLITE_OK
 step 69  writer-1   begin immediate                      -> SQLITE_OK
-step 70  writer-1   recipe-exec 10                       -> SQLITE_OK
-step 71  writer-2   recipe-step 11                       .. sent, not waiting for the answer
-step 71  writer-2   recipe-step 11                       .. no answer yet
+step 71  writer-1   recipe-exec 9                        -> SQLITE_OK
 step 72  writer-1   commit                               -> SQLITE_OK
-step 71  writer-2   recipe-step 11                       -> SQLITE_OK
-step 73  writer-2   begin immediate                      -> SQLITE_OK
-step 74  writer-2   recipe-exec 12                       -> SQLITE_OK
-step 75  writer-1   recipe-step 13                       .. sent, not waiting for the answer
-step 75  writer-1   recipe-step 13                       .. no answer yet
-step 76  writer-2   commit                               -> SQLITE_OK
-step 75  writer-1   recipe-step 13                       -> SQLITE_OK
-step 77  writer-1   begin immediate                      -> SQLITE_OK
-step 78  writer-1   recipe-exec 14                       -> SQLITE_OK
-step 79  writer-2   recipe-step 15                       .. sent, not waiting for the answer
-step 79  writer-2   recipe-step 15                       .. no answer yet
-step 80  writer-1   commit                               -> SQLITE_OK
-step 79  writer-2   recipe-step 15                       -> SQLITE_OK
-step 81  writer-2   user-version                         -> SQLITE_OK 15
+step 73  writer-1   begin immediate                      -> SQLITE_OK
+step 74  writer-1   recipe-exec 10                       -> SQLITE_OK
+step 75  writer-2   begin immediate                      .. sent, not waiting for the answer
+step 75  writer-2   begin immediate                      .. no answer after 250ms
+step 76  writer-1   commit                               -> SQLITE_OK
+step 75  writer-2   begin immediate                      -> SQLITE_OK
+step 77  writer-2   recipe-exec 11                       -> SQLITE_OK
+step 78  writer-2   commit                               -> SQLITE_OK
+step 79  writer-2   begin immediate                      -> SQLITE_OK
+step 80  writer-2   recipe-exec 12                       -> SQLITE_OK
+step 81  writer-1   begin immediate                      .. sent, not waiting for the answer
+step 81  writer-1   begin immediate                      .. no answer after 250ms
+step 82  writer-2   commit                               -> SQLITE_OK
+step 81  writer-1   begin immediate                      -> SQLITE_OK
+step 83  writer-1   recipe-exec 13                       -> SQLITE_OK
+step 84  writer-1   commit                               -> SQLITE_OK
+step 85  writer-1   begin immediate                      -> SQLITE_OK
+step 86  writer-1   recipe-exec 14                       -> SQLITE_OK
+step 87  writer-2   begin immediate                      .. sent, not waiting for the answer
+step 87  writer-2   begin immediate                      .. no answer after 250ms
+step 88  writer-1   commit                               -> SQLITE_OK
+step 87  writer-2   begin immediate                      -> SQLITE_OK
+step 89  writer-2   recipe-exec 15                       -> SQLITE_OK
+step 90  writer-2   commit                               -> SQLITE_OK
+step 91  writer-2   user-version                         -> SQLITE_OK 15
 check ok: every waiting BEGIN IMMEDIATE was still waiting while the other writer held the lock, and every transaction committed
 user_version seen by the last writer: 15; the closed file equals recipe step 15 (equal except the change counter at bytes 24-27 and 92-95)
 check ok: the final database equals the recipe's state after step 15

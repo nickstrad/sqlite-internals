@@ -18,16 +18,21 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
 )
 
+// Built-in child role names registered in Roles.
 const (
-	RoleSQL    = "sql"
+	// RoleSQL identifies the role holding one SQLite connection across scripted steps.
+	RoleSQL = "sql"
+	// RoleCopier identifies the role that copies live files with plain OS reads, holding no SQLite connection.
 	RoleCopier = "copier"
 )
 
+// Roles is the default role registry passed to Serve by multi-process experiments.
 var Roles = map[string]Role{
 	RoleSQL:    SQLRole,
 	RoleCopier: CopierRole,
 }
 
+// SQLOptions configures a RoleSQL child process's SQLite connection and output paths.
 type SQLOptions struct {
 	Path              string
 	JournalMode       string
@@ -36,6 +41,7 @@ type SQLOptions struct {
 	PagesOut          string
 }
 
+// Args encodes o into command-line flags accepted by SQLRole.
 func (o SQLOptions) Args() []string {
 	args := []string{"-db", o.Path, "-journal", o.JournalMode, "-timeout-ms", strconv.FormatInt(o.BusyTimeout.Milliseconds(), 10), "-autocheckpoint", strconv.Itoa(o.WALAutocheckpoint)}
 	if o.PagesOut != "" {
@@ -75,6 +81,9 @@ type sqlSession struct {
 	conn       *sql.Conn
 }
 
+// SQLRole opens the target database with explicit recipe settings and pins one
+// *sql.Conn for the child's entire lifetime so explicit BEGIN, COMMIT,
+// ROLLBACK, and sqlite_dbpage reads all execute on the same SQLite connection.
 func SQLRole(ctx context.Context, args []string) (*Actor, error) {
 	options, err := parseSQLOptions(args)
 	if err != nil {
@@ -90,6 +99,7 @@ func SQLRole(ctx context.Context, args []string) (*Actor, error) {
 	sqlOptions := r.SQLiteOptions()
 	sqlOptions.Conn.BusyTimeout = options.BusyTimeout
 	sqlOptions.Conn.WALAutocheckpoint = options.WALAutocheckpoint
+	// Leave _txlock deferred so the script controls exact BEGIN DEFERRED / IMMEDIATE / EXCLUSIVE SQL.
 	sqlOptions.ImmediateTx = false
 	db, err := sqlitex.Open(ctx, options.Path, sqlOptions)
 	if err != nil {
@@ -279,6 +289,10 @@ func (s *sqlSession) userVersion(ctx context.Context, args []string) (string, er
 	return strconv.Itoa(k), nil
 }
 
+// strayClose intentionally triggers the POSIX advisory-lock hazard documented in
+// src/os_unix.c:1189-1255: opening and closing any file descriptor to an inode
+// drops every POSIX lock this process holds on that inode, even though SQLite's
+// own connection and unixInodeInfo remain open and unaware.
 func (s *sqlSession) strayClose(ctx context.Context, args []string) (string, error) {
 	if len(args) != 1 {
 		return "", errors.New("stray-close takes one file: db, -wal, -shm or -journal")
@@ -304,6 +318,9 @@ func sideFile(dbPath, which string) (string, error) {
 	return "", fmt.Errorf("unknown file %q: want db, -wal, -shm or -journal", which)
 }
 
+// dbpageWrite reads pages [first..last] through the sqlite_dbpage virtual table
+// on s.conn (so they come from this connection's active read snapshot) and writes
+// them at their page offsets into s.options.PagesOut.
 func (s *sqlSession) dbpageWrite(ctx context.Context, args []string) (string, error) {
 	if len(args) != 2 {
 		return "", errors.New("dbpage-write takes a first and a last page number")
@@ -367,6 +384,10 @@ type copierSession struct {
 	out string
 }
 
+// CopierRole starts a child process with no SQLite connections that copies
+// whole files ("copy") or byte ranges ("copy-range") of a live database and its
+// sidecars into -out. Running in a separate process guarantees its os.Open and
+// Close calls never disturb any SQLite process's POSIX locks.
 func CopierRole(ctx context.Context, args []string) (*Actor, error) {
 	flags := flag.NewFlagSet(RoleCopier, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -458,8 +479,8 @@ func (s copierSession) copyRange(ctx context.Context, args []string) (string, er
 	if start > end {
 		start = end
 	}
-	buffer := make([]byte, end-start)
-	if _, err := in.ReadAt(buffer, start); err != nil && !errors.Is(err, io.EOF) {
+	buffer, err := readRange(in, start, end)
+	if err != nil {
 		return "", err
 	}
 	out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE, 0o644)
@@ -473,5 +494,16 @@ func (s copierSession) copyRange(ctx context.Context, args []string) (string, er
 	if err := out.Close(); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("bytes %d-%d", start, end), nil
+	return fmt.Sprintf("bytes %d-%d", start, start+int64(len(buffer))), nil
+}
+
+// readRange reads [start, end) from in and slices to the actual byte count so a
+// live file that shrank after Stat is not zero-padded on EOF.
+func readRange(in io.ReaderAt, start, end int64) ([]byte, error) {
+	buffer := make([]byte, end-start)
+	n, err := in.ReadAt(buffer, start)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	return buffer[:n], nil
 }

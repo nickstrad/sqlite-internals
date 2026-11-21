@@ -9,6 +9,7 @@ import (
 	"testing"
 )
 
+// TestParseIndexTornHeader checks that a zeroed copy 1 beside a valid copy 2 is decoded as a torn, uninitialized index and rejects garbage in copy 2.
 func TestParseIndexTornHeader(t *testing.T) {
 	for _, bigEndian := range []bool{false, true} {
 		x := testIndex{bigEndian: bigEndian, size: IndexBlockSize, header: IndexHeader{Version: IndexFormatVersion, IsInit: 1, PageSizeField: 0x1000, MaxFrame: 7, Pages: 3}}
@@ -32,6 +33,7 @@ func TestParseIndexTornHeader(t *testing.T) {
 	}
 }
 
+// TestHeadersAgreeComparesUnusedField checks that HeadersAgree detects differences in the 4-byte unused header padding field.
 func TestHeadersAgreeComparesUnusedField(t *testing.T) {
 	x := testIndex{size: IndexBlockSize, header: IndexHeader{Version: IndexFormatVersion, IsInit: 1, PageSizeField: 0x1000}}
 	data := x.build()
@@ -46,6 +48,7 @@ func TestHeadersAgreeComparesUnusedField(t *testing.T) {
 	}
 }
 
+// TestReplayValidatesBaseWithoutCommits checks that Replay validates base page size, mismatch, and alignment even when the WAL has no commit frames.
 func TestReplayValidatesBaseWithoutCommits(t *testing.T) {
 	headerOnly8192 := testWAL{pageSize: 8192}.build()
 	headerOnly1024 := testWAL{pageSize: 1024}.build()
@@ -78,6 +81,7 @@ func TestReplayValidatesBaseWithoutCommits(t *testing.T) {
 	}
 }
 
+// TestReplayFilesKeepsForeignTempFile checks that ReplayFiles returns os.ErrExist without deleting a pre-existing .replay-tmp file.
 func TestReplayFilesKeepsForeignTempFile(t *testing.T) {
 	dir := t.TempDir()
 	basePath := filepath.Join(dir, "base.db")
@@ -101,6 +105,7 @@ func TestReplayFilesKeepsForeignTempFile(t *testing.T) {
 	}
 }
 
+// TestCompareWithShowwalReportsWrongRejection checks that CompareWithShowwal reports when walfile rejects a frame's checksum that showwal accepts.
 func TestCompareWithShowwalReportsWrongRejection(t *testing.T) {
 	file, err := Parse(threeTransactions(false, 512).build())
 	if err != nil {
@@ -121,6 +126,7 @@ func TestCompareWithShowwalReportsWrongRejection(t *testing.T) {
 	}
 }
 
+// TestCopyLiveFilesWithNoPairs checks that CopyLiveFiles returns nil without spawning a child when given no pairs.
 func TestCopyLiveFilesWithNoPairs(t *testing.T) {
 	results, err := CopyLiveFiles(context.Background(), nil)
 	if err != nil || len(results) != 0 {
@@ -128,6 +134,7 @@ func TestCopyLiveFilesWithNoPairs(t *testing.T) {
 	}
 }
 
+// TestReadLiveStateRemovesCopiesOnError checks that ReadLiveState cleans up its temporary copies when parsing -shm fails.
 func TestReadLiveStateRemovesCopiesOnError(t *testing.T) {
 	dir := t.TempDir()
 	database := filepath.Join(dir, "x.db")

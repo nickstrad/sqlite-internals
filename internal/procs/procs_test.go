@@ -72,6 +72,7 @@ var testRoles = map[string]Role{
 	},
 }
 
+// TestMain dispatches re-executed test binaries into child-role mode when ChildMarker is present.
 func TestMain(m *testing.M) {
 	if Serve(testRoles) {
 		return
@@ -79,6 +80,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// TestResultCodeNames checks SQLite result code naming and Result.Outcome formatting.
 func TestResultCodeNames(t *testing.T) {
 	cases := map[int]string{0: "SQLITE_OK", 5: "SQLITE_BUSY", 517: "SQLITE_BUSY_SNAPSHOT", 261: "SQLITE_BUSY_RECOVERY", 15: "SQLITE_PROTOCOL", 5898: "SQLITE_IOERR_DELETE_NOENT", 1290: "SQLITE_IOERR+extended(5)", 9999: "SQLITE_PROTOCOL+extended(39)", 200: "SQLITE_code_200"}
 	for code, want := range cases {
@@ -97,6 +99,7 @@ func TestResultCodeNames(t *testing.T) {
 	}
 }
 
+// TestResultForNonSQLiteError confirms plain Go errors map to CodeNotSQLite.
 func TestResultForNonSQLiteError(t *testing.T) {
 	r := ResultFor(Request{Step: 4, Action: "a"}, "", errors.New("plain"))
 	if r.Code != CodeNotSQLite || r.OK() || r.Step != 4 || r.Action != "a" {
@@ -122,6 +125,7 @@ func runChildInProcess(t *testing.T, role string, requests string) ([]Result, er
 	return results, err
 }
 
+// TestRunChildProtocol exercises ready, echo, failing, unknown, and exit actions in-process.
 func TestRunChildProtocol(t *testing.T) {
 	results, err := runChildInProcess(t, "echo", `{"step":1,"action":"echo","args":["a","b"]}
 {"step":2,"action":"fail"}
@@ -148,6 +152,7 @@ func TestRunChildProtocol(t *testing.T) {
 	}
 }
 
+// TestRunChildErrors verifies RunChild fails loudly on unknown roles, startup errors, bad JSON, and premature EOF.
 func TestRunChildErrors(t *testing.T) {
 	if _, err := runChildInProcess(t, "missing", ""); !errors.Is(err, ErrUnknownRole) {
 		t.Errorf("unknown role: %v", err)
@@ -163,6 +168,7 @@ func TestRunChildErrors(t *testing.T) {
 	}
 }
 
+// TestChildRoundTripAndStop tests spawning a real child, running a step, rejecting step 0, and ErrStopped after Stop.
 func TestChildRoundTripAndStop(t *testing.T) {
 	child, err := StartChild("one", "echo")
 	if err != nil {
@@ -186,6 +192,7 @@ func TestChildRoundTripAndStop(t *testing.T) {
 	}
 }
 
+// TestChildCloseErrorIsReported checks that an Actor.Close error is returned by Child.Stop.
 func TestChildCloseErrorIsReported(t *testing.T) {
 	child, err := StartChild("closer", "echo", "close-fails")
 	if err != nil {
@@ -196,6 +203,7 @@ func TestChildCloseErrorIsReported(t *testing.T) {
 	}
 }
 
+// TestChildThatDiesIsReported confirms a child exiting mid-step returns ErrChildDied with its exit status.
 func TestChildThatDiesIsReported(t *testing.T) {
 	child, err := StartChild("crasher", "echo")
 	if err != nil {
@@ -207,6 +215,7 @@ func TestChildThatDiesIsReported(t *testing.T) {
 	}
 }
 
+// TestRoleThatFailsToStart verifies startup errors surface through ErrChildDied with child stderr.
 func TestRoleThatFailsToStart(t *testing.T) {
 	_, err := StartChild("refuser", "refuse")
 	if !errors.Is(err, ErrChildDied) || !strings.Contains(err.Error(), "this role never starts") {
@@ -214,6 +223,7 @@ func TestRoleThatFailsToStart(t *testing.T) {
 	}
 }
 
+// TestChildTimeoutKillsIt checks that a hung child triggers ErrTimeout and is killed and reaped.
 func TestChildTimeoutKillsIt(t *testing.T) {
 	child, err := StartChild("sleeper", "echo")
 	if err != nil {
@@ -231,6 +241,7 @@ func TestChildTimeoutKillsIt(t *testing.T) {
 	}
 }
 
+// TestAsyncCallAndOneOutstandingRequest verifies non-blocking Answered polling and ErrBusyChild enforcement.
 func TestAsyncCallAndOneOutstandingRequest(t *testing.T) {
 	child, err := StartChild("async", "echo")
 	if err != nil {
@@ -259,6 +270,7 @@ func TestAsyncCallAndOneOutstandingRequest(t *testing.T) {
 	}
 }
 
+// TestStopWithOutstandingRequestFails confirms Stop kills the child and returns ErrBusyChild when a call is pending.
 func TestStopWithOutstandingRequestFails(t *testing.T) {
 	child, err := StartChild("pending", "echo")
 	if err != nil {
@@ -272,6 +284,7 @@ func TestStopWithOutstandingRequestFails(t *testing.T) {
 	}
 }
 
+// TestMismatchedReplyIsAnError verifies a child replying with the wrong step or action triggers ErrStepMismatch.
 func TestMismatchedReplyIsAnError(t *testing.T) {
 	child, err := StartChild("liar", "echo")
 	if err != nil {
@@ -283,6 +296,7 @@ func TestMismatchedReplyIsAnError(t *testing.T) {
 	}
 }
 
+// TestScriptNumbersStepsAndPrints checks duplicate name rejection, NameOfPid lookup, and transcript formatting.
 func TestScriptNumbersStepsAndPrints(t *testing.T) {
 	var out bytes.Buffer
 	script := NewScript(&out)
@@ -311,6 +325,7 @@ func TestScriptNumbersStepsAndPrints(t *testing.T) {
 	}
 }
 
+// TestLabCheckAndReport verifies Lab.Check tracking and Lab.Report exit status on pass vs failure.
 func TestLabCheckAndReport(t *testing.T) {
 	var out bytes.Buffer
 	lab := NewLab(&out)
@@ -328,6 +343,7 @@ func TestLabCheckAndReport(t *testing.T) {
 	}
 }
 
+// TestProbeSeesAnotherProcessLockAndAStrayCloseDropsIt verifies F_GETLK and /proc/locks see a child's lock and its release after stray close.
 func TestProbeSeesAnotherProcessLockAndAStrayCloseDropsIt(t *testing.T) {
 	if !LockProbeSupported {
 		t.Skip("no fcntl probe on " + runtime.GOOS)
@@ -392,6 +408,7 @@ func TestProbeSeesAnotherProcessLockAndAStrayCloseDropsIt(t *testing.T) {
 	}
 }
 
+// TestParseProcLocks verifies parsing of POSIX, blocked, FLOCK-to-EOF, and OFDLCK lines plus merged range labels.
 func TestParseProcLocks(t *testing.T) {
 	text := `1: POSIX  ADVISORY  WRITE 4242 fd:01:786470 1073741825 1073741825
 2: -> POSIX  ADVISORY  READ  4243 08:1f:12 1073741826 1073742335
@@ -430,6 +447,7 @@ func TestParseProcLocks(t *testing.T) {
 	}
 }
 
+// TestParseProcLocksRejectsMalformedLines ensures invalid /proc/locks lines return ErrProcLocksFormat.
 func TestParseProcLocksRejectsMalformedLines(t *testing.T) {
 	bad := []string{
 		"",
@@ -460,6 +478,7 @@ func TestParseProcLocksRejectsMalformedLines(t *testing.T) {
 	}
 }
 
+// TestIntegritySummary checks splitting and condensing PRAGMA integrity_check diagnostic output.
 func TestIntegritySummary(t *testing.T) {
 	if IntegrityProblems("ok") != nil || IntegritySummary("ok") != "ok" {
 		t.Error("ok")
@@ -474,6 +493,7 @@ func TestIntegritySummary(t *testing.T) {
 	}
 }
 
+// TestCopierRole tests whole-file and byte-range copies, missing sidecars, and rejection of bad target names or offsets.
 func TestCopierRole(t *testing.T) {
 	dir := t.TempDir()
 	db := filepath.Join(dir, "src.db")
@@ -524,6 +544,7 @@ func TestCopierRole(t *testing.T) {
 	}
 }
 
+// TestSQLRolesAcrossProcesses exercises cross-process BUSY, BUSY_SNAPSHOT, checkpoints, dbpage-write, and InspectDatabase.
 func TestSQLRolesAcrossProcesses(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -595,6 +616,7 @@ func TestSQLRolesAcrossProcesses(t *testing.T) {
 	}
 }
 
+// TestSQLOptionsRoundTrip verifies SQLOptions.Args round-trips through parseSQLOptions and rejects missing or extra args.
 func TestSQLOptionsRoundTrip(t *testing.T) {
 	options := SQLOptions{Path: "/x/y.db", JournalMode: "delete", BusyTimeout: 1500 * time.Millisecond, WALAutocheckpoint: 7, PagesOut: "/x/p"}
 	parsed, err := parseSQLOptions(options.Args())
@@ -606,6 +628,177 @@ func TestSQLOptionsRoundTrip(t *testing.T) {
 	}
 	if _, err := parseSQLOptions([]string{"-db", "x", "extra"}); err == nil {
 		t.Error("extra argument accepted")
+	}
+}
+
+// TestAnsweredWithinWaitsWithoutKilling checks that AnsweredWithin returns false on expiry without killing the child and true on immediate reply.
+func TestAnsweredWithinWaitsWithoutKilling(t *testing.T) {
+	child, err := StartChild("window", "echo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer child.Kill()
+	slow, err := child.Start(1, "sleep", "1s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answered, err := slow.AnsweredWithin(100 * time.Millisecond); answered || err != nil {
+		t.Fatalf("blocked action: answered %v err %v", answered, err)
+	}
+	if result, err := slow.Wait(); err != nil || result.Value != "slept" {
+		t.Fatalf("after the window the child must still answer: %+v %v", result, err)
+	}
+	fast, err := child.Start(2, "echo", "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answered, err := fast.AnsweredWithin(5 * time.Second); !answered || err != nil {
+		t.Fatalf("immediate action: answered %v err %v", answered, err)
+	}
+	if result, err := fast.Wait(); err != nil || result.Value != "x" {
+		t.Fatalf("%+v %v", result, err)
+	}
+	if err := child.Stop(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestLabStillWaitingCanFail verifies Lab.StillWaiting returns false for an immediate answer and true for a blocked one.
+func TestLabStillWaitingCanFail(t *testing.T) {
+	var out bytes.Buffer
+	lab := NewLab(&out)
+	child := lab.Spawn("w", "echo")
+	immediate := lab.Begin(child, "echo", "now")
+	if lab.StillWaiting(immediate) {
+		t.Fatalf("an action that answers at once was reported as waiting: %q", out.String())
+	}
+	lab.Finish(immediate)
+	blocked := lab.Begin(child, "sleep", "1s")
+	if !lab.StillWaiting(blocked) {
+		t.Fatalf("a blocked action was reported as answered: %q", out.String())
+	}
+	lab.Finish(blocked)
+	lab.StopChildren()
+	if !strings.Contains(out.String(), ".. already answered") || !strings.Contains(out.String(), ".. no answer after 250ms") {
+		t.Fatalf("transcript %q", out.String())
+	}
+}
+
+// TestStillWaitingSeesImmediateBusy confirms Lab.StillWaiting reports immediate SQLITE_BUSY at busy_timeout=0 as already answered.
+func TestStillWaitingSeesImmediateBusy(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "lab.db")
+	ctx := context.Background()
+	if err := CreateDatabase(ctx, db, sqlitex.JournalWAL, "CREATE TABLE lab(who TEXT)"); err != nil {
+		t.Fatal(err)
+	}
+	lab := NewLab(io.Discard)
+	options := SQLOptions{Path: db, JournalMode: sqlitex.JournalWAL}
+	holder, waiter := lab.SpawnSQL("holder", options), lab.SpawnSQL("waiter", options)
+	lab.Must(holder, "begin", "immediate")
+	call := lab.Begin(waiter, "begin", "immediate")
+	if lab.StillWaiting(call) {
+		t.Fatal("busy_timeout 0: BEGIN IMMEDIATE returns SQLITE_BUSY at once, StillWaiting must say so")
+	}
+	if result := lab.Finish(call); result.Code != sqlitex.CodeBusy {
+		t.Fatalf("waiter: %s", result.Outcome())
+	}
+	lab.Must(holder, "commit")
+	lab.StopChildren()
+}
+
+// TestStopKillsChildWhenExitAnswerIsWrong ensures Stop kills and reaps the child when the exit reply fails with ErrStepMismatch.
+func TestStopKillsChildWhenExitAnswerIsWrong(t *testing.T) {
+	child, err := StartChild("liar", "echo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer child.Kill()
+	if _, err := child.Do(1, "lie"); !errors.Is(err, ErrStepMismatch) {
+		t.Fatalf("lie: %v", err)
+	}
+	if err := child.Stop(); !errors.Is(err, ErrStepMismatch) {
+		t.Fatalf("Stop = %v", err)
+	}
+	select {
+	case <-child.exited:
+	default:
+		t.Fatal("Stop returned an error but left the child running")
+	}
+	if err := child.Stop(); err != nil {
+		t.Fatalf("second Stop = %v", err)
+	}
+}
+
+// TestParseProcLocksHostVariants verifies acceptance of valid Linux fs/locks.c variants (<none>:0, MSNFS, UNKNOWN, NONE) and rejection of bad ones.
+func TestParseProcLocksHostVariants(t *testing.T) {
+	lines := map[string]ProcLock{
+		"10: FLOCK  ADVISORY  WRITE 4321 <none>:0 0 EOF":      {ID: 10, Class: "FLOCK", Mode: "ADVISORY", Type: "WRITE", Pid: 4321, ToEOF: true, End: 1<<63 - 1},
+		"11: FLOCK  MSNFS     WRITE 4322 08:01:1234 0 EOF":    {ID: 11, Class: "FLOCK", Mode: "MSNFS", Type: "WRITE", Pid: 4322, DevMajor: 8, DevMinor: 1, Inode: 1234, ToEOF: true, End: 1<<63 - 1},
+		"12: UNKNOWN UNKNOWN  READ  4323 08:01:1235 5 9":      {ID: 12, Class: "UNKNOWN", Mode: "UNKNOWN", Type: "READ", Pid: 4323, DevMajor: 8, DevMinor: 1, Inode: 1235, Start: 5, End: 9},
+		"13: FLOCK  MSNFS     NONE  4324 08:01:1236 0 EOF":    {ID: 13, Class: "FLOCK", Mode: "MSNFS", Type: "NONE", Pid: 4324, DevMajor: 8, DevMinor: 1, Inode: 1236, ToEOF: true, End: 1<<63 - 1},
+		"14: -> POSIX  *NOINODE* WRITE 4325 <none>:0 120 120": {ID: 14, Blocked: true, Class: "POSIX", Mode: "*NOINODE*", Type: "WRITE", Pid: 4325, Start: 120, End: 120},
+	}
+	for line, want := range lines {
+		got, err := ParseProcLockLine(line)
+		if err != nil || got != want {
+			t.Errorf("%q: got %+v err %v, want %+v", line, got, err, want)
+		}
+	}
+	for _, line := range []string{
+		"15: FLOCK  ADVISORY  WRITE 4321 <none>:1 0 EOF",
+		"16: FLOCK  ADVISORY  WRITE 4321 <none>:0 9 3",
+		"17: FLOCK  ADVISORY  WRITE 4321 <none>:0 x EOF",
+	} {
+		if _, err := ParseProcLockLine(line); !errors.Is(err, ErrProcLocksFormat) {
+			t.Errorf("%q: err %v", line, err)
+		}
+	}
+}
+
+// TestReadRangeKeepsOnlyBytesRead confirms readRange truncates to the bytes actually read instead of zero-padding on short EOF.
+func TestReadRangeKeepsOnlyBytesRead(t *testing.T) {
+	got, err := readRange(strings.NewReader("0123"), 2, 10)
+	if err != nil || string(got) != "23" {
+		t.Fatalf("short read: %q %v", got, err)
+	}
+	got, err = readRange(strings.NewReader("0123"), 6, 10)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("past the end: %q %v", got, err)
+	}
+	got, err = readRange(strings.NewReader("0123456789"), 2, 5)
+	if err != nil || string(got) != "234" {
+		t.Fatalf("full read: %q %v", got, err)
+	}
+}
+
+// TestLockViewProcHolders verifies exact, kernel-merged, and to-EOF /proc/locks entries map to the expected named range holders.
+func TestLockViewProcHolders(t *testing.T) {
+	ranges := ShmLockRanges()
+	states := make([]RangeState, len(ranges))
+	for i, r := range ranges {
+		states[i] = RangeState{Range: r}
+	}
+	view := LockView{Ranges: states, ProcListed: true, Proc: []ProcLock{
+		{Pid: 1, Type: "WRITE", Start: 120, End: 121},
+		{Pid: 2, Type: "READ", Start: 128, End: 128},
+		{Pid: 1, Type: "READ", Start: 123, End: 123},
+		{Pid: 3, Type: "READ", Start: 100, ToEOF: true, End: 1<<63 - 1},
+	}}
+	if got := view.ProcHolders("WAL_WRITE_LOCK"); len(got) != 2 || got[1] != "WRITE" || got[3] != "READ" {
+		t.Errorf("WAL_WRITE_LOCK holders %v", got)
+	}
+	if got := view.ProcHolders("WAL_CKPT_LOCK"); len(got) != 2 || got[1] != "WRITE" {
+		t.Errorf("merged range holders %v", got)
+	}
+	if got := view.ProcHolders("DMS"); len(got) != 2 || got[2] != "READ" {
+		t.Errorf("DMS holders %v", got)
+	}
+	if got := view.ProcHolders("WAL_READ_LOCK(1)"); len(got) != 1 || got[3] != "READ" {
+		t.Errorf("READ(1) holders %v", got)
+	}
+	if got := view.ProcHolders("no such range"); len(got) != 0 {
+		t.Errorf("unknown range %v", got)
 	}
 }
 

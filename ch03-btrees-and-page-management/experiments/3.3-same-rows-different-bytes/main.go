@@ -1,3 +1,7 @@
+// Experiment 3.3 implements Rebuild Ladder rung R2 (canonical logical capture
+// and replay) and tests E1, E2, and E3 equality across different build
+// histories, a sqlite3_backup copy, dbhash blind spots, and VACUUM INTO's
+// canonical-form boundaries.
 package main
 
 import (
@@ -49,9 +53,8 @@ func must[T any](value T, err error) func(string) T {
 }
 
 type row struct {
-	table   equal.TableInfo
-	columns []string
-	values  []any
+	table  equal.TableInfo
+	values []any
 }
 
 type content struct {
@@ -72,7 +75,12 @@ func readContent(ctx context.Context, path string) content {
 		}
 		c.schema = append(c.schema, s)
 	}
-	rows.Close()
+	if err := rows.Err(); err != nil {
+		fatal("schema", err)
+	}
+	if err := rows.Close(); err != nil {
+		fatal("schema", err)
+	}
 	err := equal.WalkLogical(ctx, db, equal.LogicalVisitor{Row: func(t equal.TableInfo, values []any) error {
 		if strings.HasPrefix(t.Name, "sqlite_") {
 			return fmt.Errorf("table %s: this lab copies user tables only", t.Name)
@@ -90,16 +98,37 @@ func readContent(ctx context.Context, path string) content {
 }
 
 func insertSQL(t equal.TableInfo) string {
-	var names, marks []string
+	width := len(t.Columns)
 	if !t.WithoutRowid {
-		names = append(names, t.RowidColumn)
-		marks = append(marks, "?")
+		width++
+	}
+	marks := make([]string, width)
+	for i := range marks {
+		marks[i] = "?"
+	}
+	return insertStatement(t, marks)
+}
+
+func rowidName(name string) string {
+	switch strings.ToLower(name) {
+	case "rowid", "_rowid_", "oid":
+		return name
+	}
+	return equal.QuoteIdentifier(name)
+}
+
+// insertStatement builds an INSERT statement directly from the table's column
+// list and value expressions (either "?" placeholders or SQL literals), avoiding
+// string replacement that would corrupt identifiers containing "?".
+func insertStatement(t equal.TableInfo, values []string) string {
+	var names []string
+	if !t.WithoutRowid {
+		names = append(names, rowidName(t.RowidColumn))
 	}
 	for _, c := range t.Columns {
 		names = append(names, equal.QuoteIdentifier(c))
-		marks = append(marks, "?")
 	}
-	return fmt.Sprintf("INSERT INTO %s(%s) VALUES(%s)", equal.QuoteIdentifier(t.Name), strings.Join(names, ", "), strings.Join(marks, ", "))
+	return fmt.Sprintf("INSERT INTO %s(%s) VALUES(%s)", equal.QuoteIdentifier(t.Name), strings.Join(names, ", "), strings.Join(values, ", "))
 }
 
 type execer interface {
@@ -154,6 +183,9 @@ func buildPerStatement(ctx context.Context, path, mode string, c content, order 
 	}
 }
 
+// sqlLiteral renders a scanned SQLite storage-class value as a SQL literal
+// that round-trips with the exact same storage class. Embedded NUL bytes in
+// TEXT are split with ||char(0)|| because SQLite's parser stops at raw NULs.
 func sqlLiteral(value any) string {
 	switch v := value.(type) {
 	case nil:
@@ -173,7 +205,11 @@ func sqlLiteral(value any) string {
 		}
 		return text
 	case string:
-		return "'" + strings.ReplaceAll(v, "'", "''") + "'"
+		parts := strings.Split(v, "\x00")
+		for i, part := range parts {
+			parts[i] = "'" + strings.ReplaceAll(part, "'", "''") + "'"
+		}
+		return strings.Join(parts, "||char(0)||")
 	case []byte:
 		return "X'" + strings.ToUpper(hex.EncodeToString(v)) + "'"
 	}
@@ -181,6 +217,10 @@ func sqlLiteral(value any) string {
 	return ""
 }
 
+// dump emits rung R2's deterministic SQL capture using equal.WalkLogical.
+// CREATE statements follow main.sqlite_schema rowid order (creation order) so
+// a replayed database matches its source's VACUUM INTO bytes (vacuum.c:143-427
+// copies tables in sqlite_schema order).
 func dump(ctx context.Context, path string) string {
 	db := must(equal.OpenExisting(ctx, path))("open " + filepath.Base(path))
 	defer db.Close()
@@ -192,27 +232,37 @@ func dump(ctx context.Context, path string) string {
 	var body strings.Builder
 	var sequence []string
 	pragmas := map[string]string{}
+	schema := must(conn.QueryContext(ctx, "SELECT type, name, sql FROM main.sqlite_schema WHERE sql IS NOT NULL ORDER BY rowid"))("schema")
+	for schema.Next() {
+		var kind, name, statement string
+		if err := schema.Scan(&kind, &name, &statement); err != nil {
+			fatal("schema", err)
+		}
+		if strings.HasPrefix(name, "sqlite_") {
+			continue
+		}
+		switch kind {
+		case "table":
+			tables = append(tables, statement+";")
+		case "index":
+			indexes = append(indexes, statement+";")
+		default:
+			others = append(others, statement+";")
+		}
+	}
+	if err := schema.Err(); err != nil {
+		fatal("schema", err)
+	}
+	if err := schema.Close(); err != nil {
+		fatal("schema", err)
+	}
 	err := equal.WalkLogical(ctx, conn, equal.LogicalVisitor{
-		Schema: func(r equal.SchemaRow) error {
-			if !r.SQL.Valid || strings.HasPrefix(r.Name, "sqlite_") {
-				return nil
-			}
-			switch r.Type {
-			case "table":
-				tables = append(tables, r.SQL.String+";")
-			case "index":
-				indexes = append(indexes, r.SQL.String+";")
-			default:
-				others = append(others, r.SQL.String+";")
-			}
-			return nil
-		},
 		Row: func(t equal.TableInfo, values []any) error {
 			literals := make([]string, len(values))
 			for i, v := range values {
 				literals[i] = sqlLiteral(v)
 			}
-			line := strings.Replace(insertSQL(t), strings.TrimSuffix(strings.Repeat("?, ", len(values)), ", "), strings.Join(literals, ", "), 1) + ";\n"
+			line := insertStatement(t, literals) + ";\n"
 			switch {
 			case t.Name == "sqlite_sequence":
 				sequence = append(sequence, line)
@@ -475,8 +525,11 @@ func partA(ctx context.Context, dir, tool string) content {
 		}
 	}
 	check(allE3, "every build is equal to R0 at E3 (logical hash, integrity_check ok, foreign_key_check unchanged)")
-	check(distinct(dumps) == 1, "the ordered logical capture is itself identical for every build: the capture depends on content, not history")
+	check(distinct(dumps) == 1, "the ordered logical capture is itself identical for every build: it depends on content and the schema's creation order, not on insert order, batching or updates")
 	check(distinct(canon[:5]) == 1, "after VACUUM INTO every build, the replayed copy included, has the same sha256 (E1 between canonical forms)")
+	// sqlite3_backup_step sets the destination schema cookie to old+1
+	// (backup.c:448; 0+1=1 on a fresh file), and sqlite3RunVacuum copies the
+	// source schema cookie +1 (vacuum.c:143-427), leaving byte 43 differing.
 	backupCanon := builds[5].canonical
 	ce1 := must(equal.CompareFiles(builds[0].canonical, backupCanon, pageSize))("E1")
 	ce2 := must(equal.ComparePageFiles(builds[0].canonical, backupCanon, pageSize))("E2")
@@ -583,6 +636,9 @@ type pair struct {
 	dbhash bool
 }
 
+// partB exercises six logical-difference pairs where weaker tools fail,
+// including dbhash's unframed value concatenation and missing table boundaries
+// in tool/dbhash.c:281-360 and tool/dbhash.c:379-491.
 func partB(ctx context.Context, dir, tool string) {
 	fmt.Println()
 	fmt.Println("== B. pairs that differ in content where a weaker logical hash says equal")
@@ -595,6 +651,11 @@ func partB(ctx context.Context, dir, tool string) {
 		{"row moved between tables", []string{"CREATE TABLE a(v TEXT)", "CREATE TABLE b(v TEXT)", "INSERT INTO a(rowid, v) VALUES(1, 'x'), (2, 'y')", "INSERT INTO b(rowid, v) VALUES(1, 'z')"}, []string{"CREATE TABLE a(v TEXT)", "CREATE TABLE b(v TEXT)", "INSERT INTO a(rowid, v) VALUES(1, 'x')", "INSERT INTO b(rowid, v) VALUES(1, 'y'), (2, 'z')"}, "table a differs", true},
 	}
 	fmt.Printf("  %-40s %-6s %-6s %s\n", "pair", "ours", "dbhash", "our first difference")
+	type claim struct {
+		ok   bool
+		text string
+	}
+	var claims []claim
 	for i, p := range pairs {
 		a := newDB(ctx, filepath.Join(dir, "pairs", fmt.Sprintf("%d-a.db", i+1)), p.a...)
 		b := newDB(ctx, filepath.Join(dir, "pairs", fmt.Sprintf("%d-b.db", i+1)), p.b...)
@@ -606,14 +667,17 @@ func partB(ctx context.Context, dir, tool string) {
 		if tool != "" {
 			ha, hb := dbhashOf(ctx, tool, a), dbhashOf(ctx, tool, b)
 			dbhashVerdict = sameWord(ha == hb)
-			check((ha == hb) == p.dbhash, fmt.Sprintf("%s: dbhash says %s", p.name, dbhashVerdict))
+			claims = append(claims, claim{(ha == hb) == p.dbhash, fmt.Sprintf("%s: dbhash says %s", p.name, dbhashVerdict)})
 		}
 		first := ""
 		if len(result.Differences) > 0 {
 			first = result.Differences[0]
 		}
 		fmt.Printf("  %-40s %-6s %-6s %s\n", p.name, sameWord(result.Equal), dbhashVerdict, first)
-		check(!result.Equal && strings.Contains(first, p.ours), fmt.Sprintf("%s: our logical hash tells the two apart", p.name))
+		claims = append(claims, claim{!result.Equal && strings.Contains(first, p.ours), fmt.Sprintf("%s: our logical hash tells the two apart", p.name)})
+	}
+	for _, c := range claims {
+		check(c.ok, c.text)
 	}
 	fmt.Println("  sqldiff is not built by build-tools; the research probe found it reports integer 1 and real 1.0 as equal (docs/knowledge/determinism-and-rebuild.md, Q4)")
 }
@@ -625,6 +689,9 @@ func sameWord(equalValues bool) string {
 	return "differ"
 }
 
+// partC tests the three boundaries of VACUUM INTO as a canonical form
+// (vacuum.c:143-427): table creation order, prior schema-cookie increments,
+// and index creation timing.
 func partC(ctx context.Context, dir, tool string) {
 	fmt.Println()
 	fmt.Println("== C. where VACUUM INTO stops being a canonical form")
@@ -658,6 +725,14 @@ func partC(ctx context.Context, dir, tool string) {
 		switch i {
 		case 0:
 			check(e3.Equal && !e1.Equal && !e2.Equal, "same content, tables created in another order: logically equal, but VACUUM INTO copies tables in sqlite_schema order, so the canonical files differ beyond the header")
+			scriptA, scriptB := dump(ctx, a), dump(ctx, b)
+			rb := strings.TrimSuffix(b, ".db") + "-replayed.db"
+			replay(ctx, scriptB, rb)
+			crb := strings.TrimSuffix(rb, ".db") + "-vacuum.db"
+			vacuumInto(ctx, rb, crb)
+			replayE1 := must(equal.CompareFiles(cb, crb, pageSize))("E1")
+			fmt.Printf("    captures of the two sources: %s; the second source's capture replayed and canonicalized vs the second source's canonical form at E1: %s\n", sameWord(scriptA == scriptB), verdict(replayE1))
+			check(scriptA != scriptB && replayE1.Equal, "the capture writes CREATE TABLE in sqlite_schema order, so it records the creation order too: the replay of a source canonicalizes to the source's own canonical bytes")
 		case 1:
 			check(e3.Equal && !e1.Equal && e2.Equal, "a schema change that left no trace in the content still raises the schema cookie, and VACUUM INTO carries the cookie (+1): the canonical files differ only at bytes 40-43")
 		case 2:

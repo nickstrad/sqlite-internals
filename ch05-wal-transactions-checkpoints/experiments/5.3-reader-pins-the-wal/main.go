@@ -166,6 +166,10 @@ func partA(ctx context.Context, dir string) {
 		fatal("step", err)
 	}
 	header("moment")
+	// Do not query writer before openReader: a SELECT on writer would run
+	// walTryBeginRead (src/wal.c:3182-3205) and write aReadMark[1] = 22 before
+	// the reader opens. Sampling after each writer SELECT inside the loop keeps
+	// every row's read marks aligned with that step's state.
 	start := take(ctx, path, scratch)
 	row(fmt.Sprintf("after step %d", readerStartsAfter), start, -1, -1)
 	reader, tx, readerRows := openReader(ctx, path)

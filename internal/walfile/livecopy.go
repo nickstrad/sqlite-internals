@@ -95,7 +95,8 @@ func copyOne(from, to string) (int64, error) {
 
 // CopyLiveFiles spawns the current executable in LiveCopyChildMode to copy each
 // source file to its destination without opening those files in the parent
-// process that holds live SQLite connections.
+// process that holds live SQLite connections. Passing an empty pairs slice
+// returns nil, nil without spawning a child process.
 func CopyLiveFiles(ctx context.Context, pairs []CopyPair) ([]CopyResult, error) {
 	if len(pairs) == 0 {
 		return nil, nil
@@ -172,7 +173,8 @@ type LiveState struct {
 }
 
 // ReadLiveState copies database's -wal and -shm into scratchDirectory via a
-// child process, parses both, and removes the temporary copies before returning.
+// child process, parses both, and removes both temporary copies on every return
+// path, including when parsing -shm fails.
 func ReadLiveState(ctx context.Context, database, scratchDirectory string) (LiveState, error) {
 	walCopy := filepath.Join(scratchDirectory, "live-state-copy-wal")
 	indexCopy := filepath.Join(scratchDirectory, "live-state-copy-shm")

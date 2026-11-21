@@ -1,49 +1,140 @@
 ---
-title: "sqlite-internals chapter 6: locking and concurrent-access facts measured at 3.53.4"
-summary: "A stray close of a database (or -shm) descriptor loses a transaction in both journal modes; in WAL the writer lock is -shm byte 120; a deferred transaction that already read gets BUSY at once whatever the busy timeout; a reader-limited checkpoint leaves the database file in a mixed state; both R4 live captures work."
-tags: [sqlite, locking, wal, concurrency, sqlite-internals]
-updated: 2026-11-20
-verified: 2026-11-20 — Linux amd64 (host and Debian lab container), Go 1.26, SQLite 3.53.4 via modernc.org/sqlite v1.60.1; darwin cross-built only; evidence in the sqlite-internals repo
+title: "sqlite-internals chapter 6: POSIX lock loss, busy rules and live snapshots as measured at 3.53.4"
+summary: "Locking facts for a platform builder: closing any descriptor to a file drops the process's locks on it and a transaction is lost, a busy timeout only helps a transaction that has not read yet, locking_mode=EXCLUSIVE breaks the writer-never-blocks-readers rule, a reader holds back a WAL restart only when it holds a read mark."
+tags: [sqlite, locking, busy, wal, sqlite-internals]
+updated: 2026-11-21
+verified: 2026-11-21 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sqlite v1.60.1; evidence in the sqlite-internals repo
 ---
 
-# sqlite-internals chapter 6: locking and concurrent-access facts measured at 3.53.4
+# sqlite-internals chapter 6: POSIX lock loss, busy rules and live snapshots as measured at 3.53.4
 
-Source: the `sqlite-internals` course repo, chunk `ch06`. Working notes:
-`agent_work/ch06/build-notes.md`. Experiments: `ch06-locking-and-concurrency/experiments/6.1`-`6.4`,
-all scripted through `internal/procs` (child processes driven step by step, no sleeps).
+Locking facts for a platform builder: closing any descriptor to a file drops the process's locks on it and a transaction is lost, a busy timeout only helps a transaction that has not read yet, locking_mode=EXCLUSIVE breaks the writer-never-blocks-readers rule, a reader holds back a WAL restart only when it holds a read mark.
 
-## Findings
+Source: the `sqlite-internals` course repo (github.com/nickstrad/sqlite-internals), chunk `ch06`. Working notes: `agent_work/ch06/build-notes.md`; review and adversarial records in the same directory.
 
-1. **A stray `os.Open`+`Close` of a file in a process that holds a SQLite connection drops that
-   process's locks on that file — and a transaction is lost.** Rollback mode: the other process's
-   COMMIT returns SQLITE_OK but its row is gone; the holder's COMMIT writes its pages and returns
-   SQLITE_IOERR_DELETE_NOENT (5898) because the shared `-journal` was already deleted. WAL mode:
-   the holder's COMMIT returns SQLITE_PROTOCOL (15) after about 10 s of retries (wal.c:3053,
-   limit 100 at 2963) and its row is lost. Both files pass `integrity_check`.
-2. **WAL writer exclusion is on the `-shm` file, byte 120.** A stray close of the database file
-   does not let a second writer in (it only drops the SHARED read lock every WAL connection keeps
-   on the database file); a stray close of the `-shm` does. Lock bytes: database PENDING
-   1073741824, RESERVED 1073741825, SHARED 1073741826-1073742335 (the whole range, read-locked);
-   `-shm` 120 WRITE, 121 CKPT, 122 RECOVER, 123-127 READ(0-4), 128 DMS.
-3. **A busy timeout only helps a transaction that has not read yet.** BEGIN IMMEDIATE, or a
-   deferred transaction whose first statement writes, waits and succeeds. A deferred transaction
-   that already read gets SQLITE_BUSY at once even with a 120 s timeout (btree.c:3740-3741:
-   retries only at TRANS_NONE), then SQLITE_BUSY_SNAPSHOT (517) once the other writer commits.
-4. **Rollback mode: a COMMIT refused by a reader keeps PENDING**, so new readers get SQLITE_BUSY
-   until the writer retries and succeeds. WAL: readers and the writer never block each other;
-   BEGIN EXCLUSIVE behaves like BEGIN IMMEDIATE.
-5. **`nBackfill` (the `checkpointed` count) does not mean the database file holds that state.**
-   A checkpoint limited by a reader's mark skips every page whose newest WAL frame is past the
-   mark (wal.c:2312), even if an older frame of that page is within it. Measured: checkpointed=61
-   (step 8) while page 1 in the file was still step 5's. Between checkpoints the database file
-   alone can be a mixture of states.
-6. **Live capture (rung R4) works two ways:** every page through `sqlite_dbpage` inside one read
-   transaction is byte-identical (E1) to the recipe replayed on one connection to the snapshot
-   step and checkpointed, while a writer commits and checkpoints between chunks; and a copy of the
-   database file and then its `-wal`, taken while a transaction is held, replays to the last
-   commit before the `-wal` copy even though the file copy alone is torn by a concurrent
-   checkpoint. PASSIVE checkpoints by another connection still run under a held BEGIN IMMEDIATE.
-7. **Observing locks portably:** `fcntl(F_GETLK)` from a process without a connection reports the
-   conflicting lock's type and pid (measured on Linux; same API on macOS, cross-built only; one holder per probe, so name holders only
-   for write locks). `/proc/locks` lists every lock on Linux; the experiments match entries by inode
-   number and pid, not device (not compared against `stat` under overlay filesystems).
+## Corrections to the outline
+
+
+### Correction 1
+
+1. **6.1: what happens after the stray close is a lost transaction, and which one depends on the
+   mode.** The outline's claim (second process refused before the stray close, admitted after it,
+   while the first still believes it holds the lock) is confirmed in both modes. The experiment
+   goes one step further and commits both transactions; the outcome is exact and repeatable:
+   - **Rollback mode:** the second process's COMMIT returns `SQLITE_OK`; the holder's COMMIT
+     writes its pages and then returns `SQLITE_IOERR_DELETE_NOENT` (5898), because both processes
+     used the same `-journal` path and the second one already deleted it (`unixDelete`,
+     os_unix.c:6833-6869, ENOENT → 6847). The final file passes `integrity_check` and holds only
+     the holder's row: **the commit that returned `SQLITE_OK` is silently lost**, and the
+     transaction that reported an error is the one that persisted.
+   - **WAL mode:** the second process's COMMIT returns `SQLITE_OK`; the holder's COMMIT returns
+     `SQLITE_PROTOCOL` (15) after about 10 s. Its `walRestartLog` (wal.c:3875-3915) drops read
+     lock 0 and calls `walTryBeginRead` with `useWal=1`, which keeps the holder's stale cached
+     header; every attempt finds the shared header changed (memcmp at wal.c:3261-3265) and
+     retries; after `WAL_RETRY_PROTOCOL_LIMIT` (100, wal.c:2963) retries it returns
+     `SQLITE_PROTOCOL` (wal.c:3053-3056), with sleeps growing to 323 ms each (the comment at
+     wal.c:3040-3048 says "less than 10 seconds" in total). The final file passes
+     `integrity_check` and holds only the second process's row: the holder's transaction is
+     lost, but the holder was told. The source comment calls this case "some other process has
+     gone rogue" (wal.c:2992-2997).
+     **Repair round correction (adversarial LOCK-06, LOCK-04b): the SQLITE_PROTOCOL outcome is
+     only one of three WAL outcomes, and the other two are silent.** `walRestartLog` does
+     anything only when the holder reads through `WAL_READ_LOCK(0)` (`if( pWal->readLock==0 )`,
+     wal.c:3879), i.e. its transaction started on an empty or fully checkpointed WAL — the case
+     of 6.1 B.
+     - **6.1 C, WAL already holding a commit no checkpoint copied** (`wal_autocheckpoint=0`, the
+       holder commits a `seed` row first): the holder reads through `WAL_READ_LOCK(1)` (byte 124,
+       seen by F_GETLK and `/proc/locks`). Stray close of `-shm` only; the second process is
+       admitted and commits (`SQLITE_OK`); the holder's COMMIT **also returns `SQLITE_OK`** at
+       once — no `walRestartLog`, no header re-check, its frames are written after its own stale
+       `mxFrame`, over the second process's frames. The second process, still open, then reads
+       `2 row(s): seed,holder`: its own committed row is gone. Final file: `integrity_check ok;
+       2 row(s): seed,holder`. **A commit that returned SQLITE_OK is lost and neither process was
+       told.**
+     - **6.1 D, the second process exits before the holder commits** (stray close of `db` and
+       `-shm`, empty WAL as in B): the second process commits (`SQLITE_OK`) and closes; seeing no
+       other process's locks it closes as the last connection (`sqlite3WalClose`: EXCLUSIVE lock on
+       the database file wal.c:2529, checkpoint, `walIndexClose(pWal, isDelete)` 2559 and delete of
+       the WAL 2563, whose result is ignored) — afterwards `lab.db-wal is gone and lab.db-shm is
+       gone`. The holder's COMMIT returns `SQLITE_OK`; afterwards `lab.db-wal` is still gone (the
+       holder wrote into the deleted file it still had open). Final file: `integrity_check ok;
+       1 row(s): holder`. Again a commit reported as `SQLITE_OK` is lost silently. (Mechanism of
+       the holder's side read from the source, not traced: its stale mapping shows the WAL fully
+       backfilled, so `walRestartLog` restarts the log instead of looping, and its own close later
+       checkpoints from the deleted WAL into the database file.) The adversarial LOCK-04b used the
+       C `sqlite3` CLI as the second process — a new process per statement batch, so it always
+       closes first — and got the same result.
+     So the chapter must not say "in WAL mode the holder is told": in WAL mode a broken lock can
+     lose either process's commit, and in two of the three scripted cases nobody gets an error.
+
+### Correction 2
+
+2. **6.1: "closing any descriptor to the file releases them" is per file.** POSIX locks are per
+   (process, inode). In WAL mode the writer lock lives on the `-shm` file (byte 120), so a stray
+   open+close of the **database file** drops only the holder's database-file lock (the SHARED
+   read lock) and the second writer is **still refused**; only a stray close of the **`-shm`**
+   file lets it in. The chapter should say: closing any descriptor of a file releases all of the
+   process's locks on *that* file; in WAL mode the writer exclusion is on the `-shm` file.
+
+### Correction 3
+
+3. **6.2: a busy timeout turns the failure into a wait only for a transaction that has not read
+   yet.** Confirmed: `BEGIN IMMEDIATE`, and a `BEGIN DEFERRED` whose first statement is a write,
+   wait for the lock and then succeed. **Not** true for a deferred transaction that has already
+   read: its first write returns `SQLITE_BUSY` (5) at once even with `busy_timeout=120000`
+   (part C3), because `btreeBeginTrans` retries through the busy handler only while
+   `inTransaction == TRANS_NONE` (btree.c:3740-3741); after the other writer commits, the same
+   write returns `SQLITE_BUSY_SNAPSHOT` (517) at once (wal.c:3734-3737). The outline's sentence
+   "a busy timeout turns that failure into a wait" needs this qualifier. The 517 half of the claim
+   is confirmed exactly as written.
+
+### Correction 4
+
+4. **Span fix: `unixLock` (outline: `os_unix.c` 1843–2095).** Line 1843 is the second line of the
+   function's doc comment (the comment opens at 1842); the function itself starts at 1866.
+   SPANS.txt lists `1842 1865` (the doc comment with the transition chart) and `1866 2095`
+   (`unixLock`). Every other span in the reading path was exact (start line holds the symbol, end
+   line is the closing brace / end of the block).
+
+### Correction 5
+
+5. **6.4 surprise (not a correction, but the chapter's model must allow it): a checkpoint's
+   `nBackfill` does not mean the database file holds that state.** After the capture's read
+   transaction pinned frame 61 and the writer committed step 9, a PASSIVE checkpoint reported
+   `checkpointed=61`, yet the database file's page 1 was still recipe step 5's page 1 (change
+   counter 7, user_version 5, 51 pages — read from `_work/6.4/copy.db`). The checkpoint iterator
+   yields each page once, at its newest frame in the WAL (`walIteratorNext`, wal.c:1764-1792), and
+   `walCheckpoint` skips that page when its newest frame is beyond `mxSafeFrame` (wal.c:2312-2314).
+   Page 1 was rewritten by step 9 (frame > 61), so no version of page 1 was copied. Between
+   checkpoints the database file is a mixture of states that only the WAL makes whole. This is
+   why the 6.3 main-file-only copy (no reader, complete checkpoint) is a consistent older state,
+   and why 6.4's database-file copy alone is torn while the file + WAL pair replays correctly.
+
+
+### Correction 6
+
+6. **Repair round: `PRAGMA locking_mode=EXCLUSIVE` is outside "the writer never blocks
+   readers"** (adversarial BUSY-05b). A WAL connection in `locking_mode=EXCLUSIVE` takes the
+   database file's EXCLUSIVE lock at its first write (`sqlite3PagerBegin`, pager.c:5982-5988) and
+   keeps it; a second process then cannot even open (`PRAGMA page_count: database is locked (5)`
+   at the SQL role's open). No experiment of this chapter uses it; the claim is for the default
+   `locking_mode=NORMAL` and the chapter should say so once.
+
+### Correction 7
+
+7. **Repair round: a read transaction holds back a WAL restart only if it is not on
+   `WAL_READ_LOCK(0)`** (adversarial SNAP-04, confirmed by `agent_work/ch06/probes/snap04-restart`).
+   A read transaction that starts on a fully checkpointed WAL takes `WAL_READ_LOCK(0)` (it reads
+   the database file only). The next writer's `walRestartLog` takes `WAL_READ_LOCK(1..4)`
+   exclusively, succeeds, and restarts the WAL under the open reader: probe output `after step 6
+   (autocheckpoint 20) mxFrame=22 … nBackfill=22`, the capture's `user-version` 6, `-shm` byte 123
+   read-locked, then `after step 7 mxFrame=16 salt1=…dd nBackfill=0` (salt-1 +1). That is safe for
+   the reader (it never looks at the WAL), and while it lasts no checkpoint can backfill, because
+   backfill needs `WAL_READ_LOCK(0)` exclusively (wal.c:2259-2260) — so the reader still pins the
+   database file. It matters for any later "hold a read mark so the WAL cannot restart" design
+   (OUTLINE R6 `internal/walship`): the mark must be taken while the WAL has un-checkpointed frames.
+
+Everything else in the chapter-6 section was confirmed; details per experiment below. The two
+[unprobed] parts are now probed: 6.1's hazard (confirmed, extended by corrections 1-2) and 6.2's
+result codes (confirmed, qualified by correction 3); 6.4's "under a writer" part is confirmed.
+

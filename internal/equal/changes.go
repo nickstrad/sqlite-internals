@@ -6,15 +6,23 @@ import (
 	"strings"
 )
 
+// PageChange describes a single page whose bytes differed between two manifests
+// or that existed in only one manifest, together with its census roles before
+// and after the operation.
 type PageChange struct {
 	Page       int
 	RoleBefore string
 	RoleAfter  string
 }
 
-func (c PageChange) Added() bool   { return c.RoleBefore == "" }
+// Added reports whether the page did not exist in the before manifest.
+func (c PageChange) Added() bool { return c.RoleBefore == "" }
+
+// Removed reports whether the page no longer exists in the after manifest.
 func (c PageChange) Removed() bool { return c.RoleAfter == "" }
 
+// String formats c for experiment logs, showing role transitions as well as
+// newly allocated and removed pages.
 func (c PageChange) String() string {
 	switch {
 	case c.Added():
@@ -27,6 +35,8 @@ func (c PageChange) String() string {
 	return fmt.Sprintf("%d(%s)", c.Page, c.RoleAfter)
 }
 
+// ChangedPages compares two per-page hash manifests and returns every page
+// whose SHA-256 changed or that was added or removed, sorted by page number.
 func ChangedPages(before, after Manifest) []PageChange {
 	byPage := func(m Manifest) map[int]ManifestEntry {
 		out := make(map[int]ManifestEntry, len(m.Entries))
@@ -47,7 +57,11 @@ func ChangedPages(before, after Manifest) []PageChange {
 	for p := range pages {
 		ea, inA := a[p]
 		eb, inB := b[p]
-		if inA && inB && ea.SHA256 == eb.SHA256 && ea.Role == eb.Role {
+		// Only report byte changes (or added/removed pages). When secure_delete
+		// is OFF, freePage2 (btree.c:6934-6935) calls sqlite3PagerDontWrite
+		// (pager.c:6329-6339), so a freed leaf changes census role from
+		// table-leaf to freelist-leaf without being written to disk or the WAL.
+		if inA && inB && ea.SHA256 == eb.SHA256 {
 			continue
 		}
 		changes = append(changes, PageChange{Page: p, RoleBefore: ea.Role, RoleAfter: eb.Role})
@@ -56,6 +70,7 @@ func ChangedPages(before, after Manifest) []PageChange {
 	return changes
 }
 
+// FormatPageChanges formats a slice of PageChange entries inside square brackets.
 func FormatPageChanges(changes []PageChange) string {
 	parts := make([]string, len(changes))
 	for i, c := range changes {
@@ -64,6 +79,7 @@ func FormatPageChanges(changes []PageChange) string {
 	return "[" + strings.Join(parts, " ") + "]"
 }
 
+// PageNumbers extracts the sorted 1-based page numbers from changes.
 func PageNumbers(changes []PageChange) []int {
 	out := make([]int, len(changes))
 	for i, c := range changes {

@@ -39,3 +39,21 @@ Verification:
 3. **`ch02-file-format-and-pages/experiments/2.3-page-manifest/main.go:188`.** `if len(entries) < len(lines)` is always true because `len(lines) == 3 + len(entries)` (3 header lines). Works for C1–C3 because C1 drops 1 entry and C2/C3 keep 270 entries, so slicing `pageBytes[:len(entries)*4096]` stays in bounds; an edit adding entries would panic.
 4. **`internal/capture/capture.go:193-197`.** Checking `if _, err := os.Stat(outPath + suffix); err == nil` ignores non-`os.ErrNotExist` stat errors (for example, permission errors). Minor; not triggered in normal runs.
 5. **`internal/dbfile/header.go:114-119`.** `Header.validate` rejects `TextEncoding > 3` and `SchemaFormat > 4` with `ErrNotADatabase`, whereas `lockBtree` itself does not validate those two offsets (the schema layer validates them later). Good defensive check for a standalone parser, just slightly earlier than `lockBtree`.
+
+---
+
+## Closing rewrite pass (Gemini 4 Neon, 2026-11-21)
+
+### What changed
+
+- **Code comment (`internal/dbfile/header.go:120`):** Corrected the validation comment from `unknown format versions (> 2)` to `format versions other than 1 or 2` to match the `!= 1 && != 2` checks (which also reject `0`). All other comments in `internal/dbfile/`, `internal/equal/`, `internal/capture/`, and `ch02-file-format-and-pages/experiments/` were verified accurate and left untouched so later chapters' shared packages stay undisturbed.
+- **Chapter prose (`ch02-file-format-and-pages/ch02-file-format-and-pages.md`):**
+  - Tightened patched-on passages into plain, short sentences across the setup notes, Section 1 (defining `B-tree`, `root page`, `interior page`, `leaf page`, `auto_vacuum`, `POSIX advisory locks`, `checkpoint`, and `lock-byte page` cleanly at first use), Section 2 (explaining why `internal/trace` child processes avoid `os.Open` lock drops), Section 3 (Experiments 2.1 Claim and Reading the evidence), Section 5 walk-throughs (`btree.go`, `census.go`, `capture.go`), Section 6, and Section 7.
+  - Added `github.com/sqlite/sqlite` `version-3.53.4` links to every prose `src/<file>:<start>-<end>` reference across Version notes, Section 4, Section 5 walk-throughs, Section 6, Section 7, and Section 8 (all line spans verified against `$SQLITE_SRC`).
+  - Corrected two small inaccuracies: changed "all four page sizes" in Section 5.1 to "four page sizes (`512`, `1024`, `4096`, `65536`)"; removed an un-evidenced timing-dependent `FuzzParse` iteration count (`85,919`) in favor of `dbfile_test.go`'s verified `3,000` single-bit flips (`319` rejected, confirmed live) plus `COR-01` (`656`) and `COR-06` (`10,000`) from `adversarial/results.txt`; and avoided claiming an unprinted post-close `.db` read in Section 4.2's C4 table rows.
+  - Removed meta-sentences describing how the text was revised ("the chapter now states...", "Section 6.3 now states...") from `### What attacked this chapter`, added links to `results-run1.txt` and `results-run2.txt`, and added a closing operational-rules summary table in Section 7 matching Chapters 1 and 5.
+- **Knowledge check answers (`ch02-file-format-and-pages/answers.md`):** Added `github.com/sqlite/sqlite` `version-3.53.4` links to all source references and added the `readDbPage` short-read citation (`src/pager.c:3088-3090`) to Answer 4.
+
+### Open doubts
+
+None. Every claim, line reference, and evidence number matches the pinned 3.53.4 source tree and the captured evidence files.

@@ -26,7 +26,7 @@ splits (inserts that added pages): 515, at inserts #5, #9, #13, ..., #2061
 check ok: the first split happens at insert #5 (rowid 10), as the arithmetic predicts
 check ok: every split happens exactly where predicted: insert #4 m + 1, every 4 inserts
 check ok: every insert that does not split changes exactly one page
-check ok: that one page is the table leaf the row went into (page 1 is not written)
+check ok: that one page is the table leaf that now holds the new rowid, never page 1 (page 1 is not written)
 check ok: most inserts change one page (1546 of 2061)
 
 first split, depth 1 -> 2: insert #5 (rowid 10): 4 page(s) changed [1(table-leaf) 2(table-leaf->table-interior) 3(new table-leaf) 4(new table-leaf)]; WAL frames for this commit: [1 2 3 4]; depth 2; root page 2
@@ -110,6 +110,24 @@ rollback: insert #2 (rowid 4): 2 page(s) changed [1(table-leaf) 2(table-leaf)]; 
   2 page(s), page 1 among them: true: 10 insert(s)
   3 page(s), page 1 among them: true: 1 insert(s)
   4 page(s), page 1 among them: true: 1 insert(s)
-check ok: in rollback mode every commit also rewrites page 1 (change counter, bytes 24-27 and 92-95), so an ordinary insert changes two pages
+check ok: in rollback mode every commit also rewrites page 1
+check ok: an insert that adds no page changes exactly two pages: page 1 and the table leaf that holds the new rowid
+check ok: on those inserts page 1 differs only in the change counter (bytes 24-27) and version-valid-for (bytes 92-95)
+
+== E. where "most inserts change one page" stops holding (one row per transaction, WAL, the same manifest after every insert)
+  random keys, 1000-byte rows (4 per leaf): 250 inserts; one page: 86; added a page: 70; several pages, none added: 94; pages changed per insert 1..6; final depth 2, 71 leaves holding 2..4 rows
+    inserts that added a page at depth 2, by pages changed: 5 pages: 40, 6 pages: 29
+  random keys, 40-byte rows (about 85 per leaf): 600 inserts; one page: 566; added a page: 7; several pages, none added: 27; pages changed per insert 1..6; final depth 2, 8 leaves holding 43..85 rows
+    inserts that added a page at depth 2, by pages changed: 5 pages: 1, 6 pages: 5
+  ascending keys, 5000-byte rows (each overflows): 25 inserts; one page: 0; added a page: 25; several pages, none added: 0; pages changed per insert 3..5; final depth 2, 7 leaves holding 1..4 rows
+    inserts that added a page at depth 2, by pages changed: 3 pages: 15, 4 pages: 5
+  ascending keys, 400-byte rows, WITHOUT ROWID: 30 inserts; one page: 23; added a page: 3; several pages, none added: 4; pages changed per insert 1..5; final depth 2, 4 leaves holding 4..9 rows
+    inserts that added a page at depth 2, by pages changed: 5 pages: 2
+check ok: random keys with 4 rows per leaf: only 86 of 250 inserts change one page; 70 split and 94 more change several pages without adding one (balance_nonroot moves cells between siblings)
+check ok: random keys with small rows: most inserts change one page again (566 of 600): the rule depends on how many rows fit in a leaf, not on the key order alone
+check ok: a row larger than the leaf's local limit also writes its overflow pages and page 1 (the file grows): no insert changes one page, each changes 3..5
+check ok: a WITHOUT ROWID table is an index b-tree, and balance_quick serves table leaves only: its append splits at depth 2 go through balance_nonroot and change more than three pages
+check ok: in all four, every changed page is in its commit's WAL frames
+check ok: integrity_check = ok after every insert of all four
 
 PAGES PER INSERT OK

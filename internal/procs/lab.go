@@ -4,8 +4,18 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 )
 
+// StillWaitingWindow is how long Lab.StillWaiting waits for a reply before
+// concluding that a child is genuinely blocked in SQLite's busy-retry loop.
+// 250ms is far longer than a local pipe round-trip (so an immediate SQLITE_BUSY
+// arrives inside the window and fails the check) and far shorter than the
+// 120s busy_timeout used in contention labs.
+const StillWaitingWindow = 250 * time.Millisecond
+
+// Lab wraps Script with experiment ergonomics: fatal-on-infrastructure-error
+// helpers, claim assertions, lock inspection, and final pass/fail reporting.
 type Lab struct {
 	Out      io.Writer
 	Script   *Script
@@ -13,16 +23,21 @@ type Lab struct {
 	exit     func(int)
 }
 
+// NewLab creates a Lab that writes transcripts and check results to out and
+// exits the process via os.Exit on Fatal or a failing Report.
 func NewLab(out io.Writer) *Lab {
 	return &Lab{Out: out, Script: NewScript(out), exit: os.Exit}
 }
 
+// Fatal kills all children, prints an error line, and exits with status 1.
 func (l *Lab) Fatal(what string, err error) {
 	l.Script.Kill()
 	fmt.Fprintf(l.Out, "FATAL %s: %v\n", what, err)
 	l.exit(1)
 }
 
+// Check prints one "check ok:" or "check FAILED:" line and records any failed
+// claim so Report exits non-zero at the end of the experiment.
 func (l *Lab) Check(ok bool, claim string) bool {
 	status := "ok"
 	if !ok {
@@ -33,8 +48,10 @@ func (l *Lab) Check(ok bool, claim string) bool {
 	return ok
 }
 
+// Failures returns a copy of all claim strings that failed Check so far.
 func (l *Lab) Failures() []string { return append([]string(nil), l.failures...) }
 
+// Spawn starts a child in role under name, aborting via Fatal on error.
 func (l *Lab) Spawn(name, role string, args ...string) *Child {
 	child, err := l.Script.Spawn(name, role, args...)
 	if err != nil {
@@ -43,10 +60,13 @@ func (l *Lab) Spawn(name, role string, args ...string) *Child {
 	return child
 }
 
+// SpawnSQL starts a RoleSQL child configured with options.
 func (l *Lab) SpawnSQL(name string, options SQLOptions) *Child {
 	return l.Spawn(name, RoleSQL, options.Args()...)
 }
 
+// Do runs action on child and returns its Result (whether SQLITE_OK or an error
+// code); transport or child-death errors are fatal.
 func (l *Lab) Do(child *Child, action string, args ...string) Result {
 	result, err := l.Script.Do(child, action, args...)
 	if err != nil {
@@ -55,6 +75,7 @@ func (l *Lab) Do(child *Child, action string, args ...string) Result {
 	return result
 }
 
+// Must runs action on child and aborts via Fatal unless the result is SQLITE_OK.
 func (l *Lab) Must(child *Child, action string, args ...string) Result {
 	result := l.Do(child, action, args...)
 	if !result.OK() {
@@ -63,6 +84,8 @@ func (l *Lab) Must(child *Child, action string, args ...string) Result {
 	return result
 }
 
+// Begin sends action to child without waiting for the reply and logs that the
+// step is in flight.
 func (l *Lab) Begin(child *Child, action string, args ...string) *Call {
 	call, err := l.Script.Begin(child, action, args...)
 	if err != nil {
@@ -73,13 +96,15 @@ func (l *Lab) Begin(child *Child, action string, args ...string) *Call {
 	return call
 }
 
+// StillWaiting waits StillWaitingWindow for call to answer, logs whether it
+// stayed unanswered, and returns true if the child is still blocked.
 func (l *Lab) StillWaiting(call *Call) bool {
-	answered, err := call.Answered()
+	answered, err := call.AnsweredWithin(StillWaitingWindow)
 	if err != nil {
 		l.Fatal("poll", err)
 	}
 	request := call.Request()
-	state := "no answer yet"
+	state := fmt.Sprintf("no answer after %v", StillWaitingWindow)
 	if answered {
 		state = "already answered"
 	}
@@ -87,6 +112,7 @@ func (l *Lab) StillWaiting(call *Call) bool {
 	return !answered
 }
 
+// Finish waits for an in-flight Call started with Begin and prints its outcome.
 func (l *Lab) Finish(call *Call) Result {
 	result, err := l.Script.Finish(call)
 	if err != nil {
@@ -95,12 +121,14 @@ func (l *Lab) Finish(call *Call) Result {
 	return result
 }
 
+// StopChildren cleanly stops every running child, aborting on any close error.
 func (l *Lab) StopChildren() {
 	if err := l.Script.Close(); err != nil {
 		l.Fatal("stop children", err)
 	}
 }
 
+// PidName returns the logical child name for pid, or "another process" if unknown.
 func (l *Lab) PidName(pid int) string {
 	if name, ok := l.Script.NameOfPid(pid); ok {
 		return name
@@ -108,7 +136,37 @@ func (l *Lab) PidName(pid int) string {
 	return "another process"
 }
 
-func (l *Lab) Locks(label, path string, ranges []LockRange) []RangeState {
+// LockView combines the portable fcntl(F_GETLK) probe results with Linux's
+// per-child /proc/locks entries so callers can assert both views.
+type LockView struct {
+	Ranges     []RangeState
+	Proc       []ProcLock
+	ProcListed bool
+}
+
+// ProcHolders returns a map of PID -> lock type ("READ" or "WRITE") for every
+// /proc/locks entry in v.Proc that covers the entire named range (including
+// kernel-merged ranges and locks extending to EOF).
+func (v LockView) ProcHolders(name string) map[int]string {
+	holders := map[int]string{}
+	for _, s := range v.Ranges {
+		if s.Range.Name != name {
+			continue
+		}
+		last := s.Range.Start + s.Range.Length - 1
+		for _, lock := range v.Proc {
+			if lock.Start <= s.Range.Start && (lock.ToEOF || lock.End >= last) {
+				holders[lock.Pid] = lock.Type
+			}
+		}
+	}
+	return holders
+}
+
+// Locks probes ranges on path from the parent process (which holds no SQLite
+// connection, so opening and closing path here drops no SQLite locks) and, on
+// Linux, also lists and returns the children's /proc/locks entries for path.
+func (l *Lab) Locks(label, path string, ranges []LockRange) LockView {
 	states, err := ProbeRanges(path, ranges)
 	if err != nil {
 		l.Fatal("probe locks", err)
@@ -117,13 +175,15 @@ func (l *Lab) Locks(label, path string, ranges []LockRange) []RangeState {
 	for _, line := range FormatRangeStates(states, l.PidName) {
 		fmt.Fprintf(l.Out, "    %s\n", line)
 	}
+	view := LockView{Ranges: states}
 	if ProcLocksSupported {
-		l.procLocks(label, path, ranges)
+		view.Proc = l.procLocks(label, path, ranges)
+		view.ProcListed = true
 	}
-	return states
+	return view
 }
 
-func (l *Lab) procLocks(label, path string, ranges []LockRange) {
+func (l *Lab) procLocks(label, path string, ranges []LockRange) []ProcLock {
 	inode, err := FileInode(path)
 	if err != nil {
 		l.Fatal("inode", err)
@@ -138,17 +198,20 @@ func (l *Lab) procLocks(label, path string, ranges []LockRange) {
 		names[child.Pid] = child.Name
 		pids[child.Pid] = true
 	}
-	lines := DescribeProcLocks(FilterProcLocks(all, inode, pids), names, ranges)
+	mine := FilterProcLocks(all, inode, pids)
+	lines := DescribeProcLocks(mine, names, ranges)
 	if len(lines) == 0 {
 		fmt.Fprintf(l.Out, "  %s locks in %s: none\n", label, ProcLocksPath)
-		return
+		return mine
 	}
 	fmt.Fprintf(l.Out, "  %s locks in %s:\n", label, ProcLocksPath)
 	for _, line := range lines {
 		fmt.Fprintf(l.Out, "    %s\n", line)
 	}
+	return mine
 }
 
+// StateOf looks up the probed LockHolder for the named range inside states.
 func StateOf(states []RangeState, name string) (LockHolder, bool) {
 	for _, s := range states {
 		if s.Range.Name == name {
@@ -158,16 +221,20 @@ func StateOf(states []RangeState, name string) (LockHolder, bool) {
 	return LockHolder{}, false
 }
 
+// WriteLockedBy reports whether name is exclusively write-locked by pid.
 func WriteLockedBy(states []RangeState, name string, pid int) bool {
 	holder, ok := StateOf(states, name)
 	return ok && holder.Held && holder.Write && holder.Pid == pid
 }
 
+// ReadLocked reports whether name is held under a shared read lock.
 func ReadLocked(states []RangeState, name string) bool {
 	holder, ok := StateOf(states, name)
 	return ok && holder.Held && !holder.Write
 }
 
+// Unlocked reports whether all named ranges (or every range in states if names
+// is empty) have no conflicting lock.
 func Unlocked(states []RangeState, names ...string) bool {
 	for _, s := range states {
 		if len(names) > 0 && !contains(names, s.Range.Name) {
@@ -189,6 +256,7 @@ func contains(list []string, value string) bool {
 	return false
 }
 
+// Report prints the final summary banner and exits with status 1 if any Check failed.
 func (l *Lab) Report(title string) {
 	fmt.Fprintln(l.Out)
 	if len(l.failures) > 0 {

@@ -1,3 +1,8 @@
+// Command 6.3-torn-copy demonstrates why plain file copies of a live SQLite
+// database are unsafe: in WAL mode, copying only the main .db file silently
+// drops uncheckpointed commits (Part A1), and copying .db across an active
+// checkpoint produces a torn, corrupt file (Part A2); in rollback mode, copying
+// .db across a live commit tears the copy the same way (Part B).
 package main
 
 import (
@@ -31,6 +36,8 @@ type copyReport struct {
 	inspection procs.Inspection
 }
 
+// examine verifies that inspecting path does not modify it, matches path against
+// the recipe's known states, and prints its size, integrity_check summary, and counts.
 func examine(ctx context.Context, lab *procs.Lab, r recipe.Recipe, path, journal string) copyReport {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -91,6 +98,9 @@ func prepare(ctx context.Context, lab *procs.Lab, r recipe.Recipe, dir, name, jo
 	return db, root
 }
 
+// walMode runs Part A: commits steps 6-10 with a PASSIVE checkpoint after step 8,
+// inspects a main-file-only copy (A1: valid step 8, commits 9-10 silently lost),
+// and splits a copy across a second checkpoint (A2: torn and corrupt).
 func walMode(ctx context.Context, lab *procs.Lab, dir string) {
 	fmt.Println()
 	fmt.Printf("== A. WAL mode: a writer commits recipe steps %d-%d and checkpoints after step %d (wal_autocheckpoint=0)\n", baseStep+1, lastCommitted, checkpointedAt)
@@ -128,6 +138,8 @@ func walMode(ctx context.Context, lab *procs.Lab, dir string) {
 	lab.StopChildren()
 }
 
+// rollbackMode runs Part B: copies the first half of a rollback-mode database,
+// commits recipe step 6, copies the second half, and verifies the torn copy fails.
 func rollbackMode(ctx context.Context, lab *procs.Lab, dir string) {
 	fmt.Println()
 	fmt.Printf("== B. rollback mode (journal_mode=delete) as the contrast: the database file copied in two halves while a commit (step %d) writes into it between them\n", baseStep+1)
