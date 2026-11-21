@@ -490,3 +490,87 @@ func TestCheckSiteHTMLEdges(t *testing.T) {
 		t.Fatalf("problems:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
+
+func checkSiteProblems(t *testing.T, base string, pages map[string]string) []string {
+	t.Helper()
+	dir := t.TempDir()
+	for name, content := range pages {
+		target := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	checked, err := CheckSite(dir, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, p := range checked.Problems {
+		got = append(got, p.String())
+	}
+	return got
+}
+
+func TestCheckSiteIgnoresAttributeTextInCode(t *testing.T) {
+	got := checkSiteProblems(t, "/b/", map[string]string{
+		"index.html": `<h2 id="top">t</h2>` +
+			`<pre><code class="language-sql">SELECT * FROM t WHERE id = 'alpha';` + "\n" +
+			`SELECT * FROM t WHERE id = 'alpha';</code></pre>` +
+			`<pre><code class="language-html">&lt;a href='/b/single-in-code/'&gt;x&lt;/a&gt;` + "\n" +
+			`&lt;img src='/b/missing-in-code.png'&gt;</code></pre>` +
+			`<a href="#top">ok</a>`,
+	})
+	if len(got) != 0 {
+		t.Fatalf("problems: %q", got)
+	}
+}
+
+func TestCheckSiteBrokenAnchorBesideSQLText(t *testing.T) {
+	got := checkSiteProblems(t, "/b/", map[string]string{
+		"index.html": `<pre><code>SELECT 1 WHERE id = 'alpha';</code></pre>` +
+			`<p>where id = 'alpha'</p><a href="#alpha">broken</a>`,
+	})
+	want := []string{"index.html: missing anchor #alpha in #alpha"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("problems: %q want %q", got, want)
+	}
+}
+
+func TestCheckSiteIgnoresAttributeTextInProseAndInlineCode(t *testing.T) {
+	got := checkSiteProblems(t, "/b/", map[string]string{
+		"index.html": `<p>prose id = 'alpha' and id = 'alpha' then href='/b/prose-missing/'</p>` +
+			`<p><code>id = 'alpha'</code> and <code>id='alpha'</code> and <code>src='/b/inline.png'</code></p>` +
+			`<script>var s = "<a href='/b/in-script/' id='alpha'>";</script>` +
+			`<style>a[id='alpha']::after { content: "<img src='/b/in-style.png'>"; }</style>` +
+			`<a href="#alpha">broken</a>`,
+	})
+	want := []string{"index.html: missing anchor #alpha in #alpha"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("problems: %q want %q", got, want)
+	}
+}
+
+func TestCheckSiteTagScanner(t *testing.T) {
+	got := checkSiteProblems(t, "/b/", map[string]string{
+		"index.html": `<a title="a>b" href='/b/missing-after-gt/'>x</a>` +
+			`<A HREF='/b/missing-upper/'>u</A><DIV ID='upper'></DIV><a href="#upper">ok</a>` +
+			`<a href=/b/missing-unquoted/>q</a><a href = "/b/a/" >spaced</a>` +
+			`<img alt='x > y' src = '/b/missing-spaced.png'>` +
+			`<div id=bare></div><a href=#bare>ok</a>` +
+			`<p id="real"></p><section ID="real"></section>`,
+		"a/index.html": `<h2 id="here">h</h2>`,
+	})
+	want := []string{
+		`index.html: duplicate id "real"`,
+		"index.html: broken link /b/missing-after-gt/",
+		"index.html: broken link /b/missing-upper/",
+		"index.html: broken link /b/missing-unquoted/",
+		"index.html: broken link /b/missing-spaced.png",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("problems:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}

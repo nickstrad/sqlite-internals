@@ -1,29 +1,131 @@
 package site
 
 import (
+	"bytes"
 	"html"
 	"io/fs"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 )
 
-var (
-	idAttrPattern      = regexp.MustCompile(`\sid\s*=\s*(?:"([^"]*)"|'([^']*)')`)
-	linkAttrPattern    = regexp.MustCompile(`\s(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)')`)
-	htmlCommentPattern = regexp.MustCompile(`(?s)<!--.*?-->`)
-)
+type tagAttribute struct {
+	name  string
+	value string
+}
 
-func attrValue(m [][]byte) string {
-	if m[1] != nil {
-		return html.UnescapeString(string(m[1]))
+var rawTextElements = map[string]bool{"script": true, "style": true, "textarea": true, "title": true}
+
+func isASCIILetter(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+}
+
+func isHTMLSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'
+}
+
+func openingTagAttributes(data []byte) []tagAttribute {
+	var attributes []tagAttribute
+	n := len(data)
+	i := 0
+	for i < n {
+		lt := bytes.IndexByte(data[i:], '<')
+		if lt < 0 {
+			break
+		}
+		i += lt
+		if bytes.HasPrefix(data[i:], []byte("<!--")) {
+			end := bytes.Index(data[i+4:], []byte("-->"))
+			if end < 0 {
+				break
+			}
+			i += 4 + end + 3
+			continue
+		}
+		if i+1 < n && (data[i+1] == '/' || data[i+1] == '!' || data[i+1] == '?') {
+			end := bytes.IndexByte(data[i+1:], '>')
+			if end < 0 {
+				break
+			}
+			i += 1 + end + 1
+			continue
+		}
+		if i+1 >= n || !isASCIILetter(data[i+1]) {
+			i++
+			continue
+		}
+		j := i + 1
+		for j < n && !isHTMLSpace(data[j]) && data[j] != '/' && data[j] != '>' {
+			j++
+		}
+		tagName := strings.ToLower(string(data[i+1 : j]))
+		var tagAttributes []tagAttribute
+		closed := false
+		for j < n {
+			for j < n && (isHTMLSpace(data[j]) || data[j] == '/') {
+				j++
+			}
+			if j >= n {
+				break
+			}
+			if data[j] == '>' {
+				j++
+				closed = true
+				break
+			}
+			nameStart := j
+			j++
+			for j < n && !isHTMLSpace(data[j]) && data[j] != '/' && data[j] != '>' && data[j] != '=' {
+				j++
+			}
+			attribute := tagAttribute{name: strings.ToLower(string(data[nameStart:j]))}
+			k := j
+			for k < n && isHTMLSpace(data[k]) {
+				k++
+			}
+			if k < n && data[k] == '=' {
+				k++
+				for k < n && isHTMLSpace(data[k]) {
+					k++
+				}
+				if k < n && (data[k] == '"' || data[k] == '\'') {
+					quote := data[k]
+					end := bytes.IndexByte(data[k+1:], quote)
+					if end < 0 {
+						j = n
+						break
+					}
+					attribute.value = html.UnescapeString(string(data[k+1 : k+1+end]))
+					j = k + 1 + end + 1
+				} else {
+					valueStart := k
+					for k < n && !isHTMLSpace(data[k]) && data[k] != '>' {
+						k++
+					}
+					attribute.value = html.UnescapeString(string(data[valueStart:k]))
+					j = k
+				}
+			}
+			tagAttributes = append(tagAttributes, attribute)
+		}
+		if !closed {
+			break
+		}
+		attributes = append(attributes, tagAttributes...)
+		i = j
+		if rawTextElements[tagName] {
+			closing := bytes.Index(bytes.ToLower(data[i:]), []byte("</"+tagName))
+			if closing < 0 {
+				break
+			}
+			i += closing
+		}
 	}
-	return html.UnescapeString(string(m[2]))
+	return attributes
 }
 
 type CheckResult struct {
@@ -50,19 +152,19 @@ func CheckSite(dir, base string) (CheckResult, error) {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		data = htmlCommentPattern.ReplaceAll(data, nil)
 		set := map[string]bool{}
-		for _, m := range idAttrPattern.FindAllSubmatch(data, -1) {
-			id := attrValue(m)
-			if set[id] {
-				duplicates[rel] = append(duplicates[rel], id)
+		for _, attribute := range openingTagAttributes(data) {
+			switch attribute.name {
+			case "id":
+				if set[attribute.value] {
+					duplicates[rel] = append(duplicates[rel], attribute.value)
+				}
+				set[attribute.value] = true
+			case "href", "src":
+				links[rel] = append(links[rel], attribute.value)
 			}
-			set[id] = true
 		}
 		ids[rel] = set
-		for _, m := range linkAttrPattern.FindAllSubmatch(data, -1) {
-			links[rel] = append(links[rel], attrValue(m))
-		}
 		return nil
 	})
 	if err != nil {
