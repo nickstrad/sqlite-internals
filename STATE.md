@@ -115,9 +115,10 @@ a finished part A leaves `sqlite-p2-<name>.stageA`, a finished part B `sqlite-p2
 
 Closing prose record (commit of each chapter's closing Neon pass): chapter 5 — 394203d (single late prose pass); chapter 7 — c645979 (closing rewrite); chapter 3 — e71fa8c (single late prose pass); chapter 4 — a9fff51 (closing rewrite); chapter 6 — d394e64, chapter 8 — dfd1dfd and chapter 9 — b58a1a0 (single late prose passes); chapter 3 — e71fa8c (single late prose pass); chapter 4 — a9fff51 (closing rewrite); chapter 6 — d394e64, chapter 8 — dfd1dfd and chapter 9 — b58a1a0 (single late prose passes); chapter 1 — 66fca8e and chapter 2 — dd5a9b4 (retroactive closing rewrites, merged on main).
 
-Next steps, in order: land 9 when its chain finishes (each branch merges main before
-its part B); run part A for 6 and 8; closing rewrites for 1 and 2; build 10a and 10b; chain 9,
-10a, 10b; then pub, the self-contained sweep, and the done file.
+Next steps, in order: 10a build → part A (review, attacks, repair, re-review; 10a has no
+chapter text, so its part B is comments only and it lands on that); 10b build → part A → part B
+(chapter 10 text); then pub part B, the self-contained sweep, landing pub (this publishes the
+site), and the done file. Each branch merges main before its part B.
 
 Open decisions / blockers:
 - Neon spend: the direct Gemini route has $125 prepay (added 2026-11-20) under a $100 monthly
