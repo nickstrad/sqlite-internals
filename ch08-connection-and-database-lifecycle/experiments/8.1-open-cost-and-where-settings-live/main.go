@@ -1,3 +1,7 @@
+// Experiment 8.1 measures what SQLite reads at open versus at the first
+// statement for 1-, 100-, and 1,000-table schemas (Part A), and determines
+// empirically which course settings persist in the database file header versus
+// per connection across a plain copy and VACUUM INTO (Part B).
 package main
 
 import (
@@ -47,6 +51,9 @@ func fatal(what string, err error) {
 	os.Exit(1)
 }
 
+// plainConnection opens a raw modernc.org/sqlite connection without applying
+// any PRAGMA settings, because running any PRAGMA would itself trigger lazy
+// schema loading (sqlite3ReadSchema, src/prepare.c:470-484).
 func plainConnection(ctx context.Context, path string) (*sql.DB, *sql.Conn) {
 	uri, err := sqlitex.FileURI(path, nil)
 	if err != nil {
@@ -105,6 +112,9 @@ func buildSchema(ctx context.Context, path string, tables int) {
 	}
 }
 
+// childOpen runs inside strace and writes explicit MARK lines to stdout so the
+// parent can partition syscalls cleanly into open, first-statement, and close
+// phases. LockOSThread keeps the goroutine on one OS thread for strace order.
 func childOpen(path string) {
 	runtime.LockOSThread()
 	ctx := context.Background()
@@ -169,6 +179,8 @@ func splitPhases(log *trace.StraceLog, dir string) (map[string]*phaseIO, error) 
 	return result, nil
 }
 
+// pagesOf converts aligned, whole 4,096-byte reads into 1-based page numbers
+// and reports whether every read in the slice was a complete aligned page read.
 func pagesOf(reads []trace.Syscall) ([]int, bool) {
 	var pages []int
 	whole := true
@@ -290,6 +302,9 @@ func partA(ctx context.Context, work string) {
 				fmt.Printf("  %-16s reads of other files: %s\n", "", strings.Join(others, ", "))
 			}
 		}
+		// sqlite3BtreeOpen (src/btree.c:2532-2825) reads only the 100-byte file
+		// header via sqlite3PagerReadFileheader; no schema or WAL files are
+		// touched at open.
 		open := byPhase["open"]
 		check(len(open.opens) == 1 && open.opens[0] == filepath.Base(path) && len(open.readsByDB) == 1 && open.readsByDB[0].Offset == 0 && open.readsByDB[0].Length == 100 && open.readsByDB[0].Result == 100 && len(open.otherReads) == 0,
 			fmt.Sprintf("%d table(s): open opens only the database file and reads only its 100-byte header", tables))
@@ -298,6 +313,9 @@ func partA(ctx context.Context, work string) {
 		wantPages := schemaTreePages(ctx, path)
 		check(firstWhole && slices.Equal(sortedUnique(firstPages), sortedUnique(wantPages)),
 			fmt.Sprintf("%d table(s): the first statement reads exactly the sqlite_schema b-tree pages (%d, from dbstat) plus t0001's root page", tables, len(wantPages)-1))
+		// In WAL mode, lockBtree (src/btree.c:3282-3459) reads page 1, sees
+		// header byte 19 == 2, opens -wal and -shm, and drops page 1 so
+		// btreeBeginTrans (src/btree.c:3598-3804) re-reads page 1 through WAL.
 		walOpen := slices.Index(first.events, "open "+filepath.Base(path)+"-wal")
 		pageOneReads := 0
 		for _, event := range first.events {
@@ -552,6 +570,9 @@ func partB(ctx context.Context, work string) {
 	if err != nil || len(header) < 100 {
 		fatal("read header", fmt.Errorf("%d bytes, %v", len(header), err))
 	}
+	// sqlite3InitOne (src/prepare.c:323-333) reads header bytes 48-51
+	// (BTREE_DEFAULT_CACHE_SIZE) when a connection has not set cache_size yet,
+	// so the deprecated PRAGMA default_cache_size persists in the file header.
 	stored := int32(uint32(header[48])<<24 | uint32(header[49])<<16 | uint32(header[50])<<8 | uint32(header[51]))
 	fmt.Printf("  PRAGMA default_cache_size=777, then a copy opened: default_cache_size %s, cache_size %s, header bytes 48-51 = %d\n", reopened["default_cache_size"], reopened["cache_size"], stored)
 	check(persistReopened == sqlitex.JournalDelete, "a rollback journal mode (persist) does not survive a reopen: it is per connection; only wal is stored in the file")

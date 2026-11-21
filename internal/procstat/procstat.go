@@ -1,3 +1,7 @@
+// Package procstat reads the current process's open file descriptors, resident
+// memory, and descriptor limit without cgo. On Linux it reads /proc/self/fd
+// and /proc/self/status; on other Unix systems it counts /dev/fd and invokes
+// ps -o rss=.
 package procstat
 
 import (
@@ -12,11 +16,16 @@ import (
 	"syscall"
 )
 
+// Descriptor represents one open file descriptor of the current process.
+// Target holds the resolved file path on Linux (/proc/self/fd readlink) and is
+// empty on platforms where TargetsSupported is false.
 type Descriptor struct {
 	FD     int
 	Target string
 }
 
+// Memory holds the current process's resident memory figures in bytes.
+// Unavailable breakdown fields (Anon, File, Shmem on non-Linux systems) are -1.
 type Memory struct {
 	RSS   int64
 	Anon  int64
@@ -24,10 +33,14 @@ type Memory struct {
 	Shmem int64
 }
 
+// HasBreakdown reports whether the anonymous, file-backed, and shared-memory
+// RSS breakdown fields are all populated.
 func (m Memory) HasBreakdown() bool {
 	return m.Anon >= 0 && m.File >= 0 && m.Shmem >= 0
 }
 
+// DescriptorCount returns the number of open file descriptors in the current
+// process, excluding the directory descriptor opened while counting them.
 func DescriptorCount() (int, error) {
 	fds, err := descriptorNumbers()
 	if err != nil {
@@ -42,6 +55,8 @@ func descriptorNumbers() ([]int, error) {
 		return nil, fmt.Errorf("procstat: list descriptors: %w", err)
 	}
 	defer dir.Close()
+	// Exclude the directory handle itself so repeated calls return the same
+	// count and opening N files increases the count by exactly N.
 	own := int(dir.Fd())
 	names, err := dir.Readdirnames(-1)
 	if err != nil {
@@ -61,6 +76,8 @@ func descriptorNumbers() ([]int, error) {
 	return fds, nil
 }
 
+// Descriptors returns every open file descriptor in ascending numeric order,
+// resolving symlink targets from /proc/self/fd when TargetsSupported is true.
 func Descriptors() ([]Descriptor, error) {
 	fds, err := descriptorNumbers()
 	if err != nil {
@@ -72,6 +89,7 @@ func Descriptors() ([]Descriptor, error) {
 		if TargetsSupported {
 			target, err = os.Readlink(filepath.Join(DescriptorDir, strconv.Itoa(fd)))
 			if errors.Is(err, os.ErrNotExist) {
+				// Skip descriptors closed concurrently between listing and readlink.
 				continue
 			}
 			if err != nil {
@@ -83,6 +101,9 @@ func Descriptors() ([]Descriptor, error) {
 	return descriptors, nil
 }
 
+// DescriptorsUnder returns all open descriptors whose resolved target lies
+// inside dir. It returns ErrTargetsUnsupported on platforms where descriptor
+// targets cannot be read.
 func DescriptorsUnder(dir string) ([]Descriptor, error) {
 	if !TargetsSupported {
 		return nil, ErrTargetsUnsupported
@@ -104,6 +125,9 @@ func DescriptorsUnder(dir string) ([]Descriptor, error) {
 	return under, nil
 }
 
+// directoryPrefix normalizes dir to an absolute, symlink-resolved path ending
+// in a single separator so it matches /proc/self/fd targets and excludes
+// sibling directories sharing the same name prefix.
 func directoryPrefix(dir string) (string, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
@@ -118,6 +142,8 @@ func directoryPrefix(dir string) (string, error) {
 	return abs + string(filepath.Separator), nil
 }
 
+// RelativeTargets strips dir's resolved prefix from each descriptor target and
+// returns the resulting paths sorted lexically.
 func RelativeTargets(dir string, descriptors []Descriptor) []string {
 	prefix, err := directoryPrefix(dir)
 	if err != nil {
@@ -131,8 +157,11 @@ func RelativeTargets(dir string, descriptors []Descriptor) []string {
 	return targets
 }
 
+// ErrTargetsUnsupported is returned by DescriptorsUnder on operating systems
+// whose descriptor directory does not expose target paths as symlinks.
 var ErrTargetsUnsupported = errors.New("procstat: descriptor targets are only readable from /proc/self/fd on Linux")
 
+// FileLimit returns the process's current soft and hard RLIMIT_NOFILE bounds.
 func FileLimit() (soft, hard uint64, err error) {
 	var limit syscall.Rlimit
 	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &limit); err != nil {
@@ -149,6 +178,8 @@ func parseKiB(value string) (int64, error) {
 	return kibToBytes(fields[0])
 }
 
+// kibToBytes converts a non-negative KiB count to bytes, rejecting values that
+// would overflow int64 when multiplied by 1024.
 func kibToBytes(text string) (int64, error) {
 	kib, err := strconv.ParseInt(text, 10, 64)
 	if err != nil || kib < 0 {
@@ -160,6 +191,9 @@ func kibToBytes(text string) (int64, error) {
 	return kib * 1024, nil
 }
 
+// ParseStatus parses Linux /proc/self/status text and returns resident memory
+// figures in bytes. VmRSS is required; RssAnon, RssFile, and RssShmem remain
+// -1 if absent. Duplicate fields, unknown units, and overflowing sizes fail.
 func ParseStatus(text string) (Memory, error) {
 	m := Memory{RSS: -1, Anon: -1, File: -1, Shmem: -1}
 	fields := map[string]*int64{"VmRSS": &m.RSS, "RssAnon": &m.Anon, "RssFile": &m.File, "RssShmem": &m.Shmem}
@@ -187,6 +221,8 @@ func ParseStatus(text string) (Memory, error) {
 	return m, nil
 }
 
+// ParsePSRSS parses the single KiB integer printed by "ps -o rss= -p <pid>"
+// into a Memory value with RSS populated and breakdown fields set to -1.
 func ParsePSRSS(output string) (Memory, error) {
 	text := strings.TrimSpace(output)
 	if text == "" || strings.ContainsAny(text, " \t\n") {

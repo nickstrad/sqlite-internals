@@ -2,13 +2,21 @@ package sqlitex
 
 import "strings"
 
+// SettingHome identifies whether an SQLite PRAGMA setting persists in the
+// database file header or resets on every new connection.
 type SettingHome string
 
 const (
-	SettingInFile        SettingHome = "file"
+	// SettingInFile marks settings stored in the 100-byte database header
+	// that survive closing and copying the file.
+	SettingInFile SettingHome = "file"
+	// SettingPerConnection marks settings held only in connection memory
+	// that a platform must reapply on every open.
 	SettingPerConnection SettingHome = "connection"
 )
 
+// SettingPlacement records where a course-tracked SQLite PRAGMA lives and,
+// for file-stored settings, which header byte offsets store it.
 type SettingPlacement struct {
 	Name        string      `json:"name"`
 	Pragma      string      `json:"pragma"`
@@ -16,6 +24,10 @@ type SettingPlacement struct {
 	HeaderBytes string      `json:"header_bytes,omitempty"`
 }
 
+// SettingPlacements returns the canonical table of every PRAGMA setting used
+// across the course, distinguishing header-stored settings (including the
+// deprecated default_cache_size at header bytes 48-51, read by sqlite3InitOne
+// at src/prepare.c:323-333) from per-connection settings.
 func SettingPlacements() []SettingPlacement {
 	return []SettingPlacement{
 		{Name: "page_size", Pragma: "page_size", Home: SettingInFile, HeaderBytes: "16-17"},
@@ -35,10 +47,14 @@ func SettingPlacements() []SettingPlacement {
 	}
 }
 
+// RollbackJournalModes returns the five non-WAL journal modes, none of which
+// are stored in header bytes 18-19 (all leave format version 1 and revert to
+// delete on reopen).
 func RollbackJournalModes() []string {
 	return []string{JournalDelete, JournalTruncate, JournalPersist, JournalMemory, JournalOff}
 }
 
+// SettingPlacementFor looks up a setting placement entry by its Name field.
 func SettingPlacementFor(name string) (SettingPlacement, bool) {
 	for _, p := range SettingPlacements() {
 		if p.Name == name {

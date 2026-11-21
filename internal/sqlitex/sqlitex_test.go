@@ -720,6 +720,7 @@ func TestUnstampedEmptyDatabaseIsStampedButUsedOneIsNot(t *testing.T) {
 	}
 }
 
+// TestSettingPlacementsCoverEveryCourseSetting checks all 14 declared settings, their file-vs-connection home, and SettingPlacementFor lookups.
 func TestSettingPlacementsCoverEveryCourseSetting(t *testing.T) {
 	want := map[string]SettingHome{
 		"page_size": SettingInFile, "journal_mode=wal": SettingInFile, "auto_vacuum": SettingInFile,

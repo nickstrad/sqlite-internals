@@ -1,3 +1,9 @@
+// Experiment 8.2 measures the per-connection file descriptor and memory costs
+// of idle SQLite connections: descriptor transitions per state in DELETE and
+// WAL mode (Part A), SQLITE_DBSTATUS_* counters versus process RSS across N
+// idle WAL connections (Part B), PRAGMA shrink_memory across the shared page
+// cache group (Part C), and descriptor sharing and parking with two connections
+// to one WAL file in the same process (Part D).
 package main
 
 import (
@@ -17,6 +23,10 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/trace"
 )
 
+// uncountedBudget is the per-connection upper margin for memory that
+// CACHE_USED, SCHEMA_USED, and STMT_USED do not report (such as the 48 KiB
+// lookaside buffer at src/global.c:218-224, driver state, and allocator
+// overhead) for this experiment's 3-table recipe workload.
 const uncountedBudget = 256 * 1024
 
 const packagePath = "ch08-connection-and-database-lifecycle/experiments/8.2-idle-cost"
@@ -316,6 +326,11 @@ func partB(ctx context.Context, work string) {
 	check(growth >= total.total(), "process memory grew by at least the sum of CACHE_USED + SCHEMA_USED + STMT_USED")
 	check(uncounted <= int64(n)*uncountedBudget, fmt.Sprintf("process memory grew by at most that sum + %d KiB per connection (the stated margin for memory the counters do not report)", uncountedBudget/1024))
 
+	// With SQLITE_ENABLE_MEMORY_MANAGEMENT enabled in this driver, all
+	// connections share one pcache1 group; PRAGMA shrink_memory
+	// (src/pragma.c:2439-2442 -> sqlite3_db_release_memory src/main.c:897-915
+	// -> pcache1Shrink src/pcache1.c:839-851) recycles unpinned pages across
+	// every connection in that group at once.
 	fmt.Println("\n== C. PRAGMA shrink_memory ==")
 	if _, err := idle[0].conn.ExecContext(ctx, "PRAGMA shrink_memory"); err != nil {
 		fatal("shrink", err)
@@ -366,6 +381,10 @@ func partB(ctx context.Context, work string) {
 	check(left == 0 && notAtRest == 0, fmt.Sprintf("after closing all %d: 0 descriptors left and every file at rest (no -wal, -shm, -journal)", n))
 }
 
+// partD opens two connections to one WAL database in the same process to show
+// both shared -shm descriptors (one unixShmNode per inode) and descriptor
+// parking in unixClose -> setPendingFd (src/os_unix.c:2341-2371, 2101-2109)
+// until closePendingFds (src/os_unix.c:1471-1482) runs when locks reach zero.
 func partD(ctx context.Context, work string) {
 	fmt.Println("\n== D. two connections to one WAL file in one process ==")
 	dir := filepath.Join(work, "D")

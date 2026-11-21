@@ -8,6 +8,7 @@ import (
 	"testing"
 )
 
+// TestDescriptorCountSeesOpenAndClose confirms DescriptorCount tracks three newly created files and returns to baseline on close.
 func TestDescriptorCountSeesOpenAndClose(t *testing.T) {
 	before, err := DescriptorCount()
 	if err != nil {
@@ -43,6 +44,7 @@ func TestDescriptorCountSeesOpenAndClose(t *testing.T) {
 	}
 }
 
+// TestDescriptorCountExcludesItsOwnDirectory checks that consecutive counts are identical and match len(Descriptors()).
 func TestDescriptorCountExcludesItsOwnDirectory(t *testing.T) {
 	first, err := DescriptorCount()
 	if err != nil {
@@ -64,6 +66,7 @@ func TestDescriptorCountExcludesItsOwnDirectory(t *testing.T) {
 	}
 }
 
+// TestDescriptorsUnder verifies DescriptorsUnder filters to dir, excludes a sibling prefix directory, and returns ErrTargetsUnsupported off Linux.
 func TestDescriptorsUnder(t *testing.T) {
 	dir := t.TempDir()
 	if !TargetsSupported {
@@ -97,6 +100,7 @@ func TestDescriptorsUnder(t *testing.T) {
 	}
 }
 
+// TestDescriptorsUnderRelativeAndRootDirectories checks DescriptorsUnder and RelativeTargets with relative paths and "/".
 func TestDescriptorsUnderRelativeAndRootDirectories(t *testing.T) {
 	if !TargetsSupported {
 		t.Skip("descriptor targets are Linux-only")
@@ -136,6 +140,7 @@ func TestDescriptorsUnderRelativeAndRootDirectories(t *testing.T) {
 	}
 }
 
+// TestReadMemory verifies ReadMemory returns a positive RSS and includes the Linux breakdown.
 func TestReadMemory(t *testing.T) {
 	m, err := ReadMemory()
 	if err != nil {
@@ -149,6 +154,7 @@ func TestReadMemory(t *testing.T) {
 	}
 }
 
+// TestParseStatus verifies valid, partial, malformed, duplicate, and int64-overflowing /proc/self/status inputs.
 func TestParseStatus(t *testing.T) {
 	text := "Name:\tx\nVmRSS:\t   2048 kB\nRssAnon:\t  1024 kB\nRssFile:\t   1000 kB\nRssShmem:\t  24 kB\n"
 	m, err := ParseStatus(text)
@@ -184,6 +190,7 @@ func TestParseStatus(t *testing.T) {
 	}
 }
 
+// TestParsePSRSS checks KiB-to-bytes conversion and rejection of malformed or overflowing ps output.
 func TestParsePSRSS(t *testing.T) {
 	m, err := ParsePSRSS("  12345\n")
 	if err != nil {
@@ -199,6 +206,7 @@ func TestParsePSRSS(t *testing.T) {
 	}
 }
 
+// TestFileLimit verifies FileLimit returns a nonzero soft RLIMIT_NOFILE that does not exceed the hard limit.
 func TestFileLimit(t *testing.T) {
 	soft, hard, err := FileLimit()
 	if err != nil {
@@ -209,6 +217,7 @@ func TestFileLimit(t *testing.T) {
 	}
 }
 
+// TestDescriptorDirMatchesPlatform confirms DescriptorDir selects /proc/self/fd on Linux and /dev/fd elsewhere.
 func TestDescriptorDirMatchesPlatform(t *testing.T) {
 	if runtime.GOOS == "linux" && DescriptorDir != "/proc/self/fd" {
 		t.Fatal(DescriptorDir)

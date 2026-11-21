@@ -61,6 +61,7 @@ func use(t *testing.T, m *Manager, id string, sql string) {
 	}
 }
 
+// TestNewRejectsBadOptions verifies New rejects zero capacity or missing PathFor/Open callbacks.
 func TestNewRejectsBadOptions(t *testing.T) {
 	open := func(context.Context, string) (*sqlitex.DB, error) { return nil, nil }
 	path := func(string) (string, error) { return "", nil }
@@ -75,6 +76,7 @@ func TestNewRejectsBadOptions(t *testing.T) {
 	}
 }
 
+// TestLRUEvictionKeepsAtMostCapacityOpen checks LRU eviction order, occupancy bounds, stats, and shutdown records for K=2.
 func TestLRUEvictionKeepsAtMostCapacityOpen(t *testing.T) {
 	var evictions []Eviction
 	m, _ := newTestManager(t, 2, &evictions)
@@ -118,6 +120,7 @@ func TestLRUEvictionKeepsAtMostCapacityOpen(t *testing.T) {
 	}
 }
 
+// TestReopenRefusedWhenFileChangedWhileClosed verifies Acquire rejects an external write with ChangedWhileClosedError until Forget clears the record.
 func TestReopenRefusedWhenFileChangedWhileClosed(t *testing.T) {
 	m, dir := newTestManager(t, 1, nil)
 	use(t, m, "a", "CREATE TABLE t(x)")
@@ -151,6 +154,7 @@ func TestReopenRefusedWhenFileChangedWhileClosed(t *testing.T) {
 	h.Release()
 }
 
+// TestReopenRefusedWhenFileNotAtRest verifies Acquire refuses a recorded database when a stray -shm file is present.
 func TestReopenRefusedWhenFileNotAtRest(t *testing.T) {
 	m, dir := newTestManager(t, 1, nil)
 	use(t, m, "a", "CREATE TABLE t(x)")
@@ -165,6 +169,7 @@ func TestReopenRefusedWhenFileNotAtRest(t *testing.T) {
 	}
 }
 
+// TestEvictionReportsNotAtRestWhileAnotherConnectionIsOpen confirms eviction flags remaining -wal and -shm and drops any stored record.
 func TestEvictionReportsNotAtRestWhileAnotherConnectionIsOpen(t *testing.T) {
 	m, dir := newTestManager(t, 1, nil)
 	use(t, m, "a", "CREATE TABLE t(x)")
@@ -207,6 +212,7 @@ func TestEvictionReportsNotAtRestWhileAnotherConnectionIsOpen(t *testing.T) {
 	}
 }
 
+// TestAcquireWaitsWhenEveryHandleIsInUse checks capacity waits, context deadlines, double Release safety, and ErrInUse/ErrNotOpen/ErrClosed.
 func TestAcquireWaitsWhenEveryHandleIsInUse(t *testing.T) {
 	m, _ := newTestManager(t, 1, nil)
 	ctx := context.Background()
@@ -253,6 +259,7 @@ func TestAcquireWaitsWhenEveryHandleIsInUse(t *testing.T) {
 	}
 }
 
+// TestSameIDSharesOneConnection verifies concurrent Acquire calls for the same ID share one *sqlitex.DB and block Evict until all handles release.
 func TestSameIDSharesOneConnection(t *testing.T) {
 	m, _ := newTestManager(t, 1, nil)
 	ctx := context.Background()
@@ -277,6 +284,7 @@ func TestSameIDSharesOneConnection(t *testing.T) {
 	}
 }
 
+// TestPathErrorAndOpenError checks that PathFor and Open failures increment OpenFailures without leaking entries or bumping miss counters.
 func TestPathErrorAndOpenError(t *testing.T) {
 	m, dir := newTestManager(t, 1, nil)
 	ctx := context.Background()
@@ -294,6 +302,7 @@ func TestPathErrorAndOpenError(t *testing.T) {
 	}
 }
 
+// TestFailedReopenCountsOnlyAsOpenFailure confirms a failed reopen leaves VerifiedReopens unchanged and preserves Misses == VerifiedReopens + UnverifiedOpens.
 func TestFailedReopenCountsOnlyAsOpenFailure(t *testing.T) {
 	dir := t.TempDir()
 	var failOpen atomic.Bool
@@ -335,6 +344,7 @@ func TestFailedReopenCountsOnlyAsOpenFailure(t *testing.T) {
 	}
 }
 
+// TestAcquireWithCancelledContextEvictsNothing verifies Acquire returns ctx.Err() before evicting an idle database at capacity.
 func TestAcquireWithCancelledContextEvictsNothing(t *testing.T) {
 	m, _ := newTestManager(t, 1, nil)
 	use(t, m, "a", "CREATE TABLE t(x)")
@@ -354,6 +364,7 @@ func TestAcquireWithCancelledContextEvictsNothing(t *testing.T) {
 	}
 }
 
+// TestEvictionWithRowsStillOpenSkipsTheFileCheck verifies eviction skips CheckAtRest when *sql.Rows keeps a rollback connection open, preserving its connection and reporting not-at-rest.
 func TestEvictionWithRowsStillOpenSkipsTheFileCheck(t *testing.T) {
 	dir := t.TempDir()
 	m, err := New(Options{
@@ -413,6 +424,7 @@ func TestEvictionWithRowsStillOpenSkipsTheFileCheck(t *testing.T) {
 
 const lockHolderEnv = "CONNMGR_TEST_LOCK_HOLDER"
 
+// TestLockHolderProcess is a helper child process that holds a WAL locking_mode=EXCLUSIVE connection until stdin closes.
 func TestLockHolderProcess(t *testing.T) {
 	path := os.Getenv(lockHolderEnv)
 	if path == "" {
@@ -449,6 +461,7 @@ func TestLockHolderProcess(t *testing.T) {
 	}
 }
 
+// TestCheckAtRestSeesALockHeldByAnotherProcess confirms CheckAtRest detects a cross-process WAL locking_mode=EXCLUSIVE reader via F_GETLK even without -shm.
 func TestCheckAtRestSeesALockHeldByAnotherProcess(t *testing.T) {
 	m, dir := newTestManager(t, 1, nil)
 	use(t, m, "a", "CREATE TABLE t(x)")
@@ -496,6 +509,7 @@ func TestCheckAtRestSeesALockHeldByAnotherProcess(t *testing.T) {
 	}
 }
 
+// TestCheckAtRest covers missing files, plain files, empty and non-empty -wal, -shm, and cold versus hot rollback journals.
 func TestCheckAtRest(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "x.db")

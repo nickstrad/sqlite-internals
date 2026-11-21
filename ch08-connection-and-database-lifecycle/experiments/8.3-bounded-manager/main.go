@@ -1,3 +1,8 @@
+// Experiment 8.3 demonstrates Rebuild Ladder rung R5 (at-rest state): serving
+// 1,000 WAL databases through an LRU-bounded connection manager capped at K
+// open connections versus an unbounded run (Part A), and six concrete cases
+// where a closed WAL database is not a single checkpointed file at rest or
+// changes while closed (Part B).
 package main
 
 import (
@@ -61,6 +66,10 @@ func fatal(what string, err error) {
 
 var stepHashes []recipe.FileHashes
 
+// matchStep compares a closed database file against the recipe's cached step
+// hashes (computed once per process so matching 1,000 files stays sub-second)
+// and accepts change-counter-only differences when header bytes 24-27 match
+// bytes 92-95 (multiple steps applied on one WAL connection).
 func matchStep(ctx context.Context, path string) (recipe.Match, error) {
 	if stepHashes == nil {
 		hashes, err := theRecipe().StepHashes(ctx)
@@ -223,6 +232,8 @@ func runStream(ctx context.Context, mode, dir string) {
 	maxFDs, maxRSS, fdSamples, fdMismatches, readMismatches, writes, reads := 0, int64(0), 0, 0, 0, 0, 0
 	var warm, cold time.Duration
 	var warmCount, coldCount int
+	// Each sample runs between operations, where every open WAL connection
+	// holds exactly three descriptors (.db, -wal, -shm).
 	sampleFDs := func() {
 		fds := descriptorCount() - baseFDs
 		fdSamples++
@@ -403,6 +414,9 @@ func partA(ctx context.Context, work, master string) {
 	}
 	fmt.Printf("\n== A. %d databases, a seeded stream of %d operations, LRU manager with K = %d ==\n", *databases, *operations, *capacity)
 	fmt.Printf("INFO: descriptor limit: soft %d, hard %d; the unbounded run needs about 3 x %d\n", soft, hard, *databases)
+	// Verify RLIMIT_NOFILE up front: K above the process descriptor limit is a
+	// configuration error (budget K <= (soft limit - reserve) / 3 in WAL mode),
+	// and the unbounded contrast needs roughly 3 * dbs descriptors.
 	if uint64(3**databases+64) > soft {
 		fatal("descriptor limit", fmt.Errorf("soft limit %d is below the %d descriptors the unbounded run may need; lower -dbs", soft, 3**databases+64))
 	}
@@ -547,6 +561,9 @@ func partB(ctx context.Context, work, master string) {
 	m := newManager(dir)
 	path := func(i int) string { return filepath.Join(dir, dbID(i)+".db") }
 
+	// B1: sqlite3WalClose (src/wal.c:2507-2571) cannot take an EXCLUSIVE lock
+	// while another process holds the file open, so it skips the checkpoint
+	// and leaves -wal and -shm on disk.
 	fmt.Println("B1. another process still has the database open when the manager closes its connection")
 	writeNext(ctx, m, dbID(0)).Release()
 	reader := startChild(ctx, "reader", path(0))
@@ -561,6 +578,10 @@ func partB(ctx context.Context, work, master string) {
 	fmt.Printf("    after the other process closed: %s\n", atRest(path(0)))
 	expectStep(ctx, path(0), 1, "B1: the last connection to close (the other process) checkpointed and deleted the WAL: at rest, holding step 1")
 
+	// B2: (*sql.DB).Close closes only idle pool connections and returns nil
+	// while *sql.Rows holds a connection checked out; connmgr detects
+	// OpenConnections > 0 and skips CheckAtRest so it does not drop the live
+	// connection's POSIX locks.
 	fmt.Println("B2. a statement left open (rows not closed) when the handle is released")
 	h := writeNext(ctx, m, dbID(1))
 	rows, err := h.DB.QueryContext(ctx, "SELECT id FROM accounts ORDER BY id")
@@ -605,6 +626,9 @@ func partB(ctx context.Context, work, master string) {
 	fmt.Printf("    after one clean open and close: %s\n", atRest(path(2)))
 	expectStep(ctx, path(2), 1, "B3: one clean open and close recovers the WAL, checkpoints it and deletes it: at rest, holding step 1")
 
+	// B4: SQLITE_FCNTL_PERSIST_WAL causes sqlite3WalClose (src/wal.c:2533-2551)
+	// to checkpoint into .db but leave -wal and -shm (walIndexClose with
+	// isDelete=0, src/wal.c:1619-1630).
 	fmt.Println("B4. SQLITE_FCNTL_PERSIST_WAL is set on the connection")
 	h = writeNext(ctx, m, dbID(3))
 	conn, err := h.DB.Conn(ctx)
@@ -627,6 +651,10 @@ func partB(ctx context.Context, work, master string) {
 	}
 	expectStep(ctx, persisted, 1, "B4: the refusal is conservative here: the close did checkpoint, so the database file alone already holds step 1; a rule based on which files exist cannot see that")
 
+	// B5: sqlite3PagerClose (src/pager.c:4222-4279) checks databaseIsUnmoved
+	// (src/pager.c:4188-4205 -> fileHasMoved, src/os_unix.c:1623-1632) and
+	// omits the checkpoint buffer when the file's inode no longer matches its
+	// path, leaving step 1 in the old -wal while moved.db looks at rest.
 	fmt.Println("B5. the file is renamed while its connection is open")
 	writeNext(ctx, m, dbID(4)).Release()
 	moved := filepath.Join(dir, "moved.db")
