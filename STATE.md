@@ -103,7 +103,6 @@ a finished part A leaves `sqlite-p2-<name>.stageA`, a finished part B `sqlite-p2
 | 8 chapter 8 | done | Neon FAIL → one Opus repair → PASS | 29 held / 0 broken after repair (run 1: 9 broken) | merged 3f54929 |
 | 9 | part A: review FAIL, run 1 5 broken; Opus repair running |
 | 10a, 10b | 10a builds from main once 9 has landed; 10b after 10a's part A |
-| fix-equal | small Opus fix on branch `chunk/fix-equal`: `equal.LogicalHash` can leave its read transaction open when a late interrupt hits the closing ROLLBACK (test `TestLogicalHashEndsItsTransactionWhenTheContextEnds` failed once under load during the chapter 8 landing); then a Neon comment + review pass |
 | pub | part A: review FAIL, run 1 24 broken; Opus repair running; part B (Neon writes README as the book home + comments) and landing come last, after the self-contained sweep |
 | 1 closing rewrite | done (66fca8e, merged) |
 | 4 chapter 4 | done | Neon FAIL → one Opus repair → NITS | 32 held / 0 broken after repair (run 1: 12 broken) | merged f500664 |
