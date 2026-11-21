@@ -508,20 +508,27 @@ func EncodeValue(value any) []byte {
 // inside a single read transaction so concurrent writers cannot split the
 // snapshot.
 func LogicalHash(ctx context.Context, conn *sql.Conn) (Logical, error) {
-	if _, err := conn.ExecContext(ctx, "BEGIN"); err != nil {
+	if err := ctx.Err(); err != nil {
+		return Logical{}, fmt.Errorf("begin read transaction: %w", err)
+	}
+	uncancelable := context.WithoutCancel(ctx)
+	if _, err := conn.ExecContext(uncancelable, "BEGIN"); err != nil {
 		return Logical{}, fmt.Errorf("begin read transaction: %w", err)
 	}
 	result, err := logicalHashInTx(ctx, conn)
-	end := "COMMIT"
 	if err != nil {
-		end = "ROLLBACK"
+		if _, rollbackErr := conn.ExecContext(uncancelable, "ROLLBACK"); rollbackErr != nil {
+			return Logical{}, errors.Join(err, fmt.Errorf("end read transaction: %w", rollbackErr))
+		}
+		return Logical{}, err
 	}
-	// End the transaction with WithoutCancel so a canceled caller context
-	// never leaks an open read transaction (and pinned WAL read mark) on conn.
-	if _, endErr := conn.ExecContext(context.WithoutCancel(ctx), end); endErr != nil && err == nil {
-		err = fmt.Errorf("end read transaction: %w", endErr)
+	if _, commitErr := conn.ExecContext(uncancelable, "COMMIT"); commitErr != nil {
+		if _, rollbackErr := conn.ExecContext(uncancelable, "ROLLBACK"); rollbackErr != nil {
+			return Logical{}, fmt.Errorf("end read transaction: %w", errors.Join(commitErr, rollbackErr))
+		}
+		return Logical{}, fmt.Errorf("end read transaction: %w", commitErr)
 	}
-	return result, err
+	return result, nil
 }
 
 func logicalHashInTx(ctx context.Context, conn *sql.Conn) (Logical, error) {
