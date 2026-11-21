@@ -7,12 +7,13 @@ deterministically, well enough to build platforms holding thousands of SQLite fi
 can be remade as needed; state capture and deterministic rebuild is the through-line.
 Plan: OUTLINE.md (revision 2). What changed from revision 1: OUTLINE-CHANGES.md.
 
-Status: **Phase 2 (build) IN PROGRESS** since 2026-11-20. Neon answered again at 08:00 UTC on 2026-11-21 and the 10b chain was resumed (the note below describes the stop at 07:27; the spending cap may bind again). Chunk 0, chapters 1–9 and the capstone
-service core (10a) have landed. **BLOCKED on Neon since 2026-11-21 07:27 UTC**: the direct Gemini
-route answers "Your project is temporarily rate-limited to prevent exceeding its monthly
-spending cap" and OpenRouter is empty until 2026-12-01 (see blockers). Everything left needs
-Neon: 10b review, attacks, re-review and the chapter 10 text; the publishing chunk's README and
-comments.
+Status: **Phase 2 (build) STOPPED, waiting for Nick** (2026-11-21 08:25 UTC). Chunk 0, chapters
+1–9 and the capstone service core (10a) have landed. Neon is throttled by the Gemini project's
+monthly spending cap: since 07:27 UTC small calls sometimes answer, but every working run is cut
+off after a few minutes ("temporarily rate-limited to prevent exceeding its monthly spending
+cap"); the 10b chain was tried twice (07:27 and 08:00) and stopped both times at its first
+step. OpenRouter is empty until 2026-12-01. Everything left needs Neon (see blockers), so no
+unblocked work remains.
 
 Rulings applied (details: OUTLINE.md section 8):
 - Upstream github.com/nickstrad/sqlite-internals (public); every chunk lands on main and is pushed.
@@ -131,7 +132,10 @@ Open decisions / blockers:
   is needed. Still to run on Neon: for 10b a review, the rest of the attack suite, a re-review
   and the chapter 10 prose pass; for the publishing chunk the README/home page and comments —
   about 6 runs, roughly $15–25 at the measured rate. Per ruling 12 no other model may do this
-  work, so it waits. `agent_work/neon/probe.sh` (with OpenCode on PATH) says when a route is back.
+  work, so it waits. `agent_work/neon/probe.sh` (with OpenCode on PATH) only shows that a small call answers; a
+  throttled project still passes it, so judge by whether a real run finishes.
+  Resume, in order: `agent_work/orch/resume-ch10b.sh` (part A; detached, log to
+  `sqlite-p2-ch10b-chainA.log`) → merge main into `chunk/ch10b` → `stageB.sh ch10b "Chapter 10 — Multi-database platform capstone" ch10-multi-database-platform-capstone "section 5, Chapter 10" "ch10-multi-database-platform-capstone/service/ ch10-multi-database-platform-capstone/experiments/" late "<note: this pass writes the whole chapter 10 and brings 10a's comments up to date>"` → `land.sh ch10b …` → merge main into `chunk/pub` → `stageB.sh pub … - … late` with a note that README.md is the book's home page → trim build-machine paths from STATE.md → `land.sh pub …` (publishes the site; record the Pages URL in README and here) → write the done file.
 - Nick or Twin: the Claude sign-in on the build VM ends between 2026-11-25 and 2026-11-28.
 
 Resume: read this file, OUTLINE.md (section 8 first), then `git log` and `git worktree list`.
