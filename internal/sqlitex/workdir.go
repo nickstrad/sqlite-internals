@@ -113,3 +113,23 @@ func MustWorkDir(name string) string {
 	}
 	return dir
 }
+
+// DisplayPath returns path relative to the repository root with forward slashes
+// when it lies inside the checkout (resolving symlinks), or path unchanged otherwise.
+func DisplayPath(path string) string {
+	root, err := RepoRoot()
+	if err != nil {
+		return path
+	}
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	relative, err := filepath.Rel(root, path)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, "../") {
+		return path
+	}
+	return filepath.ToSlash(relative)
+}
