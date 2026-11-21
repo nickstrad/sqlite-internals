@@ -30,6 +30,9 @@ func setTrunk(data []byte, page, next int, leaves ...int) {
 	}
 }
 
+// TestFreelistTrunkMetadataIsNotUnused checks that a freelist trunk page's
+// header and leaf-pointer array are treated as live metadata while bytes after
+// the leaf list and all bytes of a freelist leaf are marked unused.
 func TestFreelistTrunkMetadataIsNotUnused(t *testing.T) {
 	data := newImage(4)
 	setFreelist(data, 3, 2)
@@ -67,6 +70,10 @@ func TestFreelistTrunkMetadataIsNotUnused(t *testing.T) {
 	}
 }
 
+// TestFreelistRejectsMalformedChains checks that readFreelist rejects
+// out-of-range trunks or leaves, overflowing leaf counts, trunk cycles,
+// duplicate entries, mismatched header totals, partial pages, and wrong page
+// sizes.
 func TestFreelistRejectsMalformedChains(t *testing.T) {
 	cases := map[string]func([]byte){
 		"trunk past the end": func(d []byte) { setFreelist(d, 9, 1) },
@@ -91,6 +98,9 @@ func TestFreelistRejectsMalformedChains(t *testing.T) {
 	}
 }
 
+// TestNonBtreePageIsNeverUnused checks that a non-freelist page whose type
+// byte is not a B-tree page type (such as an overflow page) has no bytes marked
+// unused.
 func TestNonBtreePageIsNeverUnused(t *testing.T) {
 	data := newImage(3)
 	binary.BigEndian.PutUint32(data[pageSize:], 3)
@@ -104,6 +114,8 @@ func TestNonBtreePageIsNeverUnused(t *testing.T) {
 	}
 }
 
+// TestCyclicFreeblocksTerminate checks that a self-referential freeblock chain
+// returns an error immediately instead of looping forever.
 func TestCyclicFreeblocksTerminate(t *testing.T) {
 	data := newImage(2)
 	page := data[pageSize:]
@@ -127,6 +139,9 @@ func TestCyclicFreeblocksTerminate(t *testing.T) {
 	}
 }
 
+// TestFreeblocksAndGapAreUnused checks that unusedBytes marks the unallocated
+// gap between the cell-pointer array and content area and the bodies (after the
+// 4-byte header) of freeblocks, leaving live headers and cells unmarked.
 func TestFreeblocksAndGapAreUnused(t *testing.T) {
 	data := newImage(2)
 	page := data[pageSize:]
@@ -148,6 +163,9 @@ func TestFreeblocksAndGapAreUnused(t *testing.T) {
 	}
 }
 
+// TestPartialPageDifferenceDoesNotPanic checks that diffImages compares partial
+// trailing pages and that fileDiff.String handles size mismatches without
+// panicking.
 func TestPartialPageDifferenceDoesNotPanic(t *testing.T) {
 	a := make([]byte, pageSize+10)
 	b := slices.Clone(a)

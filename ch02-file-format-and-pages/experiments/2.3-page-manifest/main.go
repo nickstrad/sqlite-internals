@@ -160,6 +160,8 @@ func partB(ctx context.Context, dir, original, captureDir string) {
 	check(!diff.Equal && diff.FirstDifferingPage == 1, "the manifest comparison names the first differing page (page 1: the header changes on every recipe step)")
 }
 
+// tamper defines one capture-corruption test case and the page-naming substring
+// that capture.Rebuild's refusal must contain.
 type tamper struct {
 	name string
 	want string
@@ -274,6 +276,8 @@ func copyMainFileOnly(from, to string) {
 	}
 }
 
+// queryString runs a single-column SQL query against path (passing mode=ro via
+// url.Values when readOnly is true) and fails immediately on query or close error.
 func queryString(ctx context.Context, path string, readOnly bool, query string) string {
 	values := url.Values{}
 	if readOnly {

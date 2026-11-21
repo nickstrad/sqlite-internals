@@ -21,16 +21,18 @@
 >   ```text
 >   go run ./cmd/course build-tools
 >   ```
-> - **Run an experiment** from the repository root:
+> - **Run the experiments** from the repository root:
 >   ```text
 >   go run ./ch01-architecture-and-execution-path/experiments/1.1-pin-check
+>   go run ./ch01-architecture-and-execution-path/experiments/1.2-one-insert
+>   go run ./ch01-architecture-and-execution-path/experiments/1.3-recipe-rebuild
 >   ```
->   Scratch databases are written under `_work/`, which is git-ignored and safe to delete.
-> - **Linux-only experiments on macOS:** Experiments marked **Linux only** (in this chapter, the syscall and `-vfstrace` sections of Experiment 1.2) skip `strace` on non-Linux hosts and run in full inside the repository's Linux container:
+>   Scratch databases are written under `_work/1.2/` and `_work/1.3/`, which are git-ignored and safe to delete.
+> - **Linux-only experiments on macOS:** Parts marked **Linux only** (in this chapter, the `strace`, twin check, `ANALYZE` limit, and `-vfstrace` sections of Experiment 1.2) are skipped on non-Linux hosts and run in full inside the repository's Linux container:
 >   ```text
 >   docker compose run --rm lab go run ./ch01-architecture-and-execution-path/experiments/1.2-one-insert
 >   ```
->   All syscall traces, VFS traces, and timings in this chapter were measured on Linux (`linux/amd64`, Go 1.26.8, `strace` 6.8, ext4). macOS (`darwin/arm64` and `darwin/amd64`) was cross-built and vetted only; the non-Linux fallback path of Experiment 1.2 was not run on macOS.
+>   All captured evidence, syscall traces, and VFS traces in this chapter were measured on Linux (`linux/amd64`, Go 1.26.8, `strace` 6.8, ext4) and verified inside the Debian `lab` container. macOS (`darwin/arm64` and `darwin/amd64`) was cross-built and vetted only; the non-Linux fallback path of Experiment 1.2 was not run on macOS.
 
 ---
 
@@ -84,23 +86,20 @@ SQLite is an embedded library, not a separate database server process. A Go prog
 
 Each layer owns a distinct job:
 
-1. **Interface.** The public C functions (`sqlite3_prepare_v2`, `sqlite3_step`, `sqlite3_finalize`). They take the database connection's mutex, manage prepared statements, and translate internal status codes into return values.
-2. **SQL Compiler.** The tokenizer splits SQL text into tokens; the parser checks grammar; the query planner chooses table and index scan order; the code generator emits a bytecode program. This course names the compiler and does not read its C source. A platform managing many database files cannot observe or replace the compiler, and no state-capture method depends on it.
-3. **VDBE (Virtual Database Engine).** A register-based virtual machine that executes the compiled bytecode one instruction (called an **opcode**) at a time. A prepared statement (`sqlite3_stmt`) is a `Vdbe` struct holding its program, registers, and table cursors.
-4. **B-tree.** Organizes every table and index as a balanced tree of fixed-size blocks called **pages** (4,096 bytes each by default, numbered starting at 1). Page 1 begins with a 100-byte database header containing persistent file settings and counters such as the **schema cookie** (incremented whenever tables or indexes change) and the **file change counter** (updated when the database is modified). Each table row is keyed by a 64-bit signed integer called a **rowid**. When a row is larger than one page can hold locally, its trailing bytes spill onto linked **overflow pages**; when pages are emptied by deletes, SQLite records them on a **freelist** for reuse.
-5. **Pager and Page Cache.** Reads pages into memory, tracks which pages were modified ("dirty" pages), enforces locking between connections, and makes transactions atomic (all-or-nothing) through one of two logging mechanisms:
-   - **Rollback journal (`journal_mode=delete`).** Before modifying a page in the database file, the pager copies the page's original bytes into a sibling `-journal` file and flushes it to durable storage. If the process dies mid-commit, the next opener reads the `-journal` and restores the original pages. Deleting the `-journal` file is the commit point.
-   - **Write-ahead log (`journal_mode=wal`).** Instead of overwriting the main `.db` file during a commit, the pager appends each modified page to a sibling `-wal` file as a **frame** (a 24-byte frame header followed by the 4,096-byte page image) and indexes those frames in a shared-memory file (`-shm`). A transaction commits when its final frame records the database's new page count. Later, a **checkpoint** copies committed frames from `-wal` back into the main `.db` file.
-6. **VFS (Virtual File System).** A table of function pointers (`xRead`, `xWrite`, `xSync`, `xLock`, `xShmLock`, and so on) separating SQLite's pager from the operating system. On Unix, the default VFS (`os_unix.c`) translates VFS calls into kernel system calls: `pread64` (positioned read), `pwrite64` (positioned write), `fsync` or `fdatasync` (flush dirty file data to durable storage), and `fcntl` (advisory **POSIX locks** on byte ranges of a file).
+1. **Interface.** The public C functions (`sqlite3_prepare_v2`, `sqlite3_step`, `sqlite3_finalize`). They acquire the connection's mutex, manage prepared statements, and translate internal status codes into return values.
+2. **SQL Compiler.** The tokenizer splits SQL text into tokens; the parser checks grammar; the query planner chooses table and index scan order; the code generator emits a **bytecode** program. This course names the compiler and does not read its C source. A platform managing many database files cannot observe or replace the compiler, and no state-capture method depends on it.
+3. **VDBE (Virtual Database Engine).** A virtual machine that runs compiled bytecode one instruction (an **opcode**) at a time over numbered value slots called **registers**. A **prepared statement** (`sqlite3_stmt`) is a `Vdbe` struct holding its program, registers, and **cursors** (handles pointing at rows inside table or index trees).
+4. **B-tree.** Organizes every table and index as a balanced tree of fixed-size blocks called **pages** (4,096 bytes each by default, numbered starting at 1). Page 1 begins with a 100-byte database header holding persistent file settings and counters, including the **schema cookie** (incremented whenever tables or indexes change) and the **file change counter** (header bytes 24–27, paired with **version-valid-for** at bytes 92–95). Each table row is stored as a **cell** on a **leaf page** and keyed by a 64-bit signed integer called a **rowid**; deleting or shrinking cells leaves unused holes called **freeblocks** inside the page. When a row is larger than one page can hold locally, its trailing bytes spill onto linked **overflow pages**. Emptied pages move onto a **freelist**—a chain of **freelist trunk pages** pointing to **freelist leaf pages**—for later reuse.
+5. **Pager and Page Cache.** Reads pages into memory, tracks modified (**dirty**) pages, coordinates locks between connections, and makes transactions **atomic** (all-or-nothing) through one of two logging modes configured by `PRAGMA` (SQLite's command for reading and changing file or connection settings):
+   - **Rollback journal (`journal_mode=delete`).** Before changing a page in `.db`, the pager copies the page's original bytes into a sibling `-journal` file and flushes it to durable storage. If the process dies mid-commit, the next opener reads `-journal` and restores the original pages. Deleting `-journal` is the commit point.
+   - **Write-ahead log (`journal_mode=wal`).** Instead of overwriting `.db` during a commit, the pager appends each modified page to a sibling `-wal` file as a **frame** (a 24-byte frame header followed by the 4,096-byte page image) and indexes those frames in a shared-memory file (`-shm`). A transaction commits when its final frame records the database's new page count. Later, a **checkpoint** copies committed frames from `-wal` back into `.db`.
+6. **VFS (Virtual File System).** A table of function pointers (`xRead`, `xWrite`, `xSync`, `xLock`, `xShmLock`, and so on) between the pager and the operating system. On Unix, the default VFS (`os_unix.c`) translates VFS calls into kernel syscalls: `pread64` (positioned read), `pwrite64` (positioned write), `fsync` or `fdatasync` (flush dirty buffers to durable storage), and `fcntl` (**POSIX advisory locks** on byte ranges of a file).
 
-A platform holding thousands of SQLite files touches only two boundaries in that diagram: **connections** above the pager (SQL statements, transactions, per-connection settings) and **files** below the pager (the `.db` file and its sidecars on disk).
+A platform holding thousands of SQLite files touches only two boundaries in that diagram: **connections** above the pager (SQL statements, transactions, per-connection settings) and **files** below the pager (the `.db` file and its **sidecar files**: `-wal`, `-shm`, and `-journal`).
 
-**WAL mode as the platform default.** Throughout this course, WAL mode (`journal_mode=wal`) is the default because it allows concurrent readers alongside a writer and turns committed state into an append-only stream of page frames. This chapter departs from WAL mode in two places, both on purpose:
+**WAL mode as the platform default.** Platform databases in this course run in WAL mode (`journal_mode=wal`) because WAL lets readers run concurrently alongside one writer and records committed changes as an append-only stream of page frames. This chapter includes rollback-mode (`journal_mode=delete`) contrasts in two places on purpose: Experiment 1.2 traces the same `INSERT` in both modes to show commits move from overwriting `.db` to appending frames to `-wal`, and Experiment 1.3 runs rollback-mode contrasts beside its canonical WAL database to isolate how each mode handles the header change counter, deleted space, and rolled-back work.
 
-- Experiment 1.2 runs the same `INSERT` in rollback mode (`journal_mode=delete`) and then in WAL mode so the reader can see commits move from overwriting `t.db` to appending frames to `t.db-wal`.
-- Experiment 1.3 builds its canonical database in WAL mode and runs rollback-mode contrast variants to explain how the header change counter and transaction batching behave differently in the two modes.
-
-**The Rebuild Ladder (rung R0).** Every chapter in this course advances a single operational goal: capture a database's durable state deterministically and rebuild a working copy that is provably equal to the original. This chapter builds rung **R0 (Recipe)**: a seeded, deterministic workload (`internal/recipe`) whose state after every numbered step *k* has a known SHA-256 hash. Every later chapter checks its snapshots, WAL replays, crash recoveries, and fleet rebuilds against those hashes.
+**The Rebuild Ladder (rung R0).** Every chapter advances one operational goal: capture a database's durable state deterministically and prove that a rebuilt copy equals the original. This chapter builds rung **R0 (Recipe)**—a seeded, deterministic workload (`internal/recipe`) whose closed database file has one known SHA-256 hash after every numbered step *k*, proven at equality level **E1 (bytes)** (verbatim file SHA-256). Later chapters verify snapshots, WAL replays, crash recoveries, and fleet rebuilds against those exact hashes.
 
 ---
 
@@ -108,15 +107,19 @@ A platform holding thousands of SQLite files touches only two boundaries in that
 
 When a Go program commits one `INSERT`, which layer does what between `sqlite3_prepare_v2` and the bytes on disk, and which of those layers can a platform see from outside the library?
 
-Before tracing that `INSERT`, the course must verify the exact SQLite builds it runs. Every experiment in this chapter imports two shared packages introduced by the foundation chunk:
+Before tracing that `INSERT`, the course verifies the exact SQLite builds it runs. Every experiment in this chapter imports two shared packages introduced by the foundation chunk (linked rather than inlined):
 
-- [`internal/sqlitex`](../internal/sqlitex/): opens SQLite through `modernc.org/sqlite` with explicit file and connection settings ([`settings.go`](../internal/sqlitex/settings.go), [`open.go`](../internal/sqlitex/open.go)), checks `sqlite_source_id()` against `sqlite/PIN` via `MustPinCheck` and `MustPinCheckMemory` ([`pin.go`](../internal/sqlitex/pin.go)), manages `_work/N.M/` scratch directories via `MustWorkDir` and `WorkBase` ([`workdir.go`](../internal/sqlitex/workdir.go)), and locates and runs the pinned `sqlite3` C CLI via `LocateCLI` and `OpenScript` ([`cli.go`](../internal/sqlitex/cli.go)).
-- [`internal/trace`](../internal/trace/): runs a child command under Linux `strace` and parses its syscalls ([`strace.go`](../internal/trace/strace.go), [`strace_linux.go`](../internal/trace/strace_linux.go)), merges the CLI's `-vfstrace` output with `strace` into one ordered stream via `RunCLIMerged` ([`merge.go`](../internal/trace/merge.go), [`vfs.go`](../internal/trace/vfs.go)), and prints the Docker fallback message on non-Linux hosts via `Supported` and `PrintLinuxOnly` ([`linuxonly.go`](../internal/trace/linuxonly.go)).
+- [`internal/sqlitex`](../internal/sqlitex/): opens databases through `modernc.org/sqlite` with explicit file and connection settings ([`settings.go`](../internal/sqlitex/settings.go), [`open.go`](../internal/sqlitex/open.go)). New databases apply settings in `layout -> journal_mode -> identity` order, and opening an existing database refuses to switch it into or out of WAL mode. The package also verifies `sqlite_source_id()` and linked `modernc.org/sqlite` / `modernc.org/libc` module versions against `sqlite/PIN` (`MustPinCheck`, `MustPinCheckMemory` in [`pin.go`](../internal/sqlitex/pin.go)), manages `_work/N.M/` scratch directories (`MustWorkDir`, `WorkBase` in [`workdir.go`](../internal/sqlitex/workdir.go)), and locates and runs the pinned C `sqlite3` CLI (`LocateCLI`, `OpenScript` in [`cli.go`](../internal/sqlitex/cli.go)).
+- [`internal/trace`](../internal/trace/): runs a child command under Linux `strace` and parses its syscalls ([`strace.go`](../internal/trace/strace.go), [`strace_linux.go`](../internal/trace/strace_linux.go)), merges CLI `-vfstrace` output with `strace` into one ordered stream (`RunCLIMerged` in [`merge.go`](../internal/trace/merge.go), [`vfs.go`](../internal/trace/vfs.go)), and prints the Docker fallback notice on non-Linux hosts (`Supported`, `PrintLinuxOnly` in [`linuxonly.go`](../internal/trace/linuxonly.go)).
 
 ### Experiment 1.1 — Pin check (`1.1-pin-check`)
 
-- **Claim:** Both SQLite builds used by the course—the `modernc.org/sqlite` Go driver and the `sqlite3` C CLI—are SQLite 3.53.4 at the pinned Fossil check-in, include the required page-inspection virtual tables (`sqlite_dbpage`, `dbstat`) and upstream's WAL sync default (`DEFAULT_WAL_SYNCHRONOUS=2`, meaning `FULL`), and agree on all 15 listed file-format and I/O compile options.
-- **Evidence form:** `EXACT` (all lines except `INFO:` lines must match identically on every run).
+- **Claim:** Both SQLite builds used by the course—the `modernc.org/sqlite` Go driver and the `sqlite3` C CLI—are SQLite 3.53.4 at the pinned Fossil check-in, include the required page-inspection virtual tables (`sqlite_dbpage`, which exposes raw pages, and `dbstat`, which reports per-page B-tree statistics) and upstream's WAL sync default (`DEFAULT_WAL_SYNCHRONOUS=2`, meaning `FULL`), and agree on all 15 listed file-format and I/O compile options.
+- **Evidence form:** `EXACT` (all lines except `INFO:` lines must match on every run).
+- **Run command** (requires the pinned CLI via `go run ./cmd/course build-tools` if not already on `PATH`):
+  ```text
+  go run ./ch01-architecture-and-execution-path/experiments/1.1-pin-check
+  ```
 
 <!-- include: experiments/1.1-pin-check/main.go -->
 ```go
@@ -246,6 +249,8 @@ func main() {
 	if err != nil {
 		fatal("open :memory:", err)
 	}
+	// Pin :memory: to one connection so every query shares one database.
+	db.SetMaxOpenConns(1)
 	defer db.Close()
 	// Every course experiment prints sqlite_source_id() first and exits
 	// non-zero if the linked build does not match sqlite/PIN.
@@ -375,13 +380,7 @@ func displayPath(path string) string {
 }
 ```
 
-Run from the repository root (requires the pinned CLI via `go run ./cmd/course build-tools` if not already on `PATH`):
-
-```text
-go run ./ch01-architecture-and-execution-path/experiments/1.1-pin-check
-```
-
-Captured evidence:
+Captured output (`evidence/1.1-pin-check.txt`):
 
 <!-- include: evidence/1.1-pin-check.txt -->
 ```text
@@ -484,37 +483,37 @@ INFO: compile options only in this CLI: COMPILER=gcc-13.3.0 DQS=0 ENABLE_BYTECOD
 PIN CHECK OK
 ```
 
-#### Reading the evidence
+**Reading the evidence:**
 
-- **Lines 1–8 (pin and linked modules).** The first line prints `sqlite_source_id()` from an in-memory database opened through `database/sql` and checks it against `sqlite/PIN`. Lines 3–6 read Go's compiled-in `runtime/debug.ReadBuildInfo()` rather than `go.mod`, confirming the binary actually linked `modernc.org/sqlite v1.60.1` and `modernc.org/libc v1.77.1`, and that `sqlite_version()` returns `3.53.4`.
-- **Lines 9–68 (driver compile options).** The Go driver reports 56 compile-time options. Lines 66–68 verify the three options later chapters rely on: `ENABLE_DBPAGE_VTAB` (reads raw pages via SQL), `ENABLE_DBSTAT_VTAB` (reports per-page B-tree statistics), and `DEFAULT_WAL_SYNCHRONOUS=2` (upstream's default `synchronous=FULL` in WAL mode).
+- **Lines 1–8 (pin and linked modules).** Line 1 prints `sqlite_source_id()` from an in-memory database opened through `database/sql` and verifies it against `sqlite/PIN`. Lines 3–6 read Go's compiled-in `runtime/debug.ReadBuildInfo()` rather than `go.mod`, proving the binary linked `modernc.org/sqlite v1.60.1` and `modernc.org/libc v1.77.1`, and lines 7–8 confirm `sqlite_version()` returns `3.53.4`.
+- **Lines 9–68 (driver compile options).** `PRAGMA compile_options` reports 56 options in the Go driver. Lines 66–68 verify the three options later labs depend on: `ENABLE_DBPAGE_VTAB`, `ENABLE_DBSTAT_VTAB`, and `DEFAULT_WAL_SYNCHRONOUS=2`.
 - **Lines 69–70 (virtual table smoke test).** After creating table `t` and inserting one row, both `sqlite_dbpage` and `dbstat` return 2 rows: page 1 (`sqlite_schema`) and page 2 (table `t`).
-- **Lines 71–77 (C CLI check).** `sqlitex.LocateCLI` finds the pinned C `sqlite3` binary (the `INFO:` line records its location and origin, which varies between a system-installed binary and `_tools/bin/sqlite3`). Its `sqlite_source_id()`, `sqlite_version()`, and three required compile options all match the pin.
-- **Lines 78–94 (file-format and I/O parity).** Both builds agree on all 15 compile options that control file layout, page size (`4096`), cache defaults (`-2000`, meaning 2,000 KiB), mmap defaults (`0`), and sync defaults (`2` = `FULL`).
-- **Lines 95–96 (`INFO:` differences between builds).** The driver and CLI are not compiled identically for non-storage features. Two differences are worth knowing: the driver includes `ENABLE_STAT4` (so `ANALYZE` can populate `sqlite_stat4` in the driver while the CLI cannot) and `ENABLE_SNAPSHOT` (compiled into the translated C even though the Go driver API does not expose `sqlite3_snapshot_*`), whereas the CLI includes `ENABLE_BYTECODE_VTAB`, `ENABLE_STMTVTAB`, and `ENABLE_EXPLAIN_COMMENTS` (so `bytecode()` and `sqlite_stmt` exist in the CLI, not in the driver). None of those differences affect file format or I/O.
+- **Lines 71–77 (C CLI check).** `sqlitex.LocateCLI` finds the pinned C `sqlite3` binary (line 72 is an `INFO:` line because its path depends on whether the host uses a system binary or `_tools/bin/sqlite3`). Its source ID, version, and three required options match the pin.
+- **Lines 78–94 (file-format and I/O parity).** Both builds agree on all 15 options controlling page size (`4096`), default cache size (`-2000`, meaning 2,000 KiB), mmap default (`0`), and sync defaults (`2` = `FULL`).
+- **Lines 95–96 (`INFO:` optional feature differences).** The two builds differ on optional features not in that 15-option table. The Go driver enables `ENABLE_STAT4` and `ENABLE_SNAPSHOT` (compiled into the translated C even though the Go API does not expose `sqlite3_snapshot_*`), while this CLI enables `ENABLE_BYTECODE_VTAB`, `ENABLE_STMTVTAB`, and `ENABLE_EXPLAIN_COMMENTS` (so `bytecode()` and `sqlite_stmt` exist only in the CLI). Most optional flags do not touch storage, but `ENABLE_STAT4` changes on-disk tables whenever `ANALYZE` (SQLite's query-planner statistics command) runs—a boundary Experiment 1.2 measures directly.
 
 ---
 
 ## 3. Call path
 
-This section follows one autocommit statement—`INSERT INTO t(id, v) VALUES(2, 'two')`—through the pinned C source (`version-3.53.4`). Four files are copied whole into this chapter directory (`prepare.c`, `vdbeapi.c`, `vdbeaux.c`, `os.c`); `vdbe.c` is linked in the pinned tree (`$SQLITE_SRC` or `_src/sqlite-3.53.4`) rather than copied.
+This section follows one autocommit statement—`INSERT INTO t(id, v) VALUES(2, 'two')`—through the pinned SQLite `version-3.53.4` C source. Four files are copied whole into this chapter directory (`prepare.c`, `vdbeapi.c`, `vdbeaux.c`, `os.c`); `vdbe.c` is linked in the pinned tree (`$SQLITE_SRC` or `_src/sqlite-3.53.4`) rather than copied.
 
 ### 3.1 Prepare: compiling SQL into a VDBE program
 
-Preparation compiles SQL text into bytecode without writing to the database file (it reads the database only if the connection has not yet loaded `sqlite_schema`).
+Preparation compiles SQL text into bytecode without writing to the database file. It reads the database only if the connection has not yet loaded `sqlite_schema`.
 
-1. **`sqlite3_prepare_v2`** — [`src/prepare.c:937-954`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/prepare.c#L937-L954) (local copy: [`prepare.c`](prepare.c)). The public entry point forwards straight to `sqlite3LockAndPrepare` with `SQLITE_PREPARE_SAVESQL`:
+1. **`sqlite3_prepare_v2`** — [`src/prepare.c:937-954`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/prepare.c#L937-L954) (local copy: [`prepare.c`](prepare.c)). Forwards straight to `sqlite3LockAndPrepare` with `SQLITE_PREPARE_SAVESQL`:
    ```c
    rc = sqlite3LockAndPrepare(db,zSql,nBytes,SQLITE_PREPARE_SAVESQL,0,
                               ppStmt,pzTail);
    ```
-   Saving the SQL text on the statement is what allows `sqlite3_step` to recompile the statement automatically if another connection changes the schema before execution.
-2. **`sqlite3LockAndPrepare`** — [`src/prepare.c:836-875`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/prepare.c#L836-L875) (local copy: [`prepare.c`](prepare.c)). Enters the connection mutex (`sqlite3_mutex_enter(db->mutex)` at line 855) and every attached database's B-tree mutex (`sqlite3BtreeEnterAll` at line 856), then calls `sqlite3Prepare` in a retry loop (lines 857–866). If compilation returns `SQLITE_SCHEMA`, it discards the connection's cached schema (`sqlite3ResetOneSchema(db, -1)` at line 866) and retries once.
-3. **`sqlite3Prepare`** — [`src/prepare.c:682-835`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/prepare.c#L682-L835) (local copy: [`prepare.c`](prepare.c)). Initializes a `Parse` context, checks that no shared-cache connection holds a schema lock (`sqlite3BtreeSchemaLocked` at line 752), and invokes the tokenizer and parser via `sqlite3RunParser` (line 779 or 786). Grammar actions emit bytecode instructions into a `Vdbe` object. Line 795 stores the original SQL text via `sqlite3VdbeSetSql`. On failure it validates the schema cookie (`schemaIsValid` at line 803); on success line 818 hands the `Vdbe` pointer back to the caller as `sqlite3_stmt *`.
+   Saving the SQL text on the statement lets `sqlite3_step` recompile it automatically if another connection changes the schema before execution.
+2. **`sqlite3LockAndPrepare`** — [`src/prepare.c:836-875`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/prepare.c#L836-L875) (local copy: [`prepare.c`](prepare.c)). Enters the connection mutex (`sqlite3_mutex_enter(db->mutex)` at line 855) and every attached database's B-tree mutex (`sqlite3BtreeEnterAll` at line 856), then calls `sqlite3Prepare` in a retry loop (lines 857–866). On `SQLITE_SCHEMA`, it resets the connection's cached schema (`sqlite3ResetOneSchema(db, -1)` at line 866) and retries once.
+3. **`sqlite3Prepare`** — [`src/prepare.c:682-835`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/prepare.c#L682-L835) (local copy: [`prepare.c`](prepare.c)). Initializes a `Parse` context, checks that no shared-cache connection holds a schema lock (`sqlite3BtreeSchemaLocked` at line 752), and runs the tokenizer and parser via `sqlite3RunParser` (line 779 or 786). Grammar actions emit opcodes into a `Vdbe` object. Line 795 stores the original SQL text via `sqlite3VdbeSetSql`. On failure line 803 checks `schemaIsValid`; on success line 818 returns the `Vdbe` pointer as `sqlite3_stmt *`.
 
 ### 3.2 Step: running bytecode and crossing into the B-tree
 
-Execution begins only when the caller steps the prepared statement.
+Execution starts only when the caller steps the prepared statement.
 
 4. **`sqlite3_step`** — [`src/vdbeapi.c:919-966`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbeapi.c#L919-L966) (local copy: [`vdbeapi.c`](vdbeapi.c)). Takes the connection mutex (line 929) and runs `sqlite3Step` inside a schema-retry loop:
    ```c
@@ -523,16 +522,16 @@ Execution begins only when the caller steps the prepared statement.
      int savedPc = v->pc;
      rc = sqlite3Reprepare(v);
    ```
-   If another connection altered the schema since `sqlite3_prepare_v2`, `sqlite3_step` calls `sqlite3Reprepare` (line 933), resets the statement (line 954), and runs it again up to `SQLITE_MAX_SCHEMA_RETRY` (50) times. The application never sees `SQLITE_SCHEMA` unless recompilation itself fails.
-5. **`sqlite3Step`** — [`src/vdbeapi.c:777-912`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbeapi.c#L777-L912) (local copy: [`vdbeapi.c`](vdbeapi.c)). Moves a `VDBE_READY_STATE` statement to `VDBE_RUN_STATE`, increments `db->nVdbeActive` and (for non-read-only statements) `db->nVdbeWrite` (lines 821–822), and sets the program counter `p->pc = 0` (line 824). If the statement is already in `VDBE_HALT_STATE`, line 852 auto-resets it first. It then dispatches to `sqlite3VdbeList` when the statement is an `EXPLAIN` (line 864) or runs the bytecode interpreter `sqlite3VdbeExec` (line 869). When an autocommit statement finishes with `SQLITE_DONE`, line 886 invokes `doWalCallbacks` (which triggers automatic WAL checkpoints when the threshold is reached).
-6. **`OP_Transaction`** — [`src/vdbe.c:4102-4201`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbe.c#L4102-L4201) (in the pinned tree). Starts a read (`P2=0`) or write (`P2!=0`) transaction on database `P1` by calling `sqlite3BtreeBeginTrans` (line 4128). If the lock is busy (`SQLITE_BUSY`), it saves the program counter and returns so the caller can retry. When `P5` is non-zero, it compares the file's schema cookie against the cookie compiled into the statement (`P3`); a mismatch expires the statement with `"database schema has changed"` (lines 4174 and 4191), driving the retry loop in `sqlite3_step`.
-7. **`OP_Insert`** — [`src/vdbe.c:5748-5834`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbe.c#L5748-L5834) (in the pinned tree). Takes the encoded record built by `OP_MakeRecord` (register `P2`) and the rowid (register `P3`) and inserts them into the B-tree through cursor `P1` via `sqlite3BtreeInsert` (line 5816). When flags in `P5` request it, lines 5802–5803 update the connection's change count and `last_insert_rowid`. `OP_Insert` does not write to disk directly; the B-tree calls `sqlite3PagerWrite` to mark the target page writable. In rollback mode, that first `sqlite3PagerWrite` opens `-journal` and saves the page's original bytes; in WAL mode, no file write happens until commit.
+   If another connection altered the schema since `sqlite3_prepare_v2`, `sqlite3_step` calls `sqlite3Reprepare` (line 933), resets the statement (line 954), and runs it again up to `SQLITE_MAX_SCHEMA_RETRY` (50, [`src/vdbeInt.h:26`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbeInt.h#L26)) times. The caller never sees `SQLITE_SCHEMA` unless recompilation fails.
+5. **`sqlite3Step`** — [`src/vdbeapi.c:777-912`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbeapi.c#L777-L912) (local copy: [`vdbeapi.c`](vdbeapi.c)). Moves a `VDBE_READY_STATE` statement to `VDBE_RUN_STATE` (line 825), increments `db->nVdbeActive` and (for non-read-only statements) `db->nVdbeWrite` (lines 821–822), and sets program counter `p->pc = 0` (line 824). If the statement is already in `VDBE_HALT_STATE`, line 852 auto-resets it first. It then dispatches to `sqlite3VdbeList` for `EXPLAIN` statements (line 864) or runs the bytecode interpreter `sqlite3VdbeExec` (line 869). When an autocommit statement ends with `SQLITE_DONE`, line 886 calls `doWalCallbacks` (which runs automatic WAL checkpoints when the frame threshold is reached).
+6. **`OP_Transaction`** — [`src/vdbe.c:4102-4201`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbe.c#L4102-L4201) (in the pinned tree). Starts a read (`P2=0`) or write (`P2!=0`) transaction on database `P1` via `sqlite3BtreeBeginTrans` (line 4128). On `SQLITE_BUSY`, it saves the program counter and returns so the caller can retry. When `P5` is non-zero, it compares the file's schema cookie against the compiled cookie (`P3`); a mismatch sets `"database schema has changed"` (line 4174) and expires the statement with `SQLITE_SCHEMA` (lines 4191–4192), driving the retry loop in `sqlite3_step`.
+7. **`OP_Insert`** — [`src/vdbe.c:5748-5834`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbe.c#L5748-L5834) (in the pinned tree). Passes the encoded record built by `OP_MakeRecord` (register `P2`) and the rowid (register `P3`) into the B-tree through cursor `P1` via `sqlite3BtreeInsert` (line 5816). When flags in `P5` request it, lines 5802–5803 update the connection's change count and `last_insert_rowid`. `OP_Insert` writes nothing to disk directly; the B-tree calls `sqlite3PagerWrite` to mark the target page writable. In rollback mode, that first `sqlite3PagerWrite` creates `-journal` and saves the page's original image; in WAL mode, no file write happens until commit.
 
 ### 3.3 Halt and commit: crossing into the pager and VFS
 
-8. **`sqlite3VdbeHalt`** — [`src/vdbeaux.c:3315-3517`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbeaux.c#L3315-L3517) (local copy: [`vdbeaux.c`](vdbeaux.c)). Runs when a statement hits `OP_Halt` (or `OP_AutoCommit` for an explicit `COMMIT`). It closes all cursors (line 3339). If the connection is in autocommit mode and this statement is the last active writer (`db->autoCommit && db->nVdbeWrite==(p->readOnly==0)`, lines 3402–3403), it checks deferred foreign keys and calls `vdbeCommit` (line 3421). If `vdbeCommit` fails, line 3429 calls `sqlite3RollbackAll`. Otherwise (inside an explicit transaction or when another writer statement is still open), line 3464 closes only the statement's sub-transaction via `sqlite3VdbeCloseStatement`.
-9. **`vdbeCommit`** — [`src/vdbeaux.c:2919-3175`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbeaux.c#L2919-L3175) (local copy: [`vdbeaux.c`](vdbeaux.c)). Loops over every attached database with an active write transaction, acquires an `EXCLUSIVE` pager lock (`sqlite3PagerExclusiveLock` at line 2973), and checks `aMJNeeded` (lines 2954–2961) to count how many need a multi-file super-journal (`DELETE`, `PERSIST`, and `TRUNCATE` need one when two or more databases are written; `WAL` sets `0`). With one database (or in WAL mode), it runs two-phase commit: `sqlite3BtreeCommitPhaseOne` (line 3005) flushes dirty pages and syncs them; `sqlite3BtreeCommitPhaseTwo` (line 3020) deletes the rollback journal or releases WAL locks. When a statement is later destroyed, `sqlite3_finalize` ([`src/vdbeapi.c:105-124`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbeapi.c#L105-L124), local copy [`vdbeapi.c`](vdbeapi.c)) resets and frees the `Vdbe`.
-10. **The VFS wrappers** — [`src/os.c:88-102`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os.c#L88-L102) (local copy: [`os.c`](os.c)). Everything above the VFS calls one-line wrappers that dispatch through the open file's method table (`pMethods`):
+8. **`sqlite3VdbeHalt`** — [`src/vdbeaux.c:3315-3517`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbeaux.c#L3315-L3517) (local copy: [`vdbeaux.c`](vdbeaux.c)). Runs when a statement hits `OP_Halt` (or `OP_AutoCommit` for an explicit `COMMIT`). Line 3339 closes all cursors. If the connection is in autocommit mode and this is the last active writer (`db->autoCommit && db->nVdbeWrite==(p->readOnly==0)`, lines 3402–3403), it checks deferred foreign keys and calls `vdbeCommit` (line 3421); if `vdbeCommit` fails, line 3429 calls `sqlite3RollbackAll`. Otherwise (inside an explicit transaction or while another writer statement is open), line 3464 closes only the statement's sub-transaction via `sqlite3VdbeCloseStatement`.
+9. **`vdbeCommit`** — [`src/vdbeaux.c:2919-3175`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbeaux.c#L2919-L3175) (local copy: [`vdbeaux.c`](vdbeaux.c)). Loops over every attached database with an active write transaction, acquires an `EXCLUSIVE` pager lock (`sqlite3PagerExclusiveLock` at line 2973), and inspects `aMJNeeded` (lines 2954–2961) to count how many need a multi-file super-journal (`DELETE`, `PERSIST`, and `TRUNCATE` need one when two or more databases are written; `WAL` sets `0`). With one database (or in WAL mode), it runs two-phase commit: `sqlite3BtreeCommitPhaseOne` (line 3005) writes and syncs dirty pages; `sqlite3BtreeCommitPhaseTwo` (line 3020) deletes the rollback journal or releases WAL locks. Later, `sqlite3_finalize` ([`src/vdbeapi.c:105-124`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbeapi.c#L105-L124), local copy [`vdbeapi.c`](vdbeapi.c)) resets and frees the `Vdbe`.
+10. **The VFS wrappers** — [`src/os.c:88-102`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os.c#L88-L102) (local copy: [`os.c`](os.c)), specifically `sqlite3OsRead` ([`src/os.c:88-91`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os.c#L88-L91)), `sqlite3OsWrite` ([`src/os.c:92-95`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os.c#L92-L95)), `sqlite3OsTruncate` (lines 96–98), and `sqlite3OsSync` ([`src/os.c:99-102`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os.c#L99-L102)). Everything above the VFS calls these one-line wrappers to dispatch through the open file's method table (`pMethods`):
     ```c
     int sqlite3OsRead(sqlite3_file *id, void *pBuf, int amt, i64 offset){
       DO_OS_MALLOC_TEST(id);
@@ -550,32 +549,45 @@ Execution begins only when the caller steps the prepared statement.
       return flags ? id->pMethods->xSync(id, flags) : SQLITE_OK;
     }
     ```
-    Notice `sqlite3OsSync` (lines 99–102): when `flags` is `0` (as under `synchronous=OFF`), it returns `SQLITE_OK` without even entering the VFS. Below this table, `os_unix.c` issues `pread64`, `pwrite64`, `ftruncate`, and `fsync`/`fdatasync`.
+    In `sqlite3OsSync` (lines 99–102), `flags == 0` (as under `synchronous=OFF`) returns `SQLITE_OK` without calling `xSync`. Below this table, `os_unix.c` issues `pread64`, `pwrite64`, `ftruncate`, and `fsync`/`fdatasync`.
 
 ### Version notes
 
-Behavior differences across SQLite releases relevant to this chapter (sources: [`docs/knowledge/source-inventory-ch01-04.md`](../docs/knowledge/source-inventory-ch01-04.md) and the pinned source):
+Behavior differences across SQLite releases relevant to this chapter (sources: [`docs/knowledge/source-inventory-ch01-04.md`](../docs/knowledge/source-inventory-ch01-04.md), `changes.html`, and the pinned source):
 
-- **`sqlite3VdbeSerialPut()` removed (2022-04-02).** Record serialization was inlined into `OP_MakeRecord`, noted in the comment at [`src/vdbeaux.c:3856`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbeaux.c#L3856) (local copy: [`vdbeaux.c`](vdbeaux.c)). Older references that trace record writes through `sqlite3VdbeSerialPut` are out of date.
-- **`bytecode` and `tables_used` virtual tables (added in 3.32.0, 2020-05-22, `changes.html`).** Enabled in the C CLI (`ENABLE_BYTECODE_VTAB`) and absent in the Go driver.
-- **`sqlite3_stmt_explain()` (added in 3.43.0, `changes.html`).** Switches a prepared statement between normal execution and `EXPLAIN` modes.
-- **`sqlite3_stmt_scanstatus_v2()` in `EXPLAIN QUERY PLAN` (added in 3.41.0, `changes.html`).** Requires `SQLITE_ENABLE_STMT_SCANSTATUS`, which neither build enables.
-- **3.53.4 baseline fixes.** Release 3.53.4 already includes `SQLITE_CHECKPOINT_NOOP` (3.51.0) and the WAL-reset corruption fix (3.51.3 / 3.53.0).
+- **`sqlite3VdbeSerialPut()` removed (2022-04-02).** Record serialization was inlined into `OP_MakeRecord`, noted at [`src/vdbeaux.c:3856`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbeaux.c#L3856) (local copy: [`vdbeaux.c`](vdbeaux.c)).
+- **`bytecode` and `tables_used` virtual tables (3.32.0, `changes.html`).** Enabled in the C CLI (`ENABLE_BYTECODE_VTAB`) and absent in the Go driver.
+- **`sqlite3_stmt_explain()` (3.43.0, `changes.html`).** Switches a prepared statement between normal execution and `EXPLAIN`.
+- **`sqlite3_stmt_scanstatus_v2()` in `EXPLAIN QUERY PLAN` (3.41.0, `changes.html`).** Requires `SQLITE_ENABLE_STMT_SCANSTATUS`, which neither build enables.
+- **3.53.4 baseline fixes.** Release 3.53.4 includes `SQLITE_CHECKPOINT_NOOP` (3.51.0) and the WAL-reset corruption fix (3.51.3 / 3.53.0).
 
 ### Experiment 1.2 — One INSERT through the layers (`1.2-one-insert`)
 
-- **Claim:** One committed `INSERT` crosses every layer, and each crossing is observable from outside: opcodes (`EXPLAIN`), changed pages (`sqlite_dbpage`), journal or WAL writes (pager), VFS calls (`-vfstrace`), and kernel syscalls (`strace`). In rollback mode, each `pwrite64` on `t.db` writes one whole changed page at offset `(page - 1) * 4096`. In WAL mode, the commit makes zero writes to `t.db` and appends a 24-byte frame header plus 4,096-byte page image per changed page to `t.db-wal`. The translated Go driver (`modernc.org/sqlite`) and the C CLI issue the same writes, syncs, reads, locks, opens, unlinks, and closes in the same order and leave byte-identical database files, differing only in extra `fcntl(F_SETFD)` calls issued by `modernc.org/libc`'s musl-derived `open()`.
+- **Claim:**
+  - One committed `INSERT` crosses every layer, and each crossing is observable from outside: opcodes (`EXPLAIN`), changed pages (`sqlite_dbpage`), journal or WAL writes (pager), VFS calls (`-vfstrace`), and kernel syscalls (`strace`).
+  - In rollback mode, each `pwrite64` on `t.db` writes one whole changed page at offset `(page - 1) * 4096`.
+  - In WAL mode, the commit makes zero writes to `t.db` and writes only the 32-byte WAL header at offset 0 of the new `t.db-wal`, followed by a 24-byte frame header and 4,096-byte page image per changed page.
+  - For SQL statements whose behavior does not depend on compile options differing between the two builds, `modernc.org/sqlite` and the C CLI issue the same writes, syncs, reads, locks, opens, unlinks, and closes in the same order and leave byte-identical files, differing only in extra `fcntl(F_SETFD)` calls issued by `modernc.org/libc`'s musl-derived `open()`.
+  - Where compile options do differ (`ENABLE_STAT4` on `ANALYZE`), the two builds diverge and write different files.
 - **Evidence form:** `EXACT` (all lines except `INFO:` lines).
-- **Platform:** **Linux only** for `strace`, the twin check, and the `-vfstrace` merged trace. On macOS, running the experiment directly prints `EXPLAIN`, a `LINUX-ONLY:` line, and the changed page hashes in both modes; run the full experiment inside Docker with `docker compose run --rm lab go run ./ch01-architecture-and-execution-path/experiments/1.2-one-insert`. All syscall and VFS results below were measured on Linux only.
+- **Platform:** **Linux only** for `strace`, the twin check, its `ANALYZE` limit, and the `-vfstrace` merged trace. On macOS, running the experiment directly does not require the C CLI: it prints `EXPLAIN`, a `LINUX-ONLY:` line, and the changed page hashes with their expected-page checks (`[1 2]` in rollback mode, `[2]` in WAL mode) and exits 0. Run the full experiment on macOS via Docker:
+  ```text
+  docker compose run --rm lab go run ./ch01-architecture-and-execution-path/experiments/1.2-one-insert
+  ```
 - **Why kept:** this is the one place the course earns the right to use a translated driver. Everything after relies on it.
+- **Run command** (Linux):
+  ```text
+  go run ./ch01-architecture-and-execution-path/experiments/1.2-one-insert
+  ```
 
 <!-- include: experiments/1.2-one-insert/main.go -->
 ```go
 // Experiment 1.2 traces one committed INSERT through every SQLite layer:
 // VDBE bytecode (EXPLAIN), B-tree pages (sqlite_dbpage), pager and VFS calls
 // (C CLI -vfstrace), and kernel syscalls (strace). It runs in both rollback
-// (DELETE) and WAL modes and performs the twin check comparing the translated
-// Go driver against the C CLI.
+// (DELETE) and WAL modes, performs the twin check comparing the translated Go
+// driver against the C CLI, and demonstrates the twin check's compile-option
+// limit with ANALYZE (ENABLE_STAT4).
 //
 // Run from the repo root (Linux for strace; on macOS run inside Docker via
 // docker compose run --rm lab go run ./ch01-architecture-and-execution-path/experiments/1.2-one-insert):
@@ -897,13 +909,30 @@ func syncName(name string) bool {
 
 // normalized canonicalizes syscall spellings that differ across libc or
 // configure builds (open vs openat, unlink vs unlinkat, fsync vs fdatasync)
-// so the twin check compares the actual file operations.
+// while preserving errno on failed calls, short-transfer byte counts, and
+// read/write lengths so the twin check compares the actual file operations.
 func normalized(call trace.Syscall) string {
+	text := normalizedOperation(call)
+	switch {
+	case call.Errno != "":
+		text += " = " + call.Errno
+	case transfersBytes(call) && call.Length >= 0 && call.Result != call.Length:
+		text += fmt.Sprintf(" = %d", call.Result)
+	}
+	return text
+}
+
+func transfersBytes(call trace.Syscall) bool {
+	switch call.Name {
+	case "pwrite64", "pread64", "write", "read":
+		return true
+	}
+	return false
+}
+
+func normalizedOperation(call trace.Syscall) string {
 	switch {
 	case call.Name == "open" || call.Name == "openat":
-		if call.Errno != "" {
-			return "open " + call.Path + " = " + call.Errno
-		}
 		return "open " + call.Path
 	case syncName(call.Name):
 		return "sync " + call.Path
@@ -911,6 +940,8 @@ func normalized(call trace.Syscall) string {
 		return "unlink " + call.Path
 	case call.Name == "pwrite64" || call.Name == "pread64":
 		return fmt.Sprintf("%s %s off=%d len=%d", call.Name, call.Path, call.Offset, call.Length)
+	case call.Name == "write" || call.Name == "read":
+		return fmt.Sprintf("%s %s len=%d", call.Name, call.Path, call.Length)
 	case call.Name == "ftruncate":
 		return fmt.Sprintf("ftruncate %s len=%d", call.Path, call.Length)
 	case call.Name == "mmap":
@@ -1089,10 +1120,16 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 		if _, err := db.ExecContext(ctx, insertSQL); err != nil {
 			fatal("insert", err)
 		}
-		db.Close()
+		if err := db.Close(); err != nil {
+			fatal("close", err)
+		}
+		if err := recipe.CheckAtRest(path); err != nil {
+			fatal("at rest", err)
+		}
 		after := pageHashes(ctx, path, mode)
 		changed := changedPages(before, after)
 		printChanged(before, after, changed)
+		checkChangedPages(mode, changed)
 		return
 	}
 
@@ -1107,6 +1144,9 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 	if goRun.ExitCode != 0 {
 		fatal("Go child", fmt.Errorf("exit %d: %s", goRun.ExitCode, goRun.Stderr))
 	}
+	if err := recipe.CheckAtRest(path); err != nil {
+		fatal("Go child at rest", err)
+	}
 	after := pageHashes(ctx, path, mode)
 	goFileHash, err := recipe.FileSHA256(path)
 	if err != nil {
@@ -1114,6 +1154,7 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 	}
 	changed := changedPages(before, after)
 	printChanged(before, after, changed)
+	checkChangedPages(mode, changed)
 
 	goCalls, err := segmentCalls(goRun.Log.Calls, dir, "1", "2")
 	if err != nil {
@@ -1158,23 +1199,15 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 			fmt.Printf("  WAL frame %d: page %d, commit size %d, header at offset %d, page image at offset %d\n", frame.Index, frame.Page, frame.CommitSize, walHeaderSize+(frame.Index-1)*(walFrameHeader+pageSize), walHeaderSize+(frame.Index-1)*(walFrameHeader+pageSize)+walFrameHeader)
 			framePages = append(framePages, int(frame.Page))
 		}
-		walWritesMatch := true
 		var walWrites []string
 		for _, call := range goCalls {
 			if call.Name == "pwrite64" && call.Path == dbName+"-wal" {
 				walWrites = append(walWrites, fmt.Sprintf("%d+%d", call.Offset, call.Length))
 			}
 		}
-		var wantWALWrites []string
-		for _, frame := range frames {
-			offset := walHeaderSize + (frame.Index-1)*(walFrameHeader+pageSize)
-			wantWALWrites = append(wantWALWrites, fmt.Sprintf("%d+%d", offset, walFrameHeader), fmt.Sprintf("%d+%d", offset+walFrameHeader, pageSize))
-		}
-		if len(walWrites) == 0 || !slices.Equal(walWrites[len(walWrites)-len(wantWALWrites):], wantWALWrites) {
-			walWritesMatch = false
-		}
+		walWritesMatch := slices.Equal(walWrites, expectedFreshWALWrites(frames))
 		lastCommit := len(frames) > 0 && frames[len(frames)-1].CommitSize > 0
-		check(slices.Equal(framePages, changed) && walWritesMatch && lastCommit, fmt.Sprintf("WAL mode: the commit appends one frame per changed page %v to %s-wal (frame header 24 bytes, then the page at offset 32 + (frame-1)*4120 + 24), the last frame carries the commit size", changed, dbName))
+		check(slices.Equal(framePages, changed) && walWritesMatch && lastCommit, fmt.Sprintf("WAL mode: the commit writes the 32-byte WAL header at offset 0 of the new %s-wal, then one frame per changed page %v (frame header 24 bytes, then the page at offset 32 + (frame-1)*4120 + 24), and nothing else; the last frame carries the commit size", dbName, changed))
 	}
 
 	if !haveCLI {
@@ -1194,6 +1227,9 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 	if cliRun.ExitCode != 0 {
 		fatal("CLI", fmt.Errorf("exit %d: %s", cliRun.ExitCode, cliRun.Stderr))
 	}
+	if err := recipe.CheckAtRest(path); err != nil {
+		fatal("CLI at rest", err)
+	}
 	cliFileHash, err := recipe.FileSHA256(path)
 	if err != nil {
 		fatal("hash", err)
@@ -1209,14 +1245,15 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 	fmt.Printf("INFO: sync syscall used: Go driver %s, CLI %s (%s)\n", syncCallNames(goCalls), syncCallNames(cliCalls), displayPath(cli.Path))
 	writesSame := compareLists("writes (file, offset, length, order)", normalizedAll(goCalls, isWrite), normalizedAll(cliCalls, isWrite))
 	syncsSame := compareLists("syncs (file, order)", normalizedAll(goCalls, isSync), normalizedAll(cliCalls, isSync))
-	check(writesSame && syncsSame, "twin check: the Go driver and the C CLI make the same writes (file, offset, length) and the same syncs, in the same order")
+	goSyncs := normalizedAll(goCalls, isSync)
+	check(writesSame && syncsSame && len(goSyncs) > 0, "twin check: the Go driver and the C CLI make the same writes (file, offset, length) and the same syncs, in the same order")
 	goCloexec := normalizedAll(goCalls, isCloexecFcntl)
 	cliCloexec := normalizedAll(cliCalls, isCloexecFcntl)
 	fmt.Printf("twin difference: fcntl F_SETFD calls, Go driver %d [%s], CLI %d [%s]\n", len(goCloexec), strings.Join(goCloexec, "; "), len(cliCloexec), strings.Join(cliCloexec, "; "))
 	notCloexec := func(call trace.Syscall) bool { return !isCloexecFcntl(call) }
 	allSame := compareLists("every other file syscall (opens, reads, writes, syncs, locks, unlinks, closes)", normalizedAll(goCalls, notCloexec), normalizedAll(cliCalls, notCloexec))
 	check(allSame, "apart from fcntl F_SETFD, every file syscall of the INSERT is the same in both builds (open vs openat and fsync vs fdatasync are not distinguished)")
-	check(goFileHash == cliFileHash, fmt.Sprintf("the database file after the INSERT is byte-identical from both builds (sha256 %s)", short(goFileHash)))
+	check(goFileHash == cliFileHash && goFileHash != baseHash, fmt.Sprintf("the database file after the INSERT is byte-identical from both builds (sha256 %s)", short(goFileHash)))
 
 	// Measured call path: split the INSERT into BEGIN IMMEDIATE, INSERT, and
 	// COMMIT under CLI -vfstrace + strace so each VFS call and syscall is
@@ -1229,6 +1266,9 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 	}
 	if splitRun.ExitCode != 0 {
 		fatal("CLI -vfstrace", fmt.Errorf("exit %d: %s", splitRun.ExitCode, splitRun.Stderr))
+	}
+	if err := recipe.CheckAtRest(path); err != nil {
+		fatal("CLI -vfstrace at rest", err)
 	}
 	splitFileHash, err := recipe.FileSHA256(path)
 	if err != nil {
@@ -1273,6 +1313,42 @@ func runMode(ctx context.Context, base, mode string, cli sqlitex.CLI, haveCLI bo
 	check(splitFileHash == cliFileHash, "BEGIN IMMEDIATE; INSERT; COMMIT leaves the same file bytes as the autocommit INSERT")
 }
 
+// expectedChangedPages returns the 1-based pages that the INSERT modifies:
+// pages 1 and 2 in rollback mode (header change counter plus table leaf), and
+// page 2 alone in WAL mode (page 1 is not dirtied).
+func expectedChangedPages(mode string) []int {
+	if mode == sqlitex.JournalWAL {
+		return []int{2}
+	}
+	return []int{1, 2}
+}
+
+// checkChangedPages verifies that sqlite_dbpage observed exactly the pages
+// expected for mode (runs on both Linux and non-Linux hosts).
+func checkChangedPages(mode string, changed []int) {
+	want := expectedChangedPages(mode)
+	reason := "page 1 (the change counter in the header) and page 2 (table t's leaf)"
+	if mode == sqlitex.JournalWAL {
+		reason = "only page 2 (table t's leaf); page 1 is not written, so its change counter stays"
+	}
+	check(slices.Equal(changed, want), fmt.Sprintf("the INSERT changes %s: %v", reason, want))
+}
+
+// expectedFreshWALWrites returns the complete sequence of "offset+length"
+// pwrite64 operations for a freshly created WAL file: the 32-byte WAL header
+// at offset 0 followed by each frame's 24-byte header and 4096-byte page image.
+func expectedFreshWALWrites(frames []walFrame) []string {
+	if len(frames) == 0 {
+		return nil
+	}
+	want := []string{fmt.Sprintf("0+%d", walHeaderSize)}
+	for _, frame := range frames {
+		offset := walHeaderSize + (frame.Index-1)*(walFrameHeader+pageSize)
+		want = append(want, fmt.Sprintf("%d+%d", offset, walFrameHeader), fmt.Sprintf("%d+%d", offset+walFrameHeader, pageSize))
+	}
+	return want
+}
+
 func printChanged(before, after []string, changed []int) {
 	fmt.Printf("pages changed by the INSERT (sha256 of each page through sqlite_dbpage, before -> after): %v\n", changed)
 	for _, page := range changed {
@@ -1300,13 +1376,17 @@ func main() {
 		fatal("work dir", err)
 	}
 	fmt.Printf("INFO: work dir %s\n", displayPath(base))
-	cli, cliErr := sqlitex.LocateCLI(ctx)
-	haveCLI := cliErr == nil
-	if haveCLI {
-		fmt.Println(cli.PinLine())
-	} else {
-		fmt.Printf("sqlite3 CLI: unavailable: %v\n", cliErr)
-		failures = append(failures, "the pinned sqlite3 CLI is available")
+	var cli sqlitex.CLI
+	haveCLI := false
+	if trace.Supported {
+		located, cliErr := sqlitex.LocateCLI(ctx)
+		cli, haveCLI = located, cliErr == nil
+		if haveCLI {
+			fmt.Println(cli.PinLine())
+		} else {
+			fmt.Printf("sqlite3 CLI: unavailable: %v\n", cliErr)
+			failures = append(failures, "the pinned sqlite3 CLI is available")
+		}
 	}
 
 	explainPath := filepath.Join(base, "explain.db")
@@ -1314,10 +1394,13 @@ func main() {
 	printExplain(ctx, explainPath)
 
 	if !trace.Supported {
-		trace.PrintLinuxOnly("the strace of the Go driver and of the CLI, the twin check and the measured call path", packagePath)
+		trace.PrintLinuxOnly("the strace of the Go driver and of the CLI, the twin check, its ANALYZE limit and the measured call path", packagePath)
 	}
 	for _, mode := range []string{sqlitex.JournalDelete, sqlitex.JournalWAL} {
 		runMode(ctx, base, mode, cli, haveCLI)
+	}
+	if haveCLI {
+		twinLimitAnalyze(ctx, base, cli)
 	}
 
 	fmt.Println()
@@ -1326,6 +1409,125 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("ONE INSERT OK")
+}
+
+const (
+	analyzeSchemaSQL = "CREATE TABLE s(id INTEGER PRIMARY KEY, k INTEGER NOT NULL); CREATE INDEX s_by_k ON s(k); WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 100) INSERT INTO s(id, k) SELECT i, i % 7 FROM n"
+	stat4OptionSQL   = "SELECT sqlite_compileoption_used('ENABLE_STAT4')"
+)
+
+// statTables returns the sorted names of any sqlite_stat* tables created by
+// ANALYZE in the database at path.
+func statTables(ctx context.Context, path string) []string {
+	db, err := sqlitex.Open(ctx, path, options(sqlitex.JournalWAL))
+	if err != nil {
+		fatal("open for sqlite_schema", err)
+	}
+	defer db.Close()
+	rows, err := db.QueryContext(ctx, "SELECT name FROM sqlite_schema WHERE name LIKE 'sqlite_stat%' ORDER BY name")
+	if err != nil {
+		fatal("sqlite_schema", err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			fatal("sqlite_schema scan", err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		fatal("sqlite_schema", err)
+	}
+	return names
+}
+
+// twinLimitAnalyze demonstrates a boundary of the twin check: starting from
+// byte-identical copies of an indexed table, ANALYZE writes sqlite_stat4 in
+// the ENABLE_STAT4-enabled Go driver but only sqlite_stat1 in the CLI, so the
+// resulting database files diverge.
+func twinLimitAnalyze(ctx context.Context, base string, cli sqlitex.CLI) {
+	fmt.Println("\n== a limit of the twin check: compile options that change file contents ==")
+	dir := filepath.Join(base, "analyze")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		fatal("mkdir", err)
+	}
+	goPath := filepath.Join(dir, "go.db")
+	cliPath := filepath.Join(dir, "cli.db")
+	o := options(sqlitex.JournalWAL)
+	for _, path := range []string{goPath, cliPath} {
+		if err := recipe.RemoveDatabase(path); err != nil {
+			fatal("remove", err)
+		}
+		db, err := sqlitex.Open(ctx, path, o)
+		if err != nil {
+			fatal("create analyze base", err)
+		}
+		if _, err := db.ExecContext(ctx, analyzeSchemaSQL); err != nil {
+			fatal("create analyze base", err)
+		}
+		if err := db.Close(); err != nil {
+			fatal("close analyze base", err)
+		}
+	}
+	baseGo, err := recipe.FileSHA256(goPath)
+	if err != nil {
+		fatal("hash", err)
+	}
+	baseCLI, err := recipe.FileSHA256(cliPath)
+	if err != nil {
+		fatal("hash", err)
+	}
+	fmt.Printf("base: table s with 100 rows and index s_by_k, built twice by the Go driver, sha256 %s and %s\n", short(baseGo), short(baseCLI))
+
+	db, err := sqlitex.Open(ctx, goPath, o)
+	if err != nil {
+		fatal("open", err)
+	}
+	var goStat4 int
+	if err := db.QueryRowContext(ctx, stat4OptionSQL).Scan(&goStat4); err != nil {
+		fatal("compile option", err)
+	}
+	if _, err := db.ExecContext(ctx, "ANALYZE"); err != nil {
+		fatal("ANALYZE", err)
+	}
+	if err := db.Close(); err != nil {
+		fatal("close", err)
+	}
+	out, err := cli.Exec(ctx, cliPath, cliPrelude(o)+stat4OptionSQL+";\nANALYZE;\n")
+	if err != nil {
+		fatal("CLI ANALYZE", err)
+	}
+	lines := strings.Fields(out)
+	cliStat4 := -1
+	if len(lines) > 0 {
+		fmt.Sscan(lines[len(lines)-1], &cliStat4)
+	}
+	for _, path := range []string{goPath, cliPath} {
+		if err := recipe.CheckAtRest(path); err != nil {
+			fatal("analyze at rest", err)
+		}
+	}
+	goHash, err := recipe.FileSHA256(goPath)
+	if err != nil {
+		fatal("hash", err)
+	}
+	cliHash, err := recipe.FileSHA256(cliPath)
+	if err != nil {
+		fatal("hash", err)
+	}
+	goTables, cliTables := statTables(ctx, goPath), statTables(ctx, cliPath)
+	fmt.Printf("ENABLE_STAT4 compiled in: Go driver %d, CLI %d\n", goStat4, cliStat4)
+	fmt.Printf("after ANALYZE: Go driver file sha256 %s, statistics tables %v\n", short(goHash), goTables)
+	fmt.Printf("after ANALYZE: C CLI file sha256 %s, statistics tables %v\n", short(cliHash), cliTables)
+	check(baseGo == baseCLI, "both copies start byte-identical")
+	if goStat4 == 1 && cliStat4 == 0 {
+		check(goHash != cliHash && slices.Contains(goTables, "sqlite_stat4") && !slices.Contains(cliTables, "sqlite_stat4"),
+			"twin check limit: the driver is compiled with ENABLE_STAT4 and this CLI is not, so the same ANALYZE writes a sqlite_stat4 table only in the driver and the two files differ")
+	} else {
+		check(goStat4 == cliStat4 && goHash == cliHash, "with the same ENABLE_STAT4 setting the same ANALYZE leaves byte-identical files")
+	}
 }
 
 func displayPath(path string) string {
@@ -1344,13 +1546,7 @@ func displayPath(path string) string {
 }
 ```
 
-Run from the repository root (Linux, or via `docker compose run --rm lab` on macOS):
-
-```text
-go run ./ch01-architecture-and-execution-path/experiments/1.2-one-insert
-```
-
-Captured evidence (measured on Linux):
+Captured output (`evidence/1.2-one-insert.txt`, measured on Linux):
 
 <!-- include: evidence/1.2-one-insert.txt -->
 ```text
@@ -1381,6 +1577,7 @@ base: table t with 1 row, 2 pages, sha256 0aec0e95a3f65e0c
 pages changed by the INSERT (sha256 of each page through sqlite_dbpage, before -> after): [1 2]
   page 1: bb133eb73b58bce5 -> 0ba56047337c7717
   page 2: 5d68aacbd116afe8 -> b21207c95d70a25b
+check ok: the INSERT changes page 1 (the change counter in the header) and page 2 (table t's leaf): [1 2]
 Go driver (modernc), file syscalls of the INSERT (33):
   fcntl t.db F_SETLK F_RDLCK start=1073741824 len=1 = 0
   fcntl t.db F_SETLK F_RDLCK start=1073741826 len=510 = 0
@@ -1435,7 +1632,7 @@ C CLI, file syscalls of the same INSERT (31, open/openat shown as open, fsync/fd
   pwrite64 t.db-journal off=4616 len=4
   pwrite64 t.db-journal off=4620 len=4096
   pwrite64 t.db-journal off=8716 len=4
-  pread64 t.db-journal off=9216 len=8
+  pread64 t.db-journal off=9216 len=8 = 0
   sync t.db-journal
   open .
   sync .
@@ -1499,7 +1696,7 @@ phase COMMIT | opcode OP_AutoCommit (OP_Halt in an autocommit INSERT) | sqlite3V
       SYS pwrite64 t.db-journal off=8716 len=4
   VFS xDeviceCharacteristics(t.db) -> 0x00009000
   VFS xRead(t.db-journal,n=8,ofst=9216) -> SQLITE_IOERR_SHORT_READ
-      SYS pread64 t.db-journal off=9216 len=8
+      SYS pread64 t.db-journal off=9216 len=8 = 0
   VFS xSync(t.db-journal,FULL) -> 0
       SYS sync t.db-journal
       SYS open .
@@ -1531,9 +1728,10 @@ check ok: the three phases together make exactly the file syscalls of the autoco
 check ok: BEGIN IMMEDIATE; INSERT; COMMIT leaves the same file bytes as the autocommit INSERT
 
 == write-ahead log (journal_mode=wal, the platform default) ==
-base: table t with 1 row, 2 pages, sha256 d0cb3c980847e49e
+base: table t with 1 row, 2 pages, sha256 5de4f3aefd26bcea
 pages changed by the INSERT (sha256 of each page through sqlite_dbpage, before -> after): [2]
   page 2: 5d68aacbd116afe8 -> b21207c95d70a25b
+check ok: the INSERT changes only page 2 (table t's leaf); page 1 is not written, so its change counter stays: [2]
 Go driver (modernc), file syscalls of the INSERT (18):
   fcntl t.db-shm F_SETLK F_RDLCK start=123 len=1 = 0
   fcntl t.db-shm F_SETLK F_WRLCK start=120 len=1 = 0
@@ -1555,7 +1753,7 @@ Go driver (modernc), file syscalls of the INSERT (18):
   fcntl t.db-shm F_SETLK F_UNLCK start=124 len=1 = 0
 check ok: WAL mode: the commit writes nothing to t.db itself (database-file pwrite64 calls during the INSERT: 0)
   WAL frame 1: page 2, commit size 2, header at offset 32, page image at offset 56
-check ok: WAL mode: the commit appends one frame per changed page [2] to t.db-wal (frame header 24 bytes, then the page at offset 32 + (frame-1)*4120 + 24), the last frame carries the commit size
+check ok: WAL mode: the commit writes the 32-byte WAL header at offset 0 of the new t.db-wal, then one frame per changed page [2] (frame header 24 bytes, then the page at offset 32 + (frame-1)*4120 + 24), and nothing else; the last frame carries the commit size
 C CLI, file syscalls of the same INSERT (17, open/openat shown as open, fsync/fdatasync as sync):
   fcntl t.db-shm F_SETLK F_RDLCK start=123 len=1
   fcntl t.db-shm F_SETLK F_WRLCK start=120 len=1
@@ -1581,7 +1779,7 @@ check ok: twin check: the Go driver and the C CLI make the same writes (file, of
 twin difference: fcntl F_SETFD calls, Go driver 1 [fcntl . F_SETFD], CLI 0 []
 twin every other file syscall (opens, reads, writes, syncs, locks, unlinks, closes): identical (17 calls)
 check ok: apart from fcntl F_SETFD, every file syscall of the INSERT is the same in both builds (open vs openat and fsync vs fdatasync are not distinguished)
-check ok: the database file after the INSERT is byte-identical from both builds (sha256 6b96a8a5533900b8)
+check ok: the database file after the INSERT is byte-identical from both builds (sha256 1afce8154bf3124c)
 call path, measured: the C CLI with -vfstrace under strace runs BEGIN IMMEDIATE; INSERT; COMMIT with a marker between statements.
 Each phase lists the VFS calls (VFS) and the syscalls each one made (SYS, indented under its VFS call).
 phase BEGIN IMMEDIATE | opcode OP_Transaction | sqlite3BtreeBeginTrans -> sqlite3PagerSharedLock, sqlite3PagerBegin
@@ -1627,42 +1825,53 @@ phase COMMIT | opcode OP_AutoCommit (OP_Halt in an autocommit INSERT) | sqlite3V
 check ok: the three phases together make exactly the file syscalls of the autocommit INSERT (so the per-opcode split above is the INSERT's own I/O)
 check ok: BEGIN IMMEDIATE; INSERT; COMMIT leaves the same file bytes as the autocommit INSERT
 
+== a limit of the twin check: compile options that change file contents ==
+base: table s with 100 rows and index s_by_k, built twice by the Go driver, sha256 cd808b1713871cd6 and cd808b1713871cd6
+ENABLE_STAT4 compiled in: Go driver 1, CLI 0
+after ANALYZE: Go driver file sha256 2f6ce76122bda45c, statistics tables [sqlite_stat1 sqlite_stat4]
+after ANALYZE: C CLI file sha256 490d8405dea7402c, statistics tables [sqlite_stat1]
+check ok: both copies start byte-identical
+check ok: twin check limit: the driver is compiled with ENABLE_STAT4 and this CLI is not, so the same ANALYZE writes a sqlite_stat4 table only in the driver and the two files differ
+
 ONE INSERT OK
 ```
 
-#### Reading the evidence
+**Reading the evidence:**
 
-1. **The `EXPLAIN` bytecode listing (lines 4–21).** Each row is one VDBE instruction: `addr` (instruction index), `opcode` (operation name), and operands `p1` through `p5`. Execution starts at `0 Init 0 14` which jumps to `14 Transaction 0 1 1 0 1` (start a write transaction `p2=1` on database `p1=0` `main`, checking schema cookie `p3=1` because `p5=1`), then `15 Goto 0 1` jumps back to `1`:
+1. **The `EXPLAIN` bytecode listing (lines 4–21).** Each row is one VDBE instruction: `addr` (instruction index), `opcode`, and operands `p1`–`p5`. Execution starts at `0 Init 0 14`, jumps to `14 Transaction 0 1 1 0 1` (write transaction `p2=1` on `p1=0` `main`, checking schema cookie `p3=1` because `p5=1`), and jumps to `1` via `15 Goto 0 1`:
    - `1 OpenWrite 0 2 0 2` opens write cursor `0` on root page `2` (table `t`, 2 columns).
-   - `2 SoftNull 2`, `3 String8 0 3 0 two`, `4 Integer 2 1` load register `r2=NULL` (the `INTEGER PRIMARY KEY` column is stored as the rowid, not duplicated in the record), `r3='two'`, and rowid `r1=2`.
-   - `5 NotNull 1 7` skips `6 NewRowid` because rowid `2` was supplied explicitly.
-   - `7 MustBeInt 1` validates the rowid type; `8 HaltIfNull 1299 2 3 t.v 1` enforces `v TEXT NOT NULL`; `9 NotExists 0 11 1` checks that rowid `2` is not already in table `t` (otherwise `10 Halt 1555` raises a primary-key constraint error).
-   - `11 MakeRecord 2 2 4 DB` packs registers `r2..r3` into a binary SQLite record in register `r4`.
-   - `12 Insert 0 4 1 t 49` inserts record `r4` with rowid `r1` into cursor `0`. Flag `p5=49` is `1 + 16 + 32` (`OPFLAG_NCHANGE | OPFLAG_USESEEKRESULT | OPFLAG_LASTROWID`): reuse the seek position from `NotExists`, increment the change counter, and record `last_insert_rowid`.
-   - `13 Halt` invokes `sqlite3VdbeHalt`, which commits the autocommit transaction.
+   - `2 SoftNull 2`, `3 String8 0 3 0 two`, and `4 Integer 2 1` load `r2=NULL` (the `INTEGER PRIMARY KEY` column lives in the rowid, not inside the record payload), `r3='two'`, and rowid `r1=2`.
+   - `5 NotNull 1 7` skips `6 NewRowid` because rowid `2` is explicit.
+   - `7 MustBeInt 1` checks the rowid type; `8 HaltIfNull 1299 2 3 t.v 1` enforces `v TEXT NOT NULL`; `9 NotExists 0 11 1` checks that rowid `2` is unused (else `10 Halt 1555` raises a primary-key constraint error).
+   - `11 MakeRecord 2 2 4 DB` packs `r2..r3` into a binary SQLite record in `r4`.
+   - `12 Insert 0 4 1 t 49` inserts `r4` with rowid `r1` through cursor `0`. Flag `p5=49` is `1 + 16 + 32` (`OPFLAG_NCHANGE | OPFLAG_USESEEKRESULT | OPFLAG_LASTROWID`): reuse the seek position from `NotExists`, increment the change count, and update `last_insert_rowid`.
+   - `13 Halt` enters `sqlite3VdbeHalt`, which commits the autocommit transaction.
 
-2. **Rollback mode (`journal_mode=delete`, lines 23–104).**
-   - **Changed pages (lines 25–27):** `[1 2]`. Page 2 changed because row 2 was inserted into table `t`'s leaf page. Page 1 changed because in rollback mode a commit increments the 4-byte file change counter (bytes 24–27) and the matching version-valid-for field (bytes 92–95) in page 1's header.
-   - **Database writes (lines 54–55, 62–64):** `pwrite64 t.db off=0 len=4096` equals `(page 1 - 1) * 4096`, and `pwrite64 t.db off=4096 len=4096` equals `(page 2 - 1) * 4096`. Every write to `t.db` is one whole page, and the pages written are exactly `[1 2]`.
-   - **Syncs (lines 47, 50, 53, 56):** 4 syncs in order: `fsync t.db-journal`, `fsync .` (the directory, making the newly created journal entry durable), `fsync t.db-journal` (after writing the 12-byte journal header with the page count), and `fsync t.db`.
-   - **Twin check (lines 97–104):** The Go driver made 33 file syscalls; the C CLI made 31. Both made the exact same 10 writes (same file, offset, length, order), the exact same 4 syncs (same file, order), and the exact same 31 non-`F_SETFD` calls, and left byte-identical files (`47bae5ed0c8207f2`). The sole syscall difference (line 101) is two `fcntl(..., F_SETFD)` calls from `modernc.org/libc v1.77.1`: its musl-derived `open()` issues `fcntl(fd, F_SETFD, FD_CLOEXEC)` after opening a file with `O_CLOEXEC`, whereas `os_unix.c`'s `robust_open` relies on `O_CLOEXEC` directly. Note also that `./configure`-built CLIs call `fdatasync` where the Go driver and system CLI call `fsync`, and `openat` vs `open` varies by libc; the experiment normalizes those pairs and records the raw sync call name on the `INFO:` line (line 97).
+2. **Rollback mode (`journal_mode=delete`, lines 23–105).**
+   - **Changed pages (lines 25–28):** `[1 2]`. Page 2 changed because row 2 was inserted into table `t`'s leaf page. Page 1 changed because a rollback-mode commit increments the 4-byte file change counter (bytes 24–27) and version-valid-for field (bytes 92–95).
+   - **Database writes (lines 55–56, 63–65):** `pwrite64 t.db off=0 len=4096` equals `(page 1 - 1) * 4096`, and `off=4096 len=4096` equals `(page 2 - 1) * 4096`. Every write to `t.db` is one whole page, matching `[1 2]` exactly.
+   - **Syncs (lines 48, 51, 54, 57):** 4 syncs in order: `fsync t.db-journal`, `fsync .` (makes the new journal directory entry durable), `fsync t.db-journal` (after writing the 12-byte journal header with the page count), and `fsync t.db`.
+   - **Errors and short reads (lines 47 and 83):** `normalized` keeps errno on failed calls and byte counts on short transfers, so SQLite's probe past end-of-file prints `pread64 t.db-journal off=9216 len=8 = 0` in both builds.
+   - **Twin check (lines 98–105):** 33 Go syscalls vs 31 CLI syscalls. Writes (10), syncs (4), all 31 non-`F_SETFD` calls, and the closed at-rest database file (`47bae5ed0c8207f2`, distinct from base `0aec0e95a3f65e0c`) are identical. The sole difference (line 102) is two `fcntl(..., F_SETFD)` calls from `modernc.org/libc v1.77.1`: its musl-derived `open()` calls `fcntl(fd, F_SETFD, FD_CLOEXEC)` after `O_CLOEXEC`, whereas `os_unix.c`'s `robust_open` ([`src/os_unix.c:867-869`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L867-L869)) skips `F_SETFD` when `O_CLOEXEC` is defined. `./configure`-built CLIs also call `fdatasync` where the Go driver and system CLI call `fsync`, and `openat` vs `open` varies by libc; the experiment normalizes those pairs and records the raw sync syscall on line 98 (`INFO:`).
 
-3. **WAL mode (`journal_mode=wal`, the platform default, lines 177–228).**
-   - **Changed pages (lines 179–180):** `[2]` only. Page 1 does not change during this `INSERT` in WAL mode.
-   - **Database writes vs WAL writes (lines 189–202):** Zero `pwrite64` calls hit `t.db`. Because closing the base database checkpointed and deleted its WAL, this `INSERT` starts a fresh WAL: it writes the 32-byte WAL header at `t.db-wal off=0 len=32`, syncs `t.db-wal` and the directory `.`, appends frame 1's 24-byte header at `off=32 len=24` and page 2's 4,096-byte image at `off=56 len=4096`, and issues the commit sync `fsync t.db-wal`. Reading `t.db-wal` before `db.Close()` confirms `frame 1: page 2, commit size 2` (line 201).
-   - **Syncs (lines 190, 193, 197):** 3 syncs total (`t.db-wal`, `.`, `t.db-wal`). The first two happen only because this is the first write to a brand-new WAL file; only the third sync is the per-commit sync at `synchronous=FULL`.
-   - **Twin check (lines 221–228):** 18 Go syscalls vs 17 CLI syscalls (the single difference is `fcntl . F_SETFD`, line 225). Writes (3), syncs (3), all 17 other syscalls, and the closed database file bytes (`6b96a8a5533900b8`) match identically.
-   - **Marker files and `xRandomness`:** Both processes bracket each statement by opening empty marker files (`marker-1`, `marker-2`, and so on) because CLI stdout is buffered; an `open`/`openat` syscall lands in `strace` at the exact statement boundary. Some CLI builds also emit `VFS xRandomness` on the first statement that needs SQLite's PRNG (to seed the rollback journal nonce or WAL salts); the experiment prints that on an `INFO:` line so the `EXACT` output matches across both the installed CLI and the `build-tools` CLI.
+3. **WAL mode (`journal_mode=wal`, the platform default, lines 178–230).**
+   - **Changed pages (lines 180–182):** `[2]` only. Page 1 is untouched during this `INSERT`, so its change counter does not move.
+   - **WAL writes vs database writes (lines 191–204):** Zero `pwrite64` calls hit `t.db` (line 202). Because closing the base database (`5de4f3aefd26bcea`) checkpointed and removed its WAL, this `INSERT` creates a fresh WAL: it writes the 32-byte WAL header (`t.db-wal off=0 len=32`), syncs `t.db-wal` and `.`, appends frame 1's 24-byte header (`off=32 len=24`) and page 2's 4,096-byte image (`off=56 len=4096`), and syncs `t.db-wal`. Reading `t.db-wal` before `db.Close()` confirms `WAL frame 1: page 2, commit size 2` (line 203), and line 204 verifies the exact write list with nothing extra.
+   - **Syncs (lines 192, 195, 199):** 3 syncs total (`t.db-wal`, `.`, `t.db-wal`). The first two pay for creating the fresh WAL header and directory entry; only the third is the per-commit sync at `synchronous=FULL`.
+   - **Twin check (lines 223–230):** 18 Go syscalls vs 17 CLI syscalls (the single extra call is `fcntl . F_SETFD`, line 227). Writes (3), syncs (3), all 17 other syscalls, and the closed at-rest database file (`1afce8154bf3124c`) are identical.
+   - **Marker files and `xRandomness`:** Both processes bracket statements by opening empty marker files (`marker-1`, `marker-2`, and so on) because CLI stdout is buffered; an `open`/`openat` syscall marks the exact statement boundary in `strace`. Some CLI builds call `VFS xRandomness` here on their first PRNG use (to seed a journal nonce or WAL salts); the experiment prints that on an `INFO:` line so `EXACT` output matches across both the installed CLI and the `build-tools` CLI.
+
+4. **A limit of the twin check: `ANALYZE` and `ENABLE_STAT4` (lines 276–282).** Starting from two byte-identical copies (`cd808b1713871cd6`) of a 100-row table `s` with index `s_by_k`, `ANALYZE` in the Go driver (`ENABLE_STAT4 = 1`) creates `[sqlite_stat1 sqlite_stat4]` (`2f6ce76122bda45c`), while the C CLI (`ENABLE_STAT4 = 0`) creates only `[sqlite_stat1]` (`490d8405dea7402c`). Twin parity holds only for statements whose behavior does not depend on compile options differing between the two builds.
 
 ---
 
 ## 4. Timeline
 
-In Experiment 1.2, the third run per mode splits the autocommit `INSERT` into `BEGIN IMMEDIATE;`, `INSERT INTO t(id, v) VALUES(2, 'two');`, and `COMMIT;` under the C CLI's `-vfstrace` plus `strace`. Lines 174–175 and 271–272 verify that the three phases concatenated produce the exact same syscalls and the exact same final file bytes as the single autocommit `INSERT`. That links each VFS call and kernel syscall by measurement—not guesswork—to the opcode that triggered it: `BEGIN IMMEDIATE` isolates `OP_Transaction`, `INSERT` isolates `OP_Insert`, and `COMMIT` isolates `OP_AutoCommit` → `sqlite3VdbeHalt` → `vdbeCommit` (the same commit path `OP_Halt` takes in an autocommit `INSERT`).
+The third run per mode in Experiment 1.2 splits the autocommit `INSERT` into `BEGIN IMMEDIATE;`, `INSERT INTO t(id, v) VALUES(2, 'two');`, and `COMMIT;` under the C CLI's `-vfstrace` plus `strace`. Lines 175–176 and 273–274 of `evidence/1.2-one-insert.txt` prove that the three phases concatenated execute the exact same syscalls and leave the exact same database bytes as the single autocommit `INSERT`. That ties each VFS call and kernel syscall by measurement to the opcode that caused it: `BEGIN IMMEDIATE` isolates `OP_Transaction`, `INSERT` isolates `OP_Insert`, and `COMMIT` isolates `OP_AutoCommit` → `sqlite3VdbeHalt` → `vdbeCommit` (the same path `OP_Halt` takes in an autocommit `INSERT`).
 
 ### 4.1 Rollback mode (`journal_mode=delete`)
 
-POSIX byte-range locks in rollback mode sit on `t.db` at the 1 GiB lock-byte region: `1073741824` (`0x40000000`, `PENDING` byte), `1073741825` (`RESERVED` byte), and `1073741826..1073742335` (`len=510`, the `SHARED` range).
+POSIX byte-range locks in rollback mode sit on `t.db` at the 1 GiB lock-byte region: byte `1073741824` (`0x40000000`, `PENDING`), byte `1073741825` (`RESERVED`), and bytes `1073741826..1073742335` (`len=510`, `SHARED`).
 
 | Phase (opcode) | Layer path | VFS call (`-vfstrace`) | Kernel syscall(s) (`strace`) |
 | --- | --- | --- | --- |
@@ -1674,47 +1883,49 @@ POSIX byte-range locks in rollback mode sit on `t.db` at the 1 GiB lock-byte reg
 | 〃 | Journal page 2's original image (4-byte page number + 4,096-byte page + 4-byte checksum) | `xWrite` ×3 (`ofst=512, 516, 4612`) | `pwrite64 t.db-journal off=512 len=4`, `off=516 len=4096`, `off=4612 len=4` |
 | `COMMIT` (`OP_AutoCommit` / `OP_Halt`) | `sqlite3VdbeHalt` → `vdbeCommit` → `sqlite3PagerExclusiveLock` | `xLock(t.db,EXCLUSIVE)` | `fcntl t.db F_WRLCK 1073741824 len=1`, `F_WRLCK 1073741826 len=510` |
 | 〃 | `sqlite3PagerCommitPhaseOne` → `pager_incr_changecounter` journals page 1 | `xWrite` ×3 (`ofst=4616, 4620, 8716`) | `pwrite64 t.db-journal off=4616 len=4`, `off=4620 len=4096`, `off=8716 len=4` |
-| 〃 | `syncJournal`: check for stale next header, sync journal records and directory | `xRead(t.db-journal,n=8,ofst=9216)` → `SHORT_READ`, `xSync(t.db-journal,FULL)` | `pread64 t.db-journal off=9216 len=8`, `sync t.db-journal`, `open .`, `sync .`, `close .` |
+| 〃 | `syncJournal`: probe for stale next header, sync journal records and directory | `xRead(t.db-journal,n=8,ofst=9216)` → `SHORT_READ`, `xSync(t.db-journal,FULL)` | `pread64 t.db-journal off=9216 len=8 = 0`, `sync t.db-journal`, `open .`, `sync .`, `close .` |
 | 〃 | `syncJournal`: write page count into journal header and sync header | `xWrite(t.db-journal,n=12,ofst=0)`, `xSync(t.db-journal,FULL)` | `pwrite64 t.db-journal off=0 len=12`, `sync t.db-journal` |
 | 〃 | `pager_write_pagelist` writes modified pages 1 and 2 to `t.db`, then `sqlite3PagerSync` | `xWrite(t.db,4096,0)`, `xWrite(t.db,4096,4096)`, `xFileControl(SYNC)`, `xSync(t.db,FULL)` | `pwrite64 t.db off=0 len=4096`, `off=4096 len=4096`, `sync t.db` |
 | 〃 | `sqlite3BtreeCommitPhaseTwo` → `pager_end_transaction` (**commit point**) | `xClose(t.db-journal)`, `xDelete("t.db-journal")` | `close t.db-journal`, `unlink t.db-journal` |
 | 〃 | Drop exclusive lock back to `SHARED`, then `NONE` | `xFileControl(COMMIT_PHASETWO)`, `xUnlock(SHARED)`, `xUnlock(NONE)` | `fcntl t.db F_RDLCK 1073741826 len=510`, `F_UNLCK 1073741824 len=2`, `F_UNLCK 0 len=0` |
 
-In rollback mode, `unlink t.db-journal` is the commit point: if the process dies before that `unlink`, the synced `-journal` remains on disk and the next connection rolls back both pages; after `unlink`, the new pages in `t.db` stand.
+In rollback mode, `unlink t.db-journal` is the commit point: before it, a crash leaves a synced journal that rolls both pages back on next open; after it, the new pages in `t.db` stand.
 
 ### 4.2 WAL mode (`journal_mode=wal`, the platform default)
 
-POSIX byte-range locks in WAL mode sit on `t.db-shm`: byte `120` (`WRITE`), `121` (`CKPT`), `122` (`RECOVER`), and `123 + i` (`READ i`, five reader mark slots).
+POSIX byte-range locks in WAL mode sit on `t.db-shm`: byte `120` (`WRITE`), `121` (`CKPT`), `122` (`RECOVER`), and `123 + i` (`READ i`, five reader slots). `xShmBarrier` is a memory barrier ordering reads and writes to the shared-memory `-shm` mapping; `xFileControl` passes control notifications (such as `SYNC` or `COMMIT_PHASETWO`) from the pager to the VFS.
 
 | Phase (opcode) | Layer path | VFS call (`-vfstrace`) | Kernel syscall(s) (`strace`) |
 | --- | --- | --- | --- |
 | `BEGIN IMMEDIATE` (`OP_Transaction`) | `sqlite3BtreeBeginTrans` → `walTryBeginRead` | `xShmBarrier`, `xShmLock(READ0, LOCK\|SHARED)`, `xShmBarrier`, `xFileSize(t.db)` | `fcntl t.db-shm F_RDLCK start=123 len=1` |
 | 〃 | `sqlite3WalBeginWriteTransaction` | `xShmLock(WRITE, LOCK\|EXCLUSIVE)` | `fcntl t.db-shm F_WRLCK start=120 len=1` |
-| `INSERT` (`OP_Insert`) | `sqlite3BtreeInsert` → `sqlite3PagerWrite` (no journal file in WAL mode) | `xRead(t.db,n=4096,ofst=4096)` | `pread64 t.db off=4096 len=4096` |
+| `INSERT` (`OP_Insert`) | `sqlite3BtreeInsert` → `sqlite3PagerWrite` (no journal in WAL mode) | `xRead(t.db,n=4096,ofst=4096)` | `pread64 t.db off=4096 len=4096` |
 | `COMMIT` (`OP_AutoCommit` / `OP_Halt`) | `vdbeCommit` → `pagerWalFrames` → `sqlite3WalFrames` → `walRestartLog` moves reader mark from `READ0` to `READ1` | `xShmLock(READ0, UNLOCK\|SHARED)`, `xShmLock(READ1, LOCK\|EXCLUSIVE)`, `xShmLock(READ1, UNLOCK\|EXCLUSIVE)`, `xShmLock(READ1, LOCK\|SHARED)`, `xShmBarrier` | `fcntl t.db-shm F_UNLCK 123`, `F_WRLCK 124`, `F_UNLCK 124`, `F_RDLCK 124` |
 | 〃 | Write and sync the 32-byte WAL header (first write of a new WAL) and sync directory `.` | `xWrite(t.db-wal,n=32,ofst=0)`, `xSync(t.db-wal,FULL)` | `pwrite64 t.db-wal off=0 len=32`, `sync t.db-wal`, `open .`, `sync .`, `close .` |
 | 〃 | Append frame 1 (24-byte header + page 2 image) and sync (**commit point**) | `xWrite(t.db-wal,n=24,ofst=32)`, `xWrite(t.db-wal,n=4096,ofst=56)`, `xSync(t.db-wal,FULL)` | `pwrite64 t.db-wal off=32 len=24`, `off=56 len=4096`, `sync t.db-wal` |
 | 〃 | Publish to wal-index and release `WRITE` and `READ1` locks | `xShmBarrier`, `xShmLock(WRITE, UNLOCK\|EXCLUSIVE)`, `xFileControl(COMMIT_PHASETWO)`, `xShmLock(READ1, UNLOCK\|SHARED)` | `fcntl t.db-shm F_UNLCK start=120 len=1`, `F_UNLCK start=124 len=1` |
 
-Two structural differences stand out immediately: `OP_Insert` performs zero writes in WAL mode (only reading page 2 into the page cache), and `COMMIT` never touches `t.db` at all. All durability moves onto `t.db-wal`.
+Two structural differences stand out: `OP_Insert` performs zero writes in WAL mode (only reading page 2 into the cache), and `COMMIT` never writes to `t.db` at all. All durability moves onto `t.db-wal`.
 
 ---
 
 ## 5. Lab
 
-To verify snapshots, WAL replays, crash recoveries, and fleet rebuilds in chapters 2 through 10, every experiment needs a ground truth: a realistic workload whose database file has one known SHA-256 hash after every numbered step *k*. That is **Rebuild Ladder rung R0 (Recipe)**.
+Every later chapter verifies snapshots, WAL replays, crash recoveries, or fleet rebuilds against a known ground truth: a realistic workload whose closed database file has one exact SHA-256 hash after every numbered step *k*. That is **Rebuild Ladder rung R0 (Recipe)**.
 
-This chapter introduces the shared package `internal/recipe`, inlined in full below (its unit tests live in [`internal/recipe/recipe_test.go`](../internal/recipe/recipe_test.go) and run with `go test ./internal/recipe/`).
+This chapter introduces the shared package `internal/recipe`, inlined in full below. Its unit tests live in [`internal/recipe/recipe_test.go`](../internal/recipe/recipe_test.go) and [`internal/recipe/repair_test.go`](../internal/recipe/repair_test.go) and run with `go test ./internal/recipe/`.
 
 ### 5.1 The `internal/recipe` package
 
-A `Recipe` is identified by three values: a 64-bit PRNG seed (`DefaultSeed = 1`), a step count (`DefaultSteps = 30`), and a journal mode (`wal` by default, or `delete`).
+Three files split generation, execution, and verification:
 
-- **Step 0** creates three tables—`accounts`, `documents`, and `events`—and sets `PRAGMA user_version = 0`. Every table declares `id INTEGER PRIMARY KEY` so Go supplies every rowid explicitly.
-- **Steps 1 through 30** each seed a fresh `math/rand/v2` PCG generator from `(seed, k)` so step *k* depends only on the seed and its index, never on the total step count. Each step runs inserts across all three tables, balance updates, occasional document body replacements, periodic deletes (every 3rd step for events, every 4th step for documents), creates the index `events_by_account` at step 5, and ends with `PRAGMA user_version = k` inside the same transaction.
-- **Overflow pages.** Document bodies range from `MinBodyBytes = 2000` to `MaxBodyBytes = 16000` bytes. On a 4,096-byte page, a table leaf row spills to overflow pages above 4,061 bytes of payload, so the workload exercises both inline rows and multi-page overflow chains.
-- **Explicit settings and one session per step.** `SQLiteOptions()` sets `secure_delete=ON` and `SingleConnection=true` on top of `sqlitex.DefaultOptions()` (`page_size=4096`, `auto_vacuum=NONE`, `encoding=UTF-8`, course `application_id=1397836120`, `synchronous=FULL`, `foreign_keys=ON`, `cache_size=-2000`, `wal_autocheckpoint=1000`, `busy_timeout=5000ms`). `Build` opens and closes a fresh connection for every step (`ApplyInSession`). Section 6 proves why: in WAL mode, SQLite's file change counter counts connection sessions rather than commits.
-- **Step hash cache and lookup.** `hashes.go` computes both the exact SHA-256 and a change-counter-masked SHA-256 (zeroing header bytes 24–27 and 92–95) after every step, caches the list under `_work/recipe-cache/`, and provides `MatchStep` so later chapters can identify which recipe step any at-rest database equals.
+- **Plan generation (`recipe.go`).** `Recipe` carries `{Seed, Steps, JournalMode}` (`Default()` uses seed `1`, `30` steps, and `wal`). `Plan()` returns a slice of `Step` values, each holding parameterized `Statement{SQL, Args}` entries and `StepKind` tags summarized by `StepCounts`.
+  - **Step 0** creates three tables (`accounts`, `documents`, `events`) with explicit `id INTEGER PRIMARY KEY` columns and sets `PRAGMA user_version = 0`.
+  - **Steps 1–30** each seed a fresh `math/rand/v2` PCG generator from `(seed, k)` so step *k* depends only on the seed and its index, never on total step count. Each step runs inserts across all three tables, balance updates, occasional document body replacements, periodic deletes (every 3rd step for `events`, every 4th step for `documents`), creates index `events_by_account` at step `5`, and ends with `PRAGMA user_version = k` inside the same transaction.
+  - **Overflow pages.** Document bodies range from `MinBodyBytes = 2000` to `MaxBodyBytes = 16000` bytes. On a 4,096-byte page, a table leaf row spills onto overflow pages above 4,061 bytes of payload, so the workload produces both inline rows and multi-page overflow chains.
+  - **Explicit settings.** `SQLiteOptions()` sets `secure_delete=ON` and `SingleConnection=true` on top of `sqlitex.DefaultOptions()` (`page_size=4096`, `auto_vacuum=NONE`, `encoding=UTF-8`, `application_id=1397836120`, `synchronous=FULL`, `foreign_keys=ON`, `cache_size=-2000`, `wal_autocheckpoint=1000`, `busy_timeout=5000ms`).
+- **Session execution (`apply.go`).** `Build` and `BuildEach` open and close a fresh connection for every step (`ApplyInSession`) and verify `CheckAtRest` (no `-wal`, `-shm`, or `-journal` remaining). Section 6 proves why: in WAL mode, [`pagerWalFrames` (`src/pager.c:3264`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3264) calls [`pager_write_changecounter` (`src/pager.c:3130-3143`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3130-L3143) only when a commit dirties page 1 (`pList->pgno == 1`), writing `dbFileVers + 1` where `dbFileVers` is refreshed only when page 1 is read from disk ([`src/pager.c:3109-3110`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3109-L3110)). Because every recipe step executes `PRAGMA user_version = k` (dirtying page 1), one session per step advances the counter deterministically by one per step.
+- **Hashes, cache, and lookup (`hashes.go`).** `FileHashes` stores both the exact file SHA-256 and a change-counter-masked SHA-256 (zeroing header bytes 24–27 and 92–95). `StepHashes` caches the per-step list under `_work/recipe-cache/` in format v2 (`FormatVersion = 2`) with a trailing SHA-256 checksum over the cache key, SQLite options, every planned statement and bound argument, and all step hashes. Before trusting a cached file, `StepHashes` verifies that checksum and rebuilds step 0 in a temporary directory to compare entry 0; any tampered, corrupt, or stale cache is rebuilt atomically. `MatchStep` returns a `Match{Step, Exact}` naming which step an at-rest database equals and rejects any masked-only match whose bytes 24–27 and 92–95 disagree (`ChangeCountersAgree`).
 
 #### `internal/recipe/recipe.go`
 
@@ -1750,7 +1961,7 @@ const (
 
 // FormatVersion versions the on-disk step-hash cache. Bump it whenever the
 // generated SQL, parameters, or SQLite options change.
-const FormatVersion = 1
+const FormatVersion = 2
 
 // Recipe identifies a deterministic workload by PRNG seed, step count, and
 // journal mode ("wal" or "delete").
@@ -1799,10 +2010,11 @@ func (r Recipe) String() string {
 // SQLiteOptions returns the explicit file and connection settings used when
 // building or opening a recipe database.
 //
-// SecureDelete is always enabled so freed space inside B-tree pages and
-// freelist leaves is zeroed rather than keeping stale bytes from earlier
-// histories. SingleConnection pins the pool to one SQLite connection so step
-// execution never interleaves across connections.
+// SecureDelete is always enabled (strictly ON) so freed space inside B-tree
+// pages and on freed freelist pages is zeroed rather than keeping stale bytes
+// from earlier histories. SingleConnection pins the pool to one SQLite
+// connection so pool churn cannot open extra connections or shift the WAL
+// change counter.
 func (r Recipe) SQLiteOptions() sqlitex.Options {
 	options := sqlitex.DefaultOptions()
 	options.File.JournalMode = r.JournalMode
@@ -1931,6 +2143,9 @@ func (r Recipe) Plan() ([]Step, error) {
 // Step generates and returns step k alone by walking the live-id state from
 // step 0 through step k.
 func (r Recipe) Step(k int) (Step, error) {
+	if err := r.Validate(); err != nil {
+		return Step{}, err
+	}
 	if k < 0 || k > r.Steps {
 		return Step{}, fmt.Errorf("recipe: step %d out of range 0..%d", k, r.Steps)
 	}
@@ -2150,10 +2365,12 @@ func CheckAtRest(path string) error {
 // ApplyInSession opens path, commits s in one transaction, closes the
 // connection, and verifies the database is at rest.
 //
-// Opening a fresh connection per step makes the WAL file change counter
-// (header bytes 24..27 and 92..95) advance by one per step: pagerWalFrames
-// (src/pager.c:3264) writes dbFileVers+1 (src/pager.c:3135), and dbFileVers is
-// refreshed only when page 1 is read from disk (src/pager.c:3109-3110).
+// Because every recipe step dirties page 1 (PRAGMA user_version = k), opening
+// a fresh connection per step makes the WAL file change counter (header bytes
+// 24..27 and 92..95) advance by one per step: pagerWalFrames (src/pager.c:3264)
+// calls pager_write_changecounter only when pList->pgno == 1, writing
+// dbFileVers+1 (src/pager.c:3135), and dbFileVers is refreshed only when page 1
+// is read from disk (src/pager.c:3109-3110).
 func (r Recipe) ApplyInSession(ctx context.Context, path string, s Step) error {
 	db, err := r.Open(ctx, path)
 	if err != nil {
@@ -2179,6 +2396,9 @@ func (r Recipe) Build(ctx context.Context, path string, upTo int) error {
 // separate sessions, and calls afterStep(k) after each step's file is closed
 // and at rest.
 func (r Recipe) BuildEach(ctx context.Context, path string, upTo int, afterStep func(k int) error) error {
+	if err := r.Validate(); err != nil {
+		return err
+	}
 	if upTo < 0 || upTo > r.Steps {
 		return fmt.Errorf("recipe: build up to step %d out of range 0..%d", upTo, r.Steps)
 	}
@@ -2246,9 +2466,11 @@ package recipe
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -2367,8 +2589,10 @@ func (r Recipe) CachePath() (string, error) {
 }
 
 // StepHashes returns the per-step hashes for steps 0..r.Steps, reusing the
-// cached file on disk when it already holds at least r.Steps+1 valid entries
-// and rebuilding it atomically otherwise.
+// cached file on disk only when it has at least r.Steps+1 entries, its trailing
+// SHA-256 checksum matches r's key, SQLite options, plan, and hashes, and a
+// fresh step-0 rebuild matches entry 0. Otherwise it rebuilds and replaces the
+// cache atomically.
 func (r Recipe) StepHashes(ctx context.Context) ([]FileHashes, error) {
 	if err := r.Validate(); err != nil {
 		return nil, err
@@ -2377,7 +2601,7 @@ func (r Recipe) StepHashes(ctx context.Context) ([]FileHashes, error) {
 	if err != nil {
 		return nil, err
 	}
-	if cached, err := readHashCache(cachePath); err == nil && len(cached) > r.Steps {
+	if cached, err := r.readVerifiedCache(ctx, cachePath); err == nil && len(cached) > r.Steps {
 		return cached[:r.Steps+1], nil
 	}
 	dir := filepath.Dir(cachePath)
@@ -2393,7 +2617,7 @@ func (r Recipe) StepHashes(ctx context.Context) ([]FileHashes, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := writeHashCache(cachePath, hashes); err != nil {
+	if err := r.writeHashCache(cachePath, hashes); err != nil {
 		return nil, err
 	}
 	return hashes, nil
@@ -2453,7 +2677,8 @@ func MatchHashes(hashes []FileHashes, h FileHashes) Match {
 }
 
 // MatchStep checks that path is at rest, hashes it, and reports which step of
-// r it equals.
+// r it equals. A masked-only match is accepted only when the two header change
+// counters agree (ChangeCountersAgree).
 func (r Recipe) MatchStep(ctx context.Context, path string) (Match, error) {
 	if err := CheckAtRest(path); err != nil {
 		return Match{Step: -1}, err
@@ -2466,7 +2691,37 @@ func (r Recipe) MatchStep(ctx context.Context, path string) (Match, error) {
 	if err != nil {
 		return Match{Step: -1}, err
 	}
-	return MatchHashes(hashes, h), nil
+	match := MatchHashes(hashes, h)
+	if match.Found() && !match.Exact {
+		agree, err := fileCountersAgree(path)
+		if err != nil {
+			return Match{Step: -1}, err
+		}
+		if !agree {
+			return Match{Step: -1}, nil
+		}
+	}
+	return match, nil
+}
+
+func fileCountersAgree(path string) (bool, error) {
+	image, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	return ChangeCountersAgree(image), nil
+}
+
+// ChangeCountersAgree reports whether image is at least 96 bytes long and its
+// file change counter (bytes 24..27) equals its version-valid-for number
+// (bytes 92..95), which SQLite always updates together in
+// pager_write_changecounter (src/pager.c:3130-3143).
+func ChangeCountersAgree(image []byte) bool {
+	first, second := ChangeCounterRanges[0], ChangeCounterRanges[1]
+	if len(image) < second[1] {
+		return false
+	}
+	return bytes.Equal(image[first[0]:first[1]], image[second[0]:second[1]])
 }
 
 func isSHA256Hex(text string) bool {
@@ -2474,39 +2729,130 @@ func isSHA256Hex(text string) bool {
 	return err == nil && len(text) == sha256.Size*2
 }
 
-func readHashCache(path string) ([]FileHashes, error) {
+const cacheChecksumPrefix = "checksum "
+
+// readHashCache parses a v2 step-hash cache file ("k exact masked" lines
+// followed by a final "checksum <sha256>" line) without verifying the digest.
+func readHashCache(path string) ([]FileHashes, string, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer file.Close()
 	var hashes []FileHashes
+	var body strings.Builder
+	checksum := ""
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
+		line := scanner.Text()
+		if checksum != "" {
+			return nil, "", fmt.Errorf("recipe cache %s: line %q after the checksum", path, line)
+		}
+		if rest, ok := strings.CutPrefix(line, cacheChecksumPrefix); ok {
+			if !isSHA256Hex(rest) {
+				return nil, "", fmt.Errorf("recipe cache %s: bad checksum line %q", path, line)
+			}
+			checksum = rest
+			continue
+		}
+		fields := strings.Fields(line)
 		if len(fields) != 3 {
-			return nil, fmt.Errorf("recipe cache %s: malformed line %q", path, scanner.Text())
+			return nil, "", fmt.Errorf("recipe cache %s: malformed line %q", path, line)
 		}
 		k, err := strconv.Atoi(fields[0])
 		if err != nil || k != len(hashes) {
-			return nil, fmt.Errorf("recipe cache %s: line %q out of order", path, scanner.Text())
+			return nil, "", fmt.Errorf("recipe cache %s: line %q out of order", path, line)
 		}
 		if !isSHA256Hex(fields[1]) || !isSHA256Hex(fields[2]) {
-			return nil, fmt.Errorf("recipe cache %s: bad hash on line %q", path, scanner.Text())
+			return nil, "", fmt.Errorf("recipe cache %s: bad hash on line %q", path, line)
 		}
 		hashes = append(hashes, FileHashes{Exact: fields[1], Masked: fields[2]})
+		body.WriteString(line)
+		body.WriteString("\n")
 	}
 	if err := scanner.Err(); err != nil {
+		return nil, "", err
+	}
+	if checksum == "" {
+		return nil, "", fmt.Errorf("recipe cache %s: no checksum line", path)
+	}
+	return hashes, checksum, nil
+}
+
+// cacheChecksum hashes the cache key, SQLite options, every planned statement
+// and bound argument, and all cached step hashes so any drift invalidates the
+// on-disk cache.
+func (r Recipe) cacheChecksum(hashes []FileHashes) (string, error) {
+	if len(hashes) == 0 {
+		return "", errors.New("recipe cache: no hashes")
+	}
+	plan, err := r.WithSteps(len(hashes) - 1).Plan()
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.New()
+	fmt.Fprintf(sum, "%s\n%s\n%s\n", r.cacheKey(), r.SQLiteOptions().File, r.SQLiteOptions().Conn)
+	for _, s := range plan {
+		for _, statement := range s.Statements {
+			fmt.Fprintf(sum, "%d %q %#v\n", s.Number, statement.SQL, statement.Args)
+		}
+	}
+	for k, h := range hashes {
+		fmt.Fprintf(sum, "%d %s %s\n", k, h.Exact, h.Masked)
+	}
+	return hex.EncodeToString(sum.Sum(nil)), nil
+}
+
+// readVerifiedCache parses path, checks its checksum against r, and rebuilds
+// step 0 in a temporary directory to confirm entry 0 matches the live SQLite
+// build and sqlitex open path.
+func (r Recipe) readVerifiedCache(ctx context.Context, path string) ([]FileHashes, error) {
+	hashes, checksum, err := readHashCache(path)
+	if err != nil {
 		return nil, err
+	}
+	want, err := r.cacheChecksum(hashes)
+	if err != nil {
+		return nil, err
+	}
+	if checksum != want {
+		return nil, fmt.Errorf("recipe cache %s: checksum mismatch", path)
+	}
+	fresh, err := r.freshStepZeroHash(ctx, filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+	if fresh != hashes[0] {
+		return nil, fmt.Errorf("recipe cache %s: step 0 rebuilds to %s, the cache says %s", path, fresh.Exact, hashes[0].Exact)
 	}
 	return hashes, nil
 }
 
-func writeHashCache(path string, hashes []FileHashes) error {
+// freshStepZeroHash builds step 0 in an isolated temporary directory under dir
+// and returns its exact and masked hashes.
+func (r Recipe) freshStepZeroHash(ctx context.Context, dir string) (FileHashes, error) {
+	buildDir, err := os.MkdirTemp(dir, "verify-")
+	if err != nil {
+		return FileHashes{}, err
+	}
+	defer os.RemoveAll(buildDir)
+	path := filepath.Join(buildDir, "step-0.db")
+	if err := r.Build(ctx, path, 0); err != nil {
+		return FileHashes{}, err
+	}
+	return HashFile(path)
+}
+
+func (r Recipe) writeHashCache(path string, hashes []FileHashes) error {
+	checksum, err := r.cacheChecksum(hashes)
+	if err != nil {
+		return err
+	}
 	var b strings.Builder
 	for k, h := range hashes {
 		fmt.Fprintf(&b, "%d %s %s\n", k, h.Exact, h.Masked)
 	}
+	b.WriteString(cacheChecksumPrefix + checksum + "\n")
 	// Write to a sibling temp file and rename so concurrent readers never see
 	// a partially written cache file.
 	temp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-")
@@ -2522,22 +2868,31 @@ func writeHashCache(path string, hashes []FileHashes) error {
 		os.Remove(temp.Name())
 		return err
 	}
-	return os.Rename(temp.Name(), path)
+	if err := os.Rename(temp.Name(), path); err != nil {
+		os.Remove(temp.Name())
+		return err
+	}
+	return nil
 }
 ```
 
 ### 5.2 Experiment 1.3 — Recipe rebuild, rung R0 (`1.3-recipe-rebuild`)
 
-- **Claim:** A database built by a fixed, seeded workload with explicit settings is reproducible to the exact byte (equality level **E1**), so the recipe `(seed, step count, journal mode)` is a complete saved state with a unique SHA-256 hash after every step *k*. Breaking the determinism rules breaks byte equality in specific, observable ways (analyzed in Section 6).
-- **Capture / Rebuild / Verified at:** Capture is the recipe `(seed=1, steps=30, journal_mode=wal)`. Rebuild runs the recipe into an empty file. Proven equal at **E1** (file SHA-256).
+- **Claim:** A database built by a fixed, seeded workload with explicit settings is reproducible to the exact byte (**E1**), so the recipe `(seed, step count, journal mode)` is a complete saved state with a unique SHA-256 hash after every step *k*. Breaking the determinism rules breaks byte equality in specific, measurable ways (Section 6).
+- **Capture / Rebuild / Verified at:** Capture = recipe `(seed=1, steps=30, journal_mode=wal)`. Rebuild = run the recipe into an empty file. Proven equal at **E1 (bytes)**.
 - **Evidence form:** `EXACT` (all lines except `INFO:` lines).
 - **Platform:** Portable (runs natively on Linux and macOS without `strace`).
+- **Run command:**
+  ```text
+  go run ./ch01-architecture-and-execution-path/experiments/1.3-recipe-rebuild
+  ```
 
 <!-- include: experiments/1.3-recipe-rebuild/main.go -->
 ```go
 // Experiment 1.3 proves Rebuild Ladder rung R0: running the seeded recipe
 // twice in different directories under different names produces byte-identical
-// database files at every step. It then tests six sources of variation to show
+// database files at every step. It then tests seven sources of variation (plus
+// secure_delete=FAST vs ON and WAL commits that never touch page 1) to show
 // which determinism rules are required and where SQLite's behavior differs
 // between WAL and rollback modes.
 //
@@ -2594,6 +2949,9 @@ func (d fileDiff) String() string {
 	if d.Equal {
 		return "identical"
 	}
+	if len(d.DifferingPages) == 0 {
+		return fmt.Sprintf("differ: sizes %d and %d bytes", d.SizeA, d.SizeB)
+	}
 	text := fmt.Sprintf("differ: first differing page %d, %d page(s) differ %v", d.DifferingPages[0], len(d.DifferingPages), limitPages(d.DifferingPages))
 	if d.SizeA != d.SizeB {
 		text += fmt.Sprintf(", sizes %d and %d pages", d.SizeA/pageSize, d.SizeB/pageSize)
@@ -2622,23 +2980,31 @@ func compareFiles(a, b string) fileDiff {
 	if err != nil {
 		fatal("read", err)
 	}
+	return diffImages(dataA, dataB)
+}
+
+func pageSlice(data []byte, p int) []byte {
+	start := p * pageSize
+	if start >= len(data) {
+		return nil
+	}
+	return data[start:min((p+1)*pageSize, len(data))]
+}
+
+// diffImages compares two in-memory database images page by page (rounding up
+// so partial trailing pages are compared) and records differing byte offsets
+// inside page 1.
+func diffImages(dataA, dataB []byte) fileDiff {
 	d := fileDiff{Equal: bytes.Equal(dataA, dataB), SizeA: len(dataA), SizeB: len(dataB)}
-	pages := max(len(dataA), len(dataB)) / pageSize
+	pages := (max(len(dataA), len(dataB)) + pageSize - 1) / pageSize
 	for p := range pages {
-		start, end := p*pageSize, (p+1)*pageSize
-		var pageA, pageB []byte
-		if end <= len(dataA) {
-			pageA = dataA[start:end]
-		}
-		if end <= len(dataB) {
-			pageB = dataB[start:end]
-		}
+		pageA, pageB := pageSlice(dataA, p), pageSlice(dataB, p)
 		if bytes.Equal(pageA, pageB) {
 			continue
 		}
 		d.DifferingPages = append(d.DifferingPages, p+1)
-		if p == 0 && pageA != nil && pageB != nil {
-			for i := range pageSize {
+		if p == 0 {
+			for i := range min(len(pageA), len(pageB)) {
 				if pageA[i] != pageB[i] {
 					d.Page1Bytes = append(d.Page1Bytes, i)
 				}
@@ -2655,7 +3021,13 @@ func onlyChangeCounter(d fileDiff) bool {
 	if d.Equal || d.SizeA != d.SizeB || !slices.Equal(d.DifferingPages, []int{1}) {
 		return false
 	}
-	for _, offset := range d.Page1Bytes {
+	return onlyCounterBytes(d.Page1Bytes)
+}
+
+// onlyCounterBytes reports whether every page-1 byte offset in offsets falls
+// inside recipe.ChangeCounterRanges (bytes 24..27 or 92..95).
+func onlyCounterBytes(offsets []int) bool {
+	for _, offset := range offsets {
 		inCounter := false
 		for _, span := range recipe.ChangeCounterRanges {
 			if offset >= span[0] && offset < span[1] {
@@ -2725,7 +3097,9 @@ func applyStatementsInSession(ctx context.Context, r recipe.Recipe, path string,
 	if err := tx.Commit(); err != nil {
 		fatal("commit", err)
 	}
-	conn.Close()
+	if err := conn.Close(); err != nil {
+		fatal("conn close", err)
+	}
 	if err := db.Close(); err != nil {
 		fatal("close", err)
 	}
@@ -2798,14 +3172,13 @@ func waitForNextSecond() {
 // secure_delete=OFF.
 var mergedWithNext = []int{2, 4}
 
-func batchVariant(ctx context.Context, r recipe.Recipe, dir string, secureDelete bool) (fileDiff, unusedReport) {
+func batchVariant(ctx context.Context, r recipe.Recipe, dir, secureDelete string) (fileDiff, unusedReport) {
 	plan, err := r.WithSteps(variantBase).Plan()
 	if err != nil {
 		fatal("plan", err)
 	}
 	options := r.SQLiteOptions()
-	options.Conn.SecureDelete = secureDelete
-	label := fmt.Sprintf("%s-secure-delete-%v", r.JournalMode, secureDelete)
+	label := fmt.Sprintf("%s-secure-delete-%s", r.JournalMode, strings.ToLower(secureDelete))
 	a := filepath.Join(dir, "batches-"+label+"-one-per-step.db")
 	b := filepath.Join(dir, "batches-"+label+"-merged.db")
 	for _, path := range []string{a, b} {
@@ -2816,9 +3189,16 @@ func batchVariant(ctx context.Context, r recipe.Recipe, dir string, secureDelete
 		if err != nil {
 			fatal("open", err)
 		}
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			fatal("conn", err)
+		}
+		if _, err := conn.ExecContext(ctx, "PRAGMA secure_delete="+secureDelete); err != nil {
+			fatal("secure_delete", err)
+		}
 		merge := path == b
 		for i := 0; i < len(plan); i++ {
-			tx, err := db.BeginTx(ctx, nil)
+			tx, err := conn.BeginTx(ctx, nil)
 			if err != nil {
 				fatal("begin", err)
 			}
@@ -2835,8 +3215,14 @@ func batchVariant(ctx context.Context, r recipe.Recipe, dir string, secureDelete
 				fatal("commit", err)
 			}
 		}
+		if err := conn.Close(); err != nil {
+			fatal("conn close", err)
+		}
 		if err := db.Close(); err != nil {
 			fatal("close", err)
+		}
+		if err := recipe.CheckAtRest(path); err != nil {
+			fatal("at rest", err)
 		}
 	}
 	fmt.Printf("INFO: batches %s sha256 one-per-step %s, merged %s\n", label, hashOf(a).Exact, hashOf(b).Exact)
@@ -2852,63 +3238,131 @@ func be32(data []byte, offset int) int {
 	return int(data[offset])<<24 | int(data[offset+1])<<16 | int(data[offset+2])<<8 | int(data[offset+3])
 }
 
-// freelistPages walks SQLite's freelist trunk chain starting from header
-// offset 32 (4-byte big-endian first trunk page number). Each trunk holds the
-// next trunk pointer at offset 0, the leaf count at offset 4, and 4-byte leaf
-// page numbers starting at offset 8.
-func freelistPages(data []byte) []int {
-	var free []int
-	for trunk := be32(data, 32); trunk != 0 && len(free) <= len(data)/pageSize; trunk = be32(data, (trunk-1)*pageSize) {
-		free = append(free, trunk)
-		base := (trunk - 1) * pageSize
-		for i := range be32(data, base+4) {
-			free = append(free, be32(data, base+8+4*i))
-		}
-	}
-	return free
+type freelist struct {
+	trunkLeafCounts map[int]int
+	leaves          map[int]bool
 }
 
-// unusedBytes marks every byte offset on page that belongs to no live cell:
-// all bytes of a freelist page, or on a B-tree page the unallocated gap
-// between the cell-pointer array and the cell content area plus the bodies of
-// all freeblocks.
-func unusedBytes(data []byte, page int, free []int) []bool {
+// readFreelist validates the database header's page size and freelist count,
+// walks SQLite's freelist trunk chain from header offset 32, and separates
+// trunk pages (with their leaf counts) from leaf pages while rejecting cycles,
+// out-of-range page numbers, and count mismatches.
+func readFreelist(data []byte) (freelist, error) {
+	fl := freelist{trunkLeafCounts: map[int]int{}, leaves: map[int]bool{}}
+	if len(data) < pageSize || len(data)%pageSize != 0 {
+		return fl, fmt.Errorf("file size %d is not a whole number of %d-byte pages", len(data), pageSize)
+	}
+	if headerPageSize := be16(data, 16); headerPageSize != pageSize {
+		return fl, fmt.Errorf("header page size %d, want %d", headerPageSize, pageSize)
+	}
+	pageCount := len(data) / pageSize
+	maxLeaves := (pageSize - 8) / 4
+	for trunk := be32(data, 32); trunk != 0; {
+		if trunk < 1 || trunk > pageCount {
+			return fl, fmt.Errorf("freelist trunk page %d outside 1..%d", trunk, pageCount)
+		}
+		if _, seen := fl.trunkLeafCounts[trunk]; seen || fl.leaves[trunk] {
+			return fl, fmt.Errorf("freelist page %d listed twice", trunk)
+		}
+		base := (trunk - 1) * pageSize
+		leafCount := be32(data, base+4)
+		if leafCount > maxLeaves {
+			return fl, fmt.Errorf("freelist trunk page %d claims %d leaves, at most %d fit", trunk, leafCount, maxLeaves)
+		}
+		fl.trunkLeafCounts[trunk] = leafCount
+		for i := range leafCount {
+			leaf := be32(data, base+8+4*i)
+			if leaf < 1 || leaf > pageCount {
+				return fl, fmt.Errorf("freelist leaf page %d outside 1..%d", leaf, pageCount)
+			}
+			if _, seen := fl.trunkLeafCounts[leaf]; seen || fl.leaves[leaf] {
+				return fl, fmt.Errorf("freelist page %d listed twice", leaf)
+			}
+			fl.leaves[leaf] = true
+		}
+		trunk = be32(data, base)
+	}
+	if total := be32(data, 36); total != len(fl.trunkLeafCounts)+len(fl.leaves) {
+		return fl, fmt.Errorf("header counts %d freelist pages, the chain holds %d", total, len(fl.trunkLeafCounts)+len(fl.leaves))
+	}
+	return fl, nil
+}
+
+func (fl freelist) contains(page int) bool {
+	_, trunk := fl.trunkLeafCounts[page]
+	return trunk || fl.leaves[page]
+}
+
+func isBtreePageType(t byte) bool {
+	return t == 0x02 || t == 0x05 || t == 0x0a || t == 0x0d
+}
+
+// unusedBytes marks every byte offset on page that holds no live data or
+// structural metadata: all bytes on a freelist leaf, bytes 8+4*leafCount..end
+// on a freelist trunk, or on a B-tree page (type 0x02/0x05/0x0a/0x0d) the
+// unallocated gap between the cell-pointer array and the cell content area plus
+// the bodies (after the 4-byte header) of every freeblock. Non-B-tree pages
+// (such as overflow pages) have no bytes marked unused.
+func unusedBytes(data []byte, page int, fl freelist) ([]bool, string, error) {
 	unused := make([]bool, pageSize)
-	if slices.Contains(free, page) {
+	if fl.leaves[page] {
 		for i := range unused {
 			unused[i] = true
 		}
-		return unused
+		return unused, "freelist leaf page", nil
+	}
+	if leafCount, ok := fl.trunkLeafCounts[page]; ok {
+		for i := 8 + 4*leafCount; i < pageSize; i++ {
+			unused[i] = true
+		}
+		return unused, "freelist trunk page, bytes after the leaf list", nil
 	}
 	content := data[(page-1)*pageSize : page*pageSize]
 	header := 0
 	if page == 1 {
 		header = 100
 	}
+	if !isBtreePageType(content[header]) {
+		return unused, fmt.Sprintf("not a b-tree or freelist page (byte %d is 0x%02x)", header, content[header]), nil
+	}
 	headerSize := 8
 	if content[header] == 0x02 || content[header] == 0x05 {
 		headerSize = 12
 	}
-	cells := be16(content, header+3)
+	cellPointersEnd := header + headerSize + 2*be16(content, header+3)
 	contentStart := be16(content, header+5)
 	if contentStart == 0 {
 		contentStart = 65536
 	}
-	for i := header + headerSize + 2*cells; i < contentStart && i < pageSize; i++ {
+	contentStart = min(contentStart, pageSize)
+	if cellPointersEnd > contentStart {
+		return nil, "", fmt.Errorf("page %d: cell pointers end at %d, after the content area starts at %d", page, cellPointersEnd, contentStart)
+	}
+	for i := cellPointersEnd; i < contentStart; i++ {
 		unused[i] = true
 	}
-	for block := be16(content, header+1); block != 0 && block+4 <= pageSize; block = be16(content, block) {
+	previousEnd := contentStart
+	for block := be16(content, header+1); block != 0; block = be16(content, block) {
+		if block < previousEnd || block+4 > pageSize {
+			return nil, "", fmt.Errorf("page %d: freeblock at %d is out of order or outside the content area", page, block)
+		}
 		size := be16(content, block+2)
-		for i := block + 4; i < block+size && i < pageSize; i++ {
+		if size < 4 || block+size > pageSize {
+			return nil, "", fmt.Errorf("page %d: freeblock at %d has size %d", page, block, size)
+		}
+		for i := block + 4; i < block+size; i++ {
 			unused[i] = true
 		}
+		previousEnd = block + size
 	}
-	return unused
+	return unused, "b-tree page, unallocated space and freeblocks", nil
 }
 
 type unusedReport struct {
-	OnlyUnused bool
-	Kinds      []string
+	OnlyUnused    bool
+	Kinds         []string
+	LeafPages     []int
+	FreelistPages []int
 }
 
 func classifyDifferences(a, b string, d fileDiff) unusedReport {
@@ -2920,27 +3374,55 @@ func classifyDifferences(a, b string, d fileDiff) unusedReport {
 	if err != nil {
 		fatal("read", err)
 	}
-	report := unusedReport{OnlyUnused: len(dataA) == len(dataB)}
-	if !report.OnlyUnused {
+	return classifyImages(dataA, dataB, d)
+}
+
+// classifyImages checks every differing page in d against both images'
+// freelist and B-tree layouts to determine whether all differing bytes lie in
+// unused space. Any format error sets OnlyUnused to false.
+func classifyImages(dataA, dataB []byte, d fileDiff) unusedReport {
+	report := unusedReport{OnlyUnused: len(dataA) == len(dataB) && len(d.DifferingPages) > 0}
+	if len(dataA) != len(dataB) {
 		return report
 	}
-	freeA, freeB := freelistPages(dataA), freelistPages(dataB)
+	freeA, errA := readFreelist(dataA)
+	freeB, errB := readFreelist(dataB)
+	if errA != nil || errB != nil {
+		report.OnlyUnused = false
+		report.Kinds = append(report.Kinds, fmt.Sprintf("freelist unreadable: %v / %v", errA, errB))
+		return report
+	}
 	for _, page := range d.DifferingPages {
-		unusedA := unusedBytes(dataA, page, freeA)
-		unusedB := unusedBytes(dataB, page, freeB)
+		unusedA, kindA, errA := unusedBytes(dataA, page, freeA)
+		unusedB, kindB, errB := unusedBytes(dataB, page, freeB)
+		if errA != nil || errB != nil {
+			report.OnlyUnused = false
+			report.Kinds = append(report.Kinds, fmt.Sprintf("page %d: unparseable (%v / %v)", page, errA, errB))
+			continue
+		}
 		base := (page - 1) * pageSize
-		count := 0
+		count, inUse := 0, 0
 		for i := range pageSize {
 			if dataA[base+i] != dataB[base+i] {
 				count++
 				if !unusedA[i] || !unusedB[i] {
+					inUse++
 					report.OnlyUnused = false
 				}
 			}
 		}
-		kind := "b-tree page, unallocated space and freeblocks"
-		if slices.Contains(freeA, page) || slices.Contains(freeB, page) {
-			kind = "freelist page"
+		if freeA.leaves[page] && freeB.leaves[page] {
+			report.LeafPages = append(report.LeafPages, page)
+		}
+		if freeA.contains(page) && freeB.contains(page) {
+			report.FreelistPages = append(report.FreelistPages, page)
+		}
+		kind := kindA
+		if kindB != kindA {
+			kind = kindA + " / " + kindB
+		}
+		if inUse > 0 {
+			kind += fmt.Sprintf("; %d of these bytes are outside unused space", inUse)
 		}
 		report.Kinds = append(report.Kinds, fmt.Sprintf("page %d: %d bytes (%s)", page, count, kind))
 	}
@@ -2949,8 +3431,9 @@ func classifyDifferences(a, b string, d fileDiff) unusedReport {
 
 // sessionVariant compares building steps 0..variantBase with one connection
 // session per step against building the exact same steps on one long-lived
-// connection. Under WAL mode only the header change counter differs because
-// dbFileVers is refreshed on page-1 read, not on WAL commit (src/pager.c:3109-3110).
+// connection. Because every recipe step dirties page 1 (PRAGMA user_version),
+// WAL mode differs in the header change counter alone: dbFileVers is refreshed
+// on page-1 read, not on WAL commit (src/pager.c:3109-3110, 3264).
 func sessionVariant(ctx context.Context, r recipe.Recipe, dir string) fileDiff {
 	canonical := filepath.Join(dir, "sessions-"+r.JournalMode+"-one-per-step.db")
 	if err := r.Build(ctx, canonical, variantBase); err != nil {
@@ -3073,19 +3556,25 @@ func main() {
 	check(unorderedSame.Equal, "FINDING: an unordered INSERT ... SELECT run twice on the same build with the same plan gives identical files")
 	check(!unorderedPlan.Equal && orderedPlan.Equal, "an unordered INSERT ... SELECT changes the file when the scan order changes; ORDER BY removes the dependence")
 
-	batchesWAL, _ := batchVariant(ctx, r, dir, true)
+	batchesWAL, _ := batchVariant(ctx, r, dir, "ON")
 	fmt.Printf("4. steps 0-%d on one connection, steps 2+3 and 4+5 each committed as one transaction instead of two:\n", variantBase)
 	fmt.Printf("   WAL mode, recipe settings (secure_delete=ON): %s\n", batchesWAL)
-	batchesWALOff, unusedWALOff := batchVariant(ctx, r, dir, false)
+	batchesWALOff, unusedWALOff := batchVariant(ctx, r, dir, "OFF")
 	fmt.Printf("   WAL mode, secure_delete=OFF: %s\n", batchesWALOff)
 	for _, kind := range unusedWALOff.Kinds {
 		fmt.Printf("     %s\n", kind)
 	}
-	batchesDelete, _ := batchVariant(ctx, deleteRecipe, dir, true)
+	batchesDelete, _ := batchVariant(ctx, deleteRecipe, dir, "ON")
 	fmt.Printf("   rollback mode, secure_delete=ON: %s\n", batchesDelete)
 	check(batchesWAL.Equal, "FINDING: in WAL mode on one connection with secure_delete=ON, different transaction batches give identical files")
 	check(!batchesWALOff.Equal && unusedWALOff.OnlyUnused, "with secure_delete=OFF different batches differ, and only in bytes no cell uses (stale content left in unallocated space, freeblocks or freelist pages)")
 	check(onlyChangeCounter(batchesDelete), "in rollback mode different batches differ, and with secure_delete=ON only in the change counter (it counts commits)")
+	fastVsOn, fastVsOnUnused := secureDeleteFastVariant(ctx, r, dir)
+	fmt.Printf("   WAL mode, one transaction per step, secure_delete=FAST vs secure_delete=ON: %s\n", fastVsOn)
+	for _, kind := range fastVsOnUnused.Kinds {
+		fmt.Printf("     %s\n", kind)
+	}
+	check(!fastVsOn.Equal && fastVsOnUnused.OnlyUnused && slices.Equal(fastVsOnUnused.FreelistPages, fastVsOn.DifferingPages), "secure_delete=FAST is not ON: on the same history FAST leaves old bytes in the unused space of freelist pages that ON zeroes")
 
 	rowidDiff := runTwice(ctx, r, dir, variant{
 		name: "rowid",
@@ -3101,10 +3590,29 @@ func main() {
 	fmt.Println("\n== a source of variation the outline did not list: connection sessions ==")
 	walSessions := sessionVariant(ctx, r, dir)
 	deleteSessions := sessionVariant(ctx, deleteRecipe, dir)
+	walSessionsNoPage1 := sessionsWithoutPage1(ctx, r, dir)
 	fmt.Printf("6. WAL mode, steps 0-%d one connection per step vs one connection for all steps: %s\n", variantBase, walSessions)
 	fmt.Printf("   rollback mode, the same comparison: %s\n", deleteSessions)
 	check(onlyChangeCounter(walSessions), "FINDING: in WAL mode the number of connection sessions changes the file, and only the change counter (bytes 24-27 and 92-95)")
 	check(deleteSessions.Equal, "in rollback mode the number of connection sessions does not change the file")
+	fmt.Printf("   WAL mode, recipe to step %d, then %d commits that never write page 1, one connection per commit vs one connection for all: %s\n", variantBase, page1UntouchedCommits, walSessionsNoPage1)
+	check(walSessionsNoPage1.Equal, "in WAL mode only a commit that writes page 1 writes the change counter: sessions whose commits never touch page 1 leave the file identical")
+
+	fmt.Println("\n== a source of variation the outline did not list: rolled-back work inside a committed transaction ==")
+	walAborted, walAbortedUnused := abortedSavepointVariant(ctx, r, dir)
+	deleteAborted, deleteAbortedUnused := abortedSavepointVariant(ctx, deleteRecipe, dir)
+	fmt.Printf("7. recipe to step %d, then one transaction committing one INSERT; run 2 first inserts %d documents of %d bytes inside a SAVEPOINT and rolls back to it\n", variantBase, abortedDocuments, abortedDocumentBytes)
+	fmt.Printf("   WAL mode, secure_delete=ON: %s\n", walAborted)
+	for _, kind := range walAbortedUnused.Kinds {
+		fmt.Printf("     %s\n", kind)
+	}
+	fmt.Printf("   rollback mode, secure_delete=ON: %s\n", deleteAborted)
+	for _, kind := range deleteAbortedUnused.Kinds {
+		fmt.Printf("     %s\n", kind)
+	}
+	walRest := slices.DeleteFunc(slices.Clone(walAborted.DifferingPages), func(page int) bool { return page == 1 })
+	check(!walAborted.Equal && onlyCounterBytes(walAborted.Page1Bytes) && len(walRest) > 0 && slices.Equal(walRest, walAbortedUnused.LeafPages), "WAL mode: a rolled-back SAVEPOINT changes the committed file even with secure_delete=ON: reused freelist leaf pages keep the rolled-back bytes, and page 1's change counter moves")
+	check(!deleteAborted.Equal && deleteAbortedUnused.OnlyUnused && slices.Equal(deleteAbortedUnused.LeafPages, deleteAborted.DifferingPages), "rollback mode: a rolled-back SAVEPOINT leaves the rolled-back bytes in reused freelist leaf pages (secure_delete=ON does not clear them)")
 
 	fmt.Println()
 	if len(failures) > 0 {
@@ -3112,6 +3620,78 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("RECIPE REBUILD OK")
+}
+
+const touchAccountSQL = "UPDATE accounts SET balance = balance + 1 WHERE id = 1"
+
+// secureDeleteFastVariant compares the one-transaction-per-step WAL build
+// under PRAGMA secure_delete=FAST against secure_delete=ON. FAST zeroes freed
+// cell space inside B-tree pages (BTS_OVERWRITE) but does not zero freed
+// freelist pages (src/btree.c:6864-6874).
+func secureDeleteFastVariant(ctx context.Context, r recipe.Recipe, dir string) (fileDiff, unusedReport) {
+	batchVariant(ctx, r, dir, "FAST")
+	on := filepath.Join(dir, "batches-"+r.JournalMode+"-secure-delete-on-one-per-step.db")
+	fast := filepath.Join(dir, "batches-"+r.JournalMode+"-secure-delete-fast-one-per-step.db")
+	d := compareFiles(on, fast)
+	return d, classifyDifferences(on, fast, d)
+}
+
+// sessionsWithoutPage1 runs three commits that update accounts without
+// dirtying page 1, comparing one connection per commit against one connection
+// for all three. Because pagerWalFrames updates the change counter only when
+// pList->pgno == 1 (src/pager.c:3264), both WAL files remain byte-identical.
+func sessionsWithoutPage1(ctx context.Context, r recipe.Recipe, dir string) fileDiff {
+	perSession := filepath.Join(dir, "page1-untouched-"+r.JournalMode+"-one-per-commit.db")
+	oneSession := filepath.Join(dir, "page1-untouched-"+r.JournalMode+"-one-for-all.db")
+	for _, path := range []string{perSession, oneSession} {
+		buildBase(ctx, r, path)
+	}
+	for range page1UntouchedCommits {
+		applyStatementsInSession(ctx, r, perSession, nil, touchAccountSQL)
+	}
+	db, err := r.Open(ctx, oneSession)
+	if err != nil {
+		fatal("open", err)
+	}
+	for range page1UntouchedCommits {
+		if _, err := db.ExecContext(ctx, touchAccountSQL); err != nil {
+			fatal("update", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		fatal("close", err)
+	}
+	if err := recipe.CheckAtRest(oneSession); err != nil {
+		fatal("at rest", err)
+	}
+	fmt.Printf("INFO: page1-untouched sha256 one-per-commit %s, one-for-all %s\n", hashOf(perSession).Exact, hashOf(oneSession).Exact)
+	return compareFiles(perSession, oneSession)
+}
+
+const (
+	page1UntouchedCommits = 3
+	abortedDocuments      = 10
+	abortedDocumentBytes  = 12000
+	committedEventSQL     = "INSERT INTO events(id, account_id, kind, amount, note) VALUES(900003, 1, 'fee', 42, 'committed')"
+)
+
+// abortedSavepointVariant compares a transaction that commits one INSERT
+// against one that first inserts and rolls back large documents inside a
+// SAVEPOINT. Reused freelist leaves are fetched with PAGER_GET_NOCONTENT
+// (src/btree.c:6740), so ROLLBACK TO cannot restore bytes that were never
+// journaled even under secure_delete=ON.
+func abortedSavepointVariant(ctx context.Context, r recipe.Recipe, dir string) (fileDiff, unusedReport) {
+	clean := filepath.Join(dir, "savepoint-"+r.JournalMode+"-never-run.db")
+	aborted := filepath.Join(dir, "savepoint-"+r.JournalMode+"-rolled-back.db")
+	for _, path := range []string{clean, aborted} {
+		buildBase(ctx, r, path)
+	}
+	applyStatementsInSession(ctx, r, clean, nil, committedEventSQL)
+	insertDocuments := fmt.Sprintf("WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < %d) INSERT INTO documents(id, account_id, title, body) SELECT 900000 + i, 1, 'aborted', unhex(replace(hex(zeroblob(%d)), '00', 'AB')) FROM n", abortedDocuments-1, abortedDocumentBytes)
+	applyStatementsInSession(ctx, r, aborted, nil, "SAVEPOINT aborted", insertDocuments, "ROLLBACK TO aborted", "RELEASE aborted", committedEventSQL)
+	fmt.Printf("INFO: savepoint %s sha256 never-run %s, rolled-back %s\n", r.JournalMode, hashOf(clean).Exact, hashOf(aborted).Exact)
+	d := compareFiles(clean, aborted)
+	return d, classifyDifferences(clean, aborted, d)
 }
 
 func runTwiceWithPlanChange(ctx context.Context, r recipe.Recipe, dir, name string, statements ...string) fileDiff {
@@ -3140,13 +3720,7 @@ func displayPath(path string) string {
 }
 ```
 
-Run from the repository root:
-
-```text
-go run ./ch01-architecture-and-execution-path/experiments/1.3-recipe-rebuild
-```
-
-Captured evidence:
+Captured output (`evidence/1.3-recipe-rebuild.txt`):
 
 <!-- include: evidence/1.3-recipe-rebuild.txt -->
 ```text
@@ -3186,42 +3760,42 @@ recipe: seed=1 steps=30 journal_mode=wal (index created at step 5, settings: pag
   step 30: schema=0 inserts=67 updates=4 deletes=9 indexes=0
 
 == R0: rebuild the recipe twice ==
-INFO: one build of 30 steps took 896ms
-run 1 (run-1/recipe.db): 270 pages, sha256 365695c2ef73fee65082304bd6a6389161e329c276b0ea0e7001d9850cb4fc89
-run 2 (run-2/elsewhere/another-name.db): 270 pages, sha256 365695c2ef73fee65082304bd6a6389161e329c276b0ea0e7001d9850cb4fc89
+INFO: one build of 30 steps took 792ms
+run 1 (run-1/recipe.db): 270 pages, sha256 24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74
+run 2 (run-2/elsewhere/another-name.db): 270 pages, sha256 24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74
 check ok: two builds of the recipe in different directories under different names are byte-identical
 per-step state hashes (sha256 of the closed file after step k):
-  step  0 bc7ece7b7dd702aa4c6bd7f8b6bd8fece69aaa792b098db34c36616f071a70e0
-  step  1 738802a39252d85c8c8c85aa7d61d8cc2a9fc641f3b31bbd8befe4a5dcc97133
-  step  2 8a35d3f789539eb161a525843af00301ff54eaece89be86f99e14b1610cc44a5
-  step  3 0261c8e50c8b065876d6c97e8dba350e01c8268b1ed55bed76991667fbf6177c
-  step  4 8d1353504ba05101e8f40d0e4a157d9fa1dbf7746cdc02e423659f78ff557e2a
-  step  5 9a783bf363d34706d254d16aa3ab6526cde728e50693601ad01551c191cca168
-  step  6 f8d0c5fd4aa4039f50ad5c4e9bac2e579a49069c3dfccb32fefe7da374252507
-  step  7 729d61d9603306fc8e0108f342b07c8da014f85cf0f2e20d5f78d97e97f8f07f
-  step  8 01a3d0b8d408ba9a5e9a5a42e3196ae816442ec83b53dd9e704d6c560b2e23ba
-  step  9 1bcfad324da7c5f65f6585da2efb46a8bfd80527428478bcb321f646060c8f06
-  step 10 2045356ca72a44ed84861aac5205e344daf695db1092cc2ce18c4afd95ca736c
-  step 11 119b08501ea254ff6f19a5eff745e00d31662192543b57773a08784f9c86a47a
-  step 12 6a09c5ce77b7fbdd5bd305d2b577bbdcec31cdde2d9b12c23edb47242dc62e76
-  step 13 1442c94dc8aa874a5fbe924c81db51cfc957097948d7f2654d55ee49ec8537b1
-  step 14 2b1045503ce63b18994ee31adb118d1f44872b31b33fcdf8ab804822506de3e3
-  step 15 1a618335ef3e7f3b60c5bb738ee95ffdaebfaba8cb733538764e2a1b8cf7cb4d
-  step 16 2bf0908354980fc0794c31be6de39234e26433123b7812bd859a463e959e0379
-  step 17 4b6e4713a4093c08fac2efcbc848b8939b3d26e6e1425e76fe917c45952b52fc
-  step 18 a5070333e85a4651119d9f5c010c6aa0fd4a552e7bcbd780a782a3d797b26440
-  step 19 53a2dd7ea67b3bb5fc6d596c7f5d6d539405da617a6803406fb494470a1d5e24
-  step 20 a69b18de710737c329d8dc0e250234bd5da4e89e180bef5c2fb8539b532e157a
-  step 21 b2bd20e0f5701abc16ea89c0dfde8017989cff70acf2e727e1fefe65acdb4560
-  step 22 fd03b1029f252a4f9d385298d8c276b4180d92bfc8ce5487c65fcefe26f84c76
-  step 23 aa0838c676799453d29945ee5dc25803f3273332439892b714f7f3d26d0190dd
-  step 24 a84e66e865ca93951624e5fc1da75e8c9611b147c2d3fcb4825388e1dc6320ec
-  step 25 de90f5e9d7dbde1d14a3c5c7646325e8c1b0c30399cbda8d340cd4e0b9013ed8
-  step 26 d448dbc804b6b2ef9f38523050fbecc5938c8228364bf8ee0bf48dea44bb2f6d
-  step 27 58bc2a0b98f48f9b05afc74238c6b1489f9395c38fd5da142360beb035287a75
-  step 28 6c15e4d39f7014155d63ac3d3b8cdbf3718007417df51c8c91a2d3dbe9669fcc
-  step 29 fc8d112861eeccab0621a85970b1c7fd8697fac775545eff6b124f67ff0e81bd
-  step 30 365695c2ef73fee65082304bd6a6389161e329c276b0ea0e7001d9850cb4fc89
+  step  0 7470585af706eb3de499f126d74bdc98396e1e9853ee11643e2e85f61ef0cdb9
+  step  1 6d8cfc77d5f514b26155ee7c31633198a55633b68b761ba297e4031b7e318924
+  step  2 69490a2dc9c1980f70afed4f5830799677937b011bde64c3110f823273389a06
+  step  3 329eb15614fee4358f812e8d6a6de68d94290293ca299a1dfaf330b376075743
+  step  4 e6aa5f4e37fde0bec12117bbf43aaaab9ae3c2a4658ac08f62232ea53392bc3b
+  step  5 4078a0bbc3758ed2c3dfb9940680976d78095f60bcb3ecf02337daddb400dfd0
+  step  6 2d7996f5c596c99e89eb92668f4f21d7ed16c02c070ea5a908e96ead99d414ff
+  step  7 7d8ae978254856c015f1013bf6d30327b4794698e16173acf34ce855580817ae
+  step  8 f27921ff12ecd673f0324f01e5a137662b3ac90468c82a2d67c01c3937c60029
+  step  9 ca22a3f016ee31e4b931389762f5f81853955dbf7dc474a7cf69299242706100
+  step 10 044c77909ad64db80354ff810692fab25d4a4d3762e37c6b224db38d92694373
+  step 11 6ced94850b7f17c89188ed4204039ea37f7c068cd856599e048ee9125f1cf55a
+  step 12 649990133c61986974c4381e8ac21e47901c900ed2092fc2f6a1f4af2ce94d67
+  step 13 cf469938e5222774d468c99a3077c4fb5da52b52fadf2209e8f8de53c4529a35
+  step 14 e7f84f8b8cd28ab54ec7070180962525131963e7405bf78849280e889319fc60
+  step 15 52519800be453b8441a0e85177720f26696494d2bfdb8a95a7751bba36113711
+  step 16 a672af8472ba30db9d772a74d770e51308eac909f7bbddec05547df6def83b85
+  step 17 4a1f971701e2b5cd8f8d1728f3455ddf2740bf60d235ee34131706f5ad5f6f37
+  step 18 055a4f7a088f1c7644a6cf6d01b3d5be28dadd7d1db2d3868ee2dd37ddf10f82
+  step 19 e57cb4d4d450456a89a051eada1dded6452f5f8c0edd967dced5aec486d58805
+  step 20 e769f5c3b1663de2ea40fdfa8d787b2ef9538e2db2797c3d6c23097616d90945
+  step 21 a965f7823f589a7b849f556324e456d8a6f31bfed438e577ea277108ef171080
+  step 22 3b125736931aa27cbf8da8b2384070b6a2d36ae5b953f631b83275fc6210e4fc
+  step 23 92a22043ecd9caafbfbf70d54b0d14c672d579aa0dfe14b8c54d4e6057a1340f
+  step 24 46cb974cc3fe3c9eaa09a41a846beba23663cb067429062496e6c38c8c016d3a
+  step 25 d0996ac06958dd0c8134783b28ebe6ec2ffa862929ca06c1f79a8f0b654fe396
+  step 26 13bd55ed7dc6a4353a8a57da2d8001eae83335e9d8f3990a7d349fccab93d80e
+  step 27 f1eba6ade98188aab20f91e2b2b493703ca1b752b1ef79b543d744bd86b6f8c6
+  step 28 c7df2bec238b874e0c8b75a63268fcced2362eff11dd7ab579e556282a6fa61d
+  step 29 d1c0ab40c89015537992199e56aaa7ebe35049b65a21ad00809a52c0be003a0b
+  step 30 24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74
 check ok: the per-step hash lists of the two runs are identical (31 states)
 check ok: every step leaves a different file, so a hash names exactly one step
 check ok: recipe.StepHashes (the cached list later chapters use) equals the list just built
@@ -3232,101 +3806,164 @@ check ok: the rollback-mode recipe also rebuilds byte for byte at every step
 WAL build vs rollback build of the same recipe: differ: first differing page 1, 1 page(s) differ [1], page 1 bytes [18 19 27 95]
 
 == broken variants: recipe to step 6, then one extra transaction, each run twice into fresh files ==
-INFO: random sha256 run 1 52403224e037bb2ee8c4cb4847aebff0862e823334368bcd1dc4ab0bffd1cefb, run 2 5258627236df3bcf017dca0bc7c433f072e79e2529ecd29606d3768f9d447bd3
+INFO: random sha256 run 1 3f43fbf252fe772596ad60d293d7ea996ab736c9566952af8d835b292ce86909, run 2 b5e3b209fa48e8849d51c6b5196c317aa2d150cceb2c4e0e14bcdebbfe8bc9f6
 1. SQL random() in a value: differ: first differing page 59, 1 page(s) differ [59]
 check ok: SQL random() makes two runs differ
-INFO: timestamp sha256 run 1 16dc578cec8994c6d57a0372e66fd8b26b9509363b19ccd4452c26184065fedf, run 2 16dc578cec8994c6d57a0372e66fd8b26b9509363b19ccd4452c26184065fedf, run 3 39a811f446fad2953f8a44be0976cd91f87717d66d37fc3f4e5d3e36b11c2a0b
+INFO: timestamp sha256 run 1 72f9b8b17796cb3161c8c663eabf852d431397175b38d25c59c32148c5a6542d, run 2 72f9b8b17796cb3161c8c663eabf852d431397175b38d25c59c32148c5a6542d, run 3 cf27091b103d740d1e49d2ec86b28ec4bedee04aecf44d6837da9ac35ec932e4
 2. current_timestamp in a value, two runs inside one wall-clock second: identical
    current_timestamp in a value, third run one second later: differ: first differing page 59, 1 page(s) differ [59]
 check ok: current_timestamp makes runs differ once the wall clock's second changes (its resolution is one second, so two fast runs can still match)
-INFO: unordered sha256 run 1 0b1cc51179d692e35f77084f33e6392f68af459677f03f61b7aaeda2e0d96273, run 2 0b1cc51179d692e35f77084f33e6392f68af459677f03f61b7aaeda2e0d96273
+INFO: unordered sha256 run 1 073f75d26ea8b7496e87e0a0629b15fa1f8227a2264ed1dfd83857cbd2014934, run 2 073f75d26ea8b7496e87e0a0629b15fa1f8227a2264ed1dfd83857cbd2014934
 3. INSERT ... SELECT without ORDER BY (rowids from scan order), same plan twice: identical
    the same statement, run 2 with a different scan order (PRAGMA reverse_unordered_selects=ON): differ: first differing page 29, 1 page(s) differ [29]
    with ORDER BY id, run 2 with reverse_unordered_selects=ON: identical
 check ok: FINDING: an unordered INSERT ... SELECT run twice on the same build with the same plan gives identical files
 check ok: an unordered INSERT ... SELECT changes the file when the scan order changes; ORDER BY removes the dependence
-INFO: batches wal-secure-delete-true sha256 one-per-step 50b1b004498b38967ea38d65657cb7fd39a206735ee24ed80189d73280e2d64e, merged 50b1b004498b38967ea38d65657cb7fd39a206735ee24ed80189d73280e2d64e
+INFO: batches wal-secure-delete-on sha256 one-per-step 7f0afb01e63c55dd8aee74d9decfb6ac1ee14fc9329cc2b9aa79dbd2853e8841, merged 7f0afb01e63c55dd8aee74d9decfb6ac1ee14fc9329cc2b9aa79dbd2853e8841
 4. steps 0-6 on one connection, steps 2+3 and 4+5 each committed as one transaction instead of two:
    WAL mode, recipe settings (secure_delete=ON): identical
-INFO: batches wal-secure-delete-false sha256 one-per-step d54533c2ebd389e9ae53009cf3fa8a0f60fbabf3081379d4dd1adf5875b8ef4b, merged e358971c4037b61c6bc8813ca8cd14334670892b821e34776f12b9230e6b279c
+INFO: batches wal-secure-delete-off sha256 one-per-step 66275210a293663b2aa81d5aa0f7e57a92fefdb5fc0b53063a64899807fafe24, merged cd4078b5d267a2388bbb4c3da65d844f863955c3af3ea35ebad5ad516cc9d375
    WAL mode, secure_delete=OFF: differ: first differing page 24, 2 page(s) differ [24 28]
      page 24: 357 bytes (b-tree page, unallocated space and freeblocks)
      page 28: 1207 bytes (b-tree page, unallocated space and freeblocks)
-INFO: batches delete-secure-delete-true sha256 one-per-step 575d9182d7fb04693ee2c9b68711b568851d3ebd3617bcd50cb443c8582b0aa8, merged f5f792baf06711182a7cc105ef079f2b1328b0c968bec0cb5df9b475674e0d95
+INFO: batches delete-secure-delete-on sha256 one-per-step 575d9182d7fb04693ee2c9b68711b568851d3ebd3617bcd50cb443c8582b0aa8, merged f5f792baf06711182a7cc105ef079f2b1328b0c968bec0cb5df9b475674e0d95
    rollback mode, secure_delete=ON: differ: first differing page 1, 1 page(s) differ [1], page 1 bytes [27 95]
 check ok: FINDING: in WAL mode on one connection with secure_delete=ON, different transaction batches give identical files
 check ok: with secure_delete=OFF different batches differ, and only in bytes no cell uses (stale content left in unallocated space, freeblocks or freelist pages)
 check ok: in rollback mode different batches differ, and with secure_delete=ON only in the change counter (it counts commits)
-INFO: rowid sha256 run 1 0cbbd58632d00c62d8f4dbcb58c243b130f69be8a667af9d333fb0891aea0d58, run 2 a17ee7bfdd0e18e254e08bfe7b6dd400a076f0cbfecba51be3c26395591f8b8b
+INFO: batches wal-secure-delete-fast sha256 one-per-step c70c03e0801ba6505e410bed031c6c20a7d6a155275102961d58295191c634b0, merged c70c03e0801ba6505e410bed031c6c20a7d6a155275102961d58295191c634b0
+   WAL mode, one transaction per step, secure_delete=FAST vs secure_delete=ON: differ: first differing page 29, 3 page(s) differ [29 36 37]
+     page 29: 4079 bytes (freelist leaf page)
+     page 36: 4067 bytes (freelist trunk page, bytes after the leaf list)
+     page 37: 4078 bytes (freelist leaf page)
+check ok: secure_delete=FAST is not ON: on the same history FAST leaves old bytes in the unused space of freelist pages that ON zeroes
+INFO: rowid sha256 run 1 aeada78bf8108d06fe68930a74da54cbb701bb2f10068769c74798712c55b0b0, run 2 0d3552f984f93139b216b4ed3a44c0330f595e21195ec1ff95193e697afdb346
 5. an insert without an id after rowid 9223372036854775807 (SQLite picks a random unused rowid): differ: first differing page 29, 1 page(s) differ [29]
 check ok: rowid assignment past the maximum rowid makes two runs differ
 
 == a source of variation the outline did not list: connection sessions ==
+INFO: page1-untouched sha256 one-per-commit 3be0cc6f304da7158723b63e0f17bdc2e91837e0d39221f7224fdef91af275a2, one-for-all 3be0cc6f304da7158723b63e0f17bdc2e91837e0d39221f7224fdef91af275a2
 6. WAL mode, steps 0-6 one connection per step vs one connection for all steps: differ: first differing page 1, 1 page(s) differ [1], page 1 bytes [27 95]
    rollback mode, the same comparison: identical
 check ok: FINDING: in WAL mode the number of connection sessions changes the file, and only the change counter (bytes 24-27 and 92-95)
 check ok: in rollback mode the number of connection sessions does not change the file
+   WAL mode, recipe to step 6, then 3 commits that never write page 1, one connection per commit vs one connection for all: identical
+check ok: in WAL mode only a commit that writes page 1 writes the change counter: sessions whose commits never touch page 1 leave the file identical
+
+== a source of variation the outline did not list: rolled-back work inside a committed transaction ==
+INFO: savepoint wal sha256 never-run f4d051654dbbff5e532b65f049385252dc4ff188f8a2aab50166ce0ed2ce2ba0, rolled-back 2e97dc78909aca485fce61adcef1af5cc57a6c19543e4148e07ff4e1c7da3b45
+INFO: savepoint delete sha256 never-run 0e6c5435b1d6ff1baed4562465ad0525b1e173713d0ab0a269eb7fe413ce9d86, rolled-back bf30bffe6771b77812d06882c34b1804bed0730f8aaad99227533bb693999ddf
+7. recipe to step 6, then one transaction committing one INSERT; run 2 first inserts 10 documents of 12000 bytes inside a SAVEPOINT and rolls back to it
+   WAL mode, secure_delete=ON: differ: first differing page 1, 3 page(s) differ [1 29 37], page 1 bytes [27 95]
+     page 1: 2 bytes (b-tree page, unallocated space and freeblocks; 2 of these bytes are outside unused space)
+     page 29: 4092 bytes (freelist leaf page)
+     page 37: 4093 bytes (freelist leaf page)
+   rollback mode, secure_delete=ON: differ: first differing page 29, 2 page(s) differ [29 37]
+     page 29: 4092 bytes (freelist leaf page)
+     page 37: 4093 bytes (freelist leaf page)
+check ok: WAL mode: a rolled-back SAVEPOINT changes the committed file even with secure_delete=ON: reused freelist leaf pages keep the rolled-back bytes, and page 1's change counter moves
+check ok: rollback mode: a rolled-back SAVEPOINT leaves the rolled-back bytes in reused freelist leaf pages (secure_delete=ON does not clear them)
 
 RECIPE REBUILD OK
 ```
 
-#### Reading the R0 evidence (lines 1–80)
+**Reading the R0 evidence (lines 1–80):**
 
-- **Lines 3–34 (recipe plan).** Prints the recipe's persistent file settings and per-connection settings, followed by the 31 step summaries (step 0 with 3 `CREATE TABLE` statements; steps 1–30 with inserts, updates, periodic deletes, and the single `CREATE INDEX` at step 5).
-- **Lines 36–40 (two independent builds).** Building the 30-step WAL recipe into `run-1/recipe.db` and `run-2/elsewhere/another-name.db` takes under a second (`896ms` on Linux here; `INFO:` line) and yields 270 pages (1,105,920 bytes) with identical SHA-256 `365695c2ef73fee65082304bd6a6389161e329c276b0ea0e7001d9850cb4fc89`. Directory path and file name do not enter the database bytes.
-- **Lines 41–77 (per-step hashes and lookup).** Every one of the 31 step states (steps 0–30) matches identically between run 1 and run 2, all 31 hashes are distinct, and `recipe.StepHashes` matches the fresh build. Building a separate file to step 12 and passing it to `recipe.MatchStep` returns `step 12 (exact bytes)`.
-- **Lines 78–80 (WAL vs rollback).** The same recipe in rollback mode (`journal_mode=delete`) also rebuilds byte for byte at every step (`0b5b4111fb9946325ad7ffa859b68b1394b04f824a274b0d770697bd16b71d57`). Comparing the closed WAL file against the closed rollback file shows only 4 differing bytes in the entire 1.1 MiB database, all on page 1: bytes `18` and `19` (file format write/read versions: `2` for WAL vs `1` for rollback) and bytes `27` and `95` (the low byte of the 4-byte file change counter and version-valid-for field).
+- **Lines 3–34 (recipe plan).** Prints the persistent file settings, per-connection settings, and all 31 step summaries (step 0 with 3 `CREATE TABLE` statements; steps 1–30 with inserts, updates, periodic deletes, and the single `CREATE INDEX` at step 5).
+- **Lines 36–40 (two independent builds).** Building the 30-step WAL recipe into `run-1/recipe.db` and `run-2/elsewhere/another-name.db` takes under a second (`792ms`, `INFO:` line) and produces `270` pages (`1,105,920` bytes) with identical SHA-256 `24aa158fdf713808062d18b3c753ebe58c7de8edeceffbe90153828f817e5b74` (step 0: `7470585af706eb3de499f126d74bdc98396e1e9853ee11643e2e85f61ef0cdb9`). Directory path and file name do not enter the database bytes.
+- **Lines 41–77 (per-step hashes and lookup).** All 31 per-step hashes match identically between run 1 and run 2, all 31 are distinct, and `recipe.StepHashes` matches the fresh build. A separate database built to step 12 is identified by `recipe.MatchStep` as `step 12 (exact bytes)`.
+- **Lines 78–80 (WAL vs rollback).** The same recipe in rollback mode (`journal_mode=delete`) also rebuilds byte for byte at every step (`0b5b4111fb9946325ad7ffa859b68b1394b04f824a274b0d770697bd16b71d57`). Comparing the closed WAL file against the closed rollback file shows only 4 differing bytes in the entire `1,105,920`-byte database, all on page 1: bytes `18` and `19` (file format write/read versions: `2` for WAL vs `1` for rollback) and bytes `27` and `95` (the low byte of the 4-byte file change counter and version-valid-for field).
 
 ---
 
 ## 6. Evidence and failure cases
 
-The second half of Experiment 1.3 (lines 82–118 of `evidence/1.3-recipe-rebuild.txt`) tests six sources of variation against a 6-step WAL base database. Each test starts from fresh files and reports the first differing page (and differing page-1 byte offsets when page 1 changes). Three of the six tests uncovered behavior subtler than naive intuition predicts; the experiment flags those with `FINDING:`.
+The second half of Experiment 1.3 (lines 82–139 of `evidence/1.3-recipe-rebuild.txt`) tests seven sources of physical variation against a 6-step WAL base database, plus two boundary checks (`secure_delete=FAST` vs `ON`, and WAL sessions whose commits never write page 1). Every test starts from fresh files and reports the first differing page (and differing page-1 byte offsets when page 1 changes). Three checks uncovered subtler behavior than a first guess predicts; the output marks those `FINDING:`.
 
-1. **SQL `random()` in a value (lines 83–85).** Inserting `random()` into `events.amount` makes run 1 and run 2 differ on page 59 (1 page). SQLite's internal ChaCha20 PRNG is seeded from the OS on first use, so any SQL `random()` or `randomblob()` breaks byte reproducibility.
-2. **`current_timestamp` in a value (lines 86–89).** `current_timestamp` has one-second resolution (`YYYY-MM-DD HH:MM:SS`). Two runs executed inside the same wall-clock second produce `identical` files (line 87); a third run executed after the second boundary advances differs on page 59 (line 88). Fast tests can hide a clock dependency unless they span a second boundary.
+1. **SQL `random()` in a value (lines 83–85).** Inserting `random()` into `events.amount` makes run 1 and run 2 differ on page `59` (`1` page). SQLite's internal PRNG is seeded from the OS on first use, so any SQL `random()` or `randomblob()` breaks byte reproducibility.
+2. **`current_timestamp` and time zones (lines 86–89).** `current_timestamp` has one-second resolution. Two runs inside the same wall-clock second produce `identical` files (line 87); a third run after the second advances differs on page `59` (line 88). Fast tests can mask a clock dependency unless they span a second boundary. Environment-dependent modifiers sit in the same class: even on a fixed timestamp literal, SQLite's `'localtime'` modifier produces different bytes on page `59` under `TZ=UTC` versus `TZ=America/New_York` (`DET-08e`).
 3. **Unordered `INSERT ... SELECT` (lines 90–95).**
-   - Running `INSERT INTO archive(account_id, amount) SELECT account_id, amount FROM events WHERE amount > 0` twice on the same build with the same schema produces `identical` files (`FINDING`, lines 91 and 94), because the query planner picks the same scan order both times and assigns rowids in that order.
-   - Running run 2 with `PRAGMA reverse_unordered_selects=ON` flips the scan order without changing the query semantics, and the two files immediately differ on page 29 (line 92). In production, adding an index, running `ANALYZE`, or upgrading SQLite can change an unordered scan the same way.
-   - Appending `ORDER BY id` makes the two files `identical` again even under `reverse_unordered_selects=ON` (line 93).
-4. **Different transaction batches (lines 96–107).** Steps 0–6 are run on one connection, comparing one transaction per step against merging steps `2+3` and `4+5` into single transactions (step 3 deletes rows that step 2 inserted):
-   - **WAL mode, `secure_delete=ON` (recipe settings):** `identical` (`FINDING`, lines 98 and 105). Because WAL mode on one connection does not increment the header change counter per commit, and `secure_delete=ON` zeroes freed bytes inside pages, merging those transactions leaves zero byte difference.
-   - **WAL mode, `secure_delete=OFF`:** `differ: first differing page 24, 2 page(s) differ [24 28]` (lines 100–102): 357 bytes on page 24 and 1,207 bytes on page 28, every single one inside unused space on B-tree leaf pages (the unallocated gap between the cell-pointer array and cell content area, or freeblocks—not freelist pages). When `secure_delete` is off, deleted cell payloads linger as stale bytes whose exact values depend on transaction batching.
-   - **Rollback mode, `secure_delete=ON`:** `differ: first differing page 1, 1 page(s) differ [1], page 1 bytes [27 95]` (lines 104 and 107). Rollback mode increments the change counter on every commit, so fewer commits leave a smaller counter.
-5. **Omitting a rowid after the maximum 64-bit rowid `9223372036854775807` (lines 108–110).** Once a table contains rowid `9223372036854775807` (`2^63 - 1`), SQLite cannot increment past it and chooses a random unused rowid for the next insert without an explicit id. The two runs differ on page 29.
-6. **Connection sessions in WAL mode (lines 112–116).** Comparing steps 0–6 built with one connection per step against one long-lived connection for all 7 steps:
-   - **WAL mode:** `differ: first differing page 1, 1 page(s) differ [1], page 1 bytes [27 95]` (`FINDING`, lines 113 and 115). In WAL mode, `pagerWalFrames` writes `dbFileVers + 1` into the change counter, but `dbFileVers` is refreshed from page 1 only when page 1 is read from storage, not after each WAL commit. One long-lived connection therefore writes the same counter value on every commit, while each new connection session re-reads page 1 and advances it by one.
-   - **Rollback mode:** `identical` (lines 114 and 116), because rollback mode counts commits rather than sessions.
+   - Running `INSERT INTO archive(account_id, amount) SELECT account_id, amount FROM events WHERE amount > 0` twice on the same build with the same schema yields `identical` files (`FINDING`, lines 91 and 94), because the planner picks the same scan order both times and assigns rowids in that order.
+   - Setting `PRAGMA reverse_unordered_selects=ON` on run 2 reverses the scan order without changing query semantics, and the two files differ on page `29` (line 92). Adding an index, running `ANALYZE`, or upgrading SQLite can flip an unordered scan the same way.
+   - Adding `ORDER BY id` makes both files `identical` again even under `reverse_unordered_selects=ON` (line 93).
+4. **Transaction batching and `secure_delete` modes (lines 96–113).** Steps 0–6 run on one connection, comparing one transaction per step against merging steps `2+3` and `4+5` into single transactions (step 3 deletes rows inserted in step 2):
+   - **WAL mode, `secure_delete=ON` (recipe settings):** `identical` (`FINDING`, lines 98 and 105). One WAL connection does not increment the header change counter per commit, and `secure_delete=ON` zeroes freed bytes inside B-tree pages and on freed freelist pages.
+   - **WAL mode, `secure_delete=OFF`:** `differ: first differing page 24, 2 page(s) differ [24 28]` (lines 100–102): `357` bytes on page `24` and `1,207` bytes on page `28`, every byte inside unused space on B-tree leaf pages (the unallocated gap between the cell-pointer array and the cell content area, or freeblocks—not freelist pages). Without `secure_delete`, deleted cell payloads leave history-dependent stale bytes.
+   - **Rollback mode, `secure_delete=ON`:** `differ: first differing page 1, 1 page(s) differ [1], page 1 bytes [27 95]` (lines 104 and 107), because rollback mode increments the change counter on every commit.
+   - **WAL mode, `secure_delete=FAST` vs `secure_delete=ON` (lines 108–113):** `secure_delete` must be strictly `ON`, not `FAST`. On the exact same one-transaction-per-step history, `FAST` differs from `ON` on 3 pages `[29 36 37]`: page `29` (`4,079` bytes, freelist leaf), page `36` (`4,067` bytes, freelist trunk bytes after the leaf list), and page `37` (`4,078` bytes, freelist leaf)—all in unused space. In [`freePage2` (`src/btree.c:6864-6874`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/btree.c#L6864-L6874), SQLite zeroes freed pages only when `BTS_SECURE_DELETE` (`ON`) is set; [`sqlite3BtreeSecureDelete` (`src/btree.c:3181-3194`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/btree.c#L3181-L3194) maps `FAST` to `BTS_OVERWRITE` only, which zeroes freed cell space inside B-tree pages while leaving old bytes on freed freelist pages. At full 30-step scale, `FAST` also makes 1-transaction vs 31-transaction batchings diverge again (`DET-05d`: `2` pages differ, first page `29`).
+5. **Omitting a rowid after the maximum 64-bit rowid `9223372036854775807` (lines 114–116).** Once a table holds rowid `9223372036854775807` (`2^63 - 1`), SQLite cannot increment past it and picks a random unused rowid for the next insert without an explicit id. The two runs differ on page `29`.
+6. **Connection sessions, page-1 writes, cache eviction, and pool churn in WAL mode (lines 118–125).**
+   - **Steps 0–6 (every step dirties page 1 via `PRAGMA user_version = k`):** one connection per step vs one connection for all 7 steps gives `differ: first differing page 1, 1 page(s) differ [1], page 1 bytes [27 95]` in WAL mode (`FINDING`, lines 120 and 122), and `identical` in rollback mode (lines 121 and 123).
+   - **Commits that never write page 1 (lines 124–125):** starting from step 6, 3 commits of `UPDATE accounts SET balance = balance + 1 WHERE id = 1` with one connection per commit vs one connection for all three leave `identical` files even in WAL mode. [`pagerWalFrames` (`src/pager.c:3264`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3264) guards the counter write with `if( pList->pgno==1 ) pager_write_changecounter(pList)`. When page 1 is dirty, [`pager_write_changecounter` (`src/pager.c:3130-3143`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3130-L3143) writes `dbFileVers + 1` (line 3135), and `dbFileVers` is refreshed only when page 1 is read through `readDbPage` ([`src/pager.c:3109-3110`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L3109-L3110))—either on a new connection or when page 1 is evicted from cache and reloaded.
+   - **Cache eviction and pool churn:** because page-1 eviction reloads `dbFileVers`, `PRAGMA cache_size=0` shifts only the WAL change counter deterministically from step 0 onward (`DET-02`: `walZero=cs=0(exact=false,masked=true)`, while all nine non-zero `cache_size` values tested—`1`, `2`, `5`, `10`, `50`, `-10`, `-100`, `-2000`, `-64000`—matched verbatim in WAL mode, and all ten matched in rollback mode). Likewise, leaving `SingleConnection=false` lets a concurrent read open a second pooled `database/sql` connection with its own `dbFileVers`, shifting page 1 bytes `27` and `95` (`DET-08d`, `masked=true`). Both `cache_size` and `SingleConnection=true` are part of the determinism contract.
+7. **Rolled-back `SAVEPOINT` inside a committed transaction (lines 127–139).** A **savepoint** is a named nested rollback point inside a larger transaction. Starting from step 6, one transaction commits one `INSERT` into `events`; run 2 first inserts `10` documents of `12,000` bytes (`0xAB`) inside `SAVEPOINT aborted`, executes `ROLLBACK TO aborted` and `RELEASE aborted`, and commits the same `INSERT`:
+   - **WAL mode, `secure_delete=ON` (lines 131–134, 138):** `differ: first differing page 1, 3 page(s) differ [1 29 37], page 1 bytes [27 95]`. Pages `29` (`4,092` bytes) and `37` (`4,093` bytes) are freelist leaf pages retaining bytes from the aborted inserts; page 1's change counter also moved because the aborted allocation dirtied page 1's freelist count.
+   - **Rollback mode, `secure_delete=ON` (lines 135–137, 139):** `differ: first differing page 29, 2 page(s) differ [29 37]`, leaving the same `4,092` and `4,093` bytes on those two freelist leaf pages.
+   - **Why:** when SQLite allocates a freelist leaf page, [`allocateBtreePage` (`src/btree.c:6740`)](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/btree.c#L6740) fetches it with `PAGER_GET_NOCONTENT`, skipping journaling of its prior content. `ROLLBACK TO` returns the page to the freelist but cannot restore bytes it never saved, and `secure_delete=ON` does not zero those rolled-back leaves. By contrast, rolling back an entire transaction (a failed `ApplyStep` hitting a primary-key conflict) leaves the closed database file byte-identical (`API-05`).
 
 ### Determinism rules verified by Experiment 1.3
 
-| Source of variation | Rule enforced in `internal/recipe` and `internal/sqlitex` | Evidence (Exp 1.3) |
+| Source of variation | Rule enforced in `internal/recipe` and `internal/sqlitex` | Evidence |
 | --- | --- | --- |
-| SQLite build | Pin driver and CLI to one Fossil check-in; verify `sqlite_source_id()` on startup | Exp 1.1; header bytes 96–99 store library version |
-| Persistent & per-connection PRAGMAs | Set `page_size`, `auto_vacuum`, `encoding`, `application_id`, `journal_mode` at creation; set `synchronous`, `foreign_keys`, `secure_delete`, `cache_size`, `wal_autocheckpoint`, `busy_timeout` on every open | Lines 3, 78–80 |
-| Randomness | Generate values in Go from a seeded `math/rand/v2` PCG; ban SQL `random()` / `randomblob()` | Variant 1 (page 59 differs) |
-| Wall clock | Pass timestamps as bound parameters; ban `current_timestamp` / `date('now')` | Variant 2 (page 59 differs after 1 s) |
-| Query-plan row order | Always add `ORDER BY` to `INSERT ... SELECT` | Variant 3 (page 29 differs under reversed scan; identical with `ORDER BY id`) |
-| Stale deleted bytes | Set `PRAGMA secure_delete=ON` whenever different histories or batchings must match | Variant 4 (pages 24 and 28 differ in unused leaf bytes when `OFF`; identical when `ON` in WAL) |
-| Rowid selection | Declare explicit `INTEGER PRIMARY KEY` and supply every id | Variant 5 (page 29 differs past `9223372036854775807`) |
-| WAL connection sessions | Canonical rebuilds use one session per step, or compare with header bytes 24–27 and 92–95 masked (`MatchStep`) | Variant 6 (WAL differs only at page 1 bytes 27 and 95; rollback identical) |
+| SQLite build & compile options | Pin driver and CLI to one Fossil check-in; verify `sqlite_source_id()`, linked modules, and storage-affecting compile options (e.g. `ENABLE_STAT4` if `ANALYZE` runs) | Exp 1.1; Exp 1.2 (`ANALYZE` limit, lines 276–282); header bytes 96–99 |
+| Persistent & per-connection PRAGMAs (including `cache_size`) | Set `page_size`, `auto_vacuum`, `encoding`, `application_id`, `journal_mode` at creation; set `synchronous`, `foreign_keys`, `secure_delete`, `cache_size` (non-zero), `wal_autocheckpoint`, `busy_timeout` on every open | Exp 1.3 lines 3, 78–80; `DET-02` (`cache_size=0` shifts WAL counter) |
+| Randomness | Generate values in Go from a seeded `math/rand/v2` PCG; ban SQL `random()` and `randomblob()` | Exp 1.3 Variant 1 (page 59 differs) |
+| Wall clock & time zone | Pass timestamps as bound parameters; ban `current_timestamp`, `date('now')`, and environment-dependent modifiers such as `'localtime'` | Exp 1.3 Variant 2 (page 59 differs after 1 s); `DET-08e` (`'localtime'` varies with `TZ`) |
+| Query-plan row order | Always add `ORDER BY` to `INSERT ... SELECT` | Exp 1.3 Variant 3 (page 29 differs under reversed scan; identical with `ORDER BY id`) |
+| Stale deleted bytes | Set `PRAGMA secure_delete=ON` (strictly `ON`, not `OFF` or `FAST`) whenever different histories or batchings must match | Exp 1.3 Variant 4 (pages 24, 28 differ when `OFF`; pages 29, 36, 37 differ in `FAST` vs `ON`); `DET-05d` |
+| Rowid selection | Declare explicit `INTEGER PRIMARY KEY` and supply every id | Exp 1.3 Variant 5 (page 29 differs past `9223372036854775807`) |
+| WAL connection sessions & pool churn | Set `SingleConnection=true` and fix session boundaries for commits that write page 1, or compare with bytes 24–27 and 92–95 masked and agreeing (`MatchStep`) | Exp 1.3 Variant 6 (page 1 bytes 27, 95 differ when page 1 is written; page-1-untouched sessions identical); `DET-08d` |
+| Aborted work inside a committed transaction | Ban rolled-back `SAVEPOINT`s inside recipe transactions | Exp 1.3 Variant 7 (reused freelist leaves 29, 37 keep rolled-back bytes in both modes, plus page 1 counter in WAL) |
 
 ### What attacked this chapter
 
 <!-- adversarial-results -->
 
+Four adversarial programs (`48` attacks total, driven by [`run-all.sh`](../agent_work/ch01/adversarial/run-all.sh)) attacked this chapter's claims and shared `internal/recipe` package against the pinned SQLite 3.53.4 build:
+
+- [`pin-falsify`](../agent_work/ch01/adversarial/pin-falsify/main.go) (`PIN-01`–`PIN-08`) attacked pin enforcement across Experiments 1.1–1.3 by mutating `sqlite/PIN` (`fossil_id` and `driver_version`), spoofing `SQLITE3_BIN` with wrong source IDs, stripped `ENABLE_DBPAGE_VTAB`, and drifted `DEFAULT_PAGE_SIZE`, and checking raw `modernc.org/sqlite` runtime defaults.
+- [`twin-io`](../agent_work/ch01/adversarial/twin-io/main.go) (`TWIN-01`–`TWIN-12`) attacked Experiment 1.2's Go-vs-CLI twin check across steady-state WAL commits (`FULL` and `NORMAL`), 10 KiB overflow inserts, overflow deletes, explicit rollbacks, `CREATE INDEX`, `wal_checkpoint(TRUNCATE)`, `VACUUM`, `ANALYZE`, `PRAGMA mmap_size`, and a must-fail `FULL`-vs-`NORMAL` mismatch.
+- [`recipe-determinism`](../agent_work/ch01/adversarial/recipe-determinism/main.go) (`DET-01`–`DET-08e`) attacked Experiment 1.3's R0 reproducibility across 50 concurrent 30-step builds (varied working directories, spaces, Unicode, symlinks, CPU and disk load), 10 `cache_size` values, 11 other per-connection pragmas, `locking_mode=EXCLUSIVE`, `truncate`/`persist` rollback journals, a full 30-step Go-vs-CLI rebuild, extreme WAL batchings (1 transaction, ~1,700 autocommit transactions, `wal_autocheckpoint=1`, `secure_delete=FAST`), page-1-untouched WAL sessions, a concurrent reader pinning checkpoints, rolled-back `SAVEPOINT`s, `ANALYZE`, `database/sql` pool churn, and `TZ` with `'localtime'`.
+- [`recipe-api-abuse`](../agent_work/ch01/adversarial/recipe-api-abuse/main.go) (`API-01`–`API-09`) attacked `internal/recipe` with single-bit file tampering, disagreeing header change counters, live WAL and orphan-journal files, malformed and tampered step-hash caches, failed mid-recipe steps, mismatched `sqlitex.Open` settings, partial schemas, and invalid `Recipe` values.
+
+**Run 1** ([`results-run1.txt`](../agent_work/ch01/adversarial/results-run1.txt)) produced **37 HELD, 11 BROKEN**. Three broken attacks exposed code defects in `internal/recipe` that were fixed in the repair round:
+
+- `API-02`: `MatchStep` accepted a masked-only match when header bytes 24–27 and 92–95 disagreed; fixed by `ChangeCountersAgree` (`TestMatchStepRejectsDisagreeingCounters`).
+- `API-04b`: `StepHashes` trusted a syntactically valid tampered cache; fixed by cache v2's trailing checksum and fresh step-0 rebuild check (`TestStepHashesRejectsTamperedAndStaleCaches`).
+- `API-09`: `Step(0)` and `Build(..., 0)` bypassed `Recipe.Validate()`; fixed to validate first (`TestInvalidRecipeIsRejectedByStepAndBuild`).
+
+The other eight broken attacks in Run 1 narrowed overly broad claims, now demonstrated in Experiments 1.2 and 1.3 or stated in Section 6: `TWIN-10` and `DET-08c` (`ANALYZE` diverges on `ENABLE_STAT4`), `DET-05d` and `DET-08a` (`secure_delete=FAST` leaves unzeroed freelist pages and re-exposes batching divergence), `DET-06` (WAL change counter advances only on commits that dirty page 1), `DET-08b` (rolled-back `SAVEPOINT`s leave bytes on reused freelist leaves), `DET-08d` (`database/sql` pool churn shifts the WAL counter when `SingleConnection=false`), and `DET-08e` (`'localtime'` depends on `TZ`).
+
+**Run 2** ([`results-run2.txt`](../agent_work/ch01/adversarial/results-run2.txt), after the repair round and foundation merge) produced **37 HELD, 11 BROKEN**: `API-02`, `API-04b`, and `API-09` became `HELD`; the eight narrowed-claim attacks still expected the original broad claims; and three new `BROKEN` lines appeared from the foundation's updated `MustPinCheck` and new-file pragma order:
+
+- `PIN-04` and `DET-04` had stale expectations: `MustPinCheck` now rejects a mismatched `driver_version` on stderr before Experiment 1.1's own check runs, and `DET-04`'s CLI script still applied `application_id` before `journal_mode`.
+- `DET-02` exposed a real new fact: with the updated pragma order, `cache_size=0` in WAL mode shifts the change counter deterministically from step 0 onward (`masked=true`), while all nine non-zero `cache_size` values match verbatim.
+
+After aligning those stale and narrowed-claim attack expectations to match the verified rules, the final run ([`results.txt`](../agent_work/ch01/adversarial/results.txt)) passed **48 HELD, 0 BROKEN**.
+
 ---
 
 ## 7. Platform implications
 
-Every operational rule below follows directly from one of this chapter's experiments:
+Every operational rule below follows directly from this chapter's experiments:
 
-1. **Verify the exact SQLite build and compile options at service startup (Experiment 1.1).** Two binaries reporting version `3.53.4` can still carry different compile options (`ENABLE_STAT4`, `DEFAULT_WAL_SYNCHRONOUS`, `ENABLE_DBPAGE_VTAB`). A platform should check `sqlite_source_id()` and required `PRAGMA compile_options` on startup instead of assuming the library matches what was tested.
-2. **Design the platform around SQLite's two external boundaries: connections and files (Section 3, Experiment 1.2).** The tokenizer, parser, planner, and VDBE live inside the library and run per connection (`sqlite3_prepare_v2` compiles statements on one `sqlite3` handle and `sqlite3_step` auto-reprepares them on schema changes). A multi-database service does not inspect or replace those layers; it controls per-connection settings above the pager and owns the files and kernel I/O below the pager.
-3. **Treat `.db` plus `-wal` as the live database unit, not `.db` alone (Experiment 1.2).** In WAL mode, a committed `INSERT` executes zero `pwrite64` calls on `t.db`; the new page lives exclusively in `t.db-wal` until a checkpoint copies it back. Copying only `.db` while a WAL connection is open silently drops committed transactions.
-4. **Account for fresh-WAL creation syncs when opening and closing databases (Experiment 1.2).** Under `synchronous=FULL`, the first commit on a freshly opened WAL database pays 3 syncs (`t.db-wal` header, directory `.`, and `t.db-wal` commit frame), whereas rollback mode pays 4 syncs on every commit (`t.db-journal`, `.`, `t.db-journal`, `t.db`). Churning connections open and closed so the WAL is deleted and recreated on every write multiplies directory syncs.
-5. **The translated Go driver (`modernc.org/sqlite`) matches the C build's storage I/O (Experiment 1.2).** Across both rollback and WAL modes, the Go driver and the C CLI executed identical writes, syncs, locks, reads, unlinks, and closes and produced byte-identical database files. The only difference—extra `fcntl(F_SETFD)` calls from `modernc.org/libc`—does not touch disk layout or lock protocol.
-6. **Byte-level verification requires controlling every source of physical variation (Experiment 1.3).** Even with deterministic SQL, `secure_delete=OFF` leaks history-dependent stale bytes into unused regions of B-tree pages, and WAL mode advances the header change counter (bytes 24–27 and 92–95) per connection session rather than per commit. A platform that verifies rebuilt files by SHA-256 must either standardize session boundaries and enable `secure_delete=ON` or explicitly account for those 8 header bytes.
+1. **Verify the exact SQLite build and compile options at service startup (Experiment 1.1).** Two binaries reporting version `3.53.4` can carry different compile options (`ENABLE_STAT4`, `DEFAULT_WAL_SYNCHRONOUS`, `ENABLE_DBPAGE_VTAB`). Check `sqlite_source_id()` and required `PRAGMA compile_options` on startup rather than trusting a release number alone.
+2. **Design the platform around SQLite's two external boundaries: connections and files (Section 3, Experiment 1.2).** The compiler and VDBE live inside the library and run per connection (`sqlite3_prepare_v2` compiles statements on one handle; `sqlite3_step` auto-reprepares them on schema changes). A multi-database service cannot observe or replace those layers; it governs per-connection settings above the pager and owns files and kernel I/O below the pager.
+3. **Treat `.db` plus `-wal` as the live database unit, not `.db` alone (Experiment 1.2).** In WAL mode, a committed `INSERT` makes zero `pwrite64` calls on `t.db`; the new page lives only in `t.db-wal` until a checkpoint copies it back. Copying `.db` alone while a WAL connection is open silently drops committed writes.
+4. **Account for fresh-WAL creation syncs when opening and closing databases (Experiment 1.2).** Under `synchronous=FULL`, the first commit on a freshly opened WAL database pays 3 syncs (`t.db-wal` header, directory `.`, and `t.db-wal` commit frame), whereas rollback mode pays 4 syncs on every commit (`t.db-journal`, `.`, `t.db-journal`, `t.db`). Opening and closing connections on every write deletes and recreates `-wal`, paying directory syncs repeatedly.
+5. **The translated Go driver (`modernc.org/sqlite`) matches the C build's storage I/O within shared compile options (Experiment 1.2, `TWIN-01`–`TWIN-12`).** Across both rollback and WAL modes, the Go driver and the C CLI execute the same writes, syncs, locks, reads, unlinks, and closes and leave byte-identical files for statements independent of differing compile options. The only syscall difference—extra `fcntl(F_SETFD)` calls from `modernc.org/libc`—touches no disk bytes or POSIX locks. Where compile options differ (`ENABLE_STAT4` on `ANALYZE`), the two builds write different tables and different files.
+6. **Byte-level reproducibility requires `secure_delete=ON` and no rolled-back `SAVEPOINT`s (Experiment 1.3 Variants 4 and 7, `DET-05d`, `DET-08a`, `DET-08b`).** Both `secure_delete=OFF` and `secure_delete=FAST` leave history-dependent stale bytes in unused space (B-tree leaves and freelist pages), and rolled-back `SAVEPOINT`s leave bytes in reused freelist leaf pages even when `secure_delete=ON`.
+7. **Standardize session boundaries, `SingleConnection=true`, and non-zero `cache_size`—or mask the 8 counter bytes with agreement checked (Experiment 1.3 Variant 6, `DET-02`, `DET-08d`, `API-02`).** In WAL mode, bytes 24–27 and 92–95 advance only when a commit dirties page 1 after page 1 was read from storage (new connection, pool churn under `SingleConnection=false`, or cache eviction under `cache_size=0`). Any byte-level verifier must either fix those boundaries or mask bytes 24–27 and 92–95 after confirming the two fields agree.
+
+| Operational rule | Supporting evidence |
+| --- | --- |
+| Check `sqlite_source_id()` and required `PRAGMA compile_options` on startup | Experiment 1.1; Experiment 1.2 (`ANALYZE` / `ENABLE_STAT4`); `PIN-01`–`PIN-07` |
+| Control per-connection settings above the pager and files below it | Section 3; Experiment 1.2 |
+| Pair `.db` and `-wal` while any WAL connection is open | Experiment 1.2 (0 `pwrite64` on `t.db` in WAL mode) |
+| Avoid open/close churn that recreates `-wal` and pays directory syncs | Experiment 1.2 (3 syncs on fresh WAL vs 1 steady-state sync in `TWIN-01`) |
+| Rely on `modernc.org/sqlite` I/O parity only within shared compile options | Experiment 1.2 twin check & `ANALYZE` limit; `TWIN-01`–`TWIN-12` |
+| Use `secure_delete=ON` (not `OFF` or `FAST`) and ban rolled-back `SAVEPOINT`s for E1 rebuilds | Experiment 1.3 Variants 4 and 7; `DET-05d`, `DET-08a`, `DET-08b` |
+| Pin `SingleConnection=true` and non-zero `cache_size`, or verify masked hashes with agreeing counters | Experiment 1.3 Variant 6; `DET-02`, `DET-08d`, `API-02` |
 
 ---
 
@@ -3336,6 +3973,6 @@ Answers are in [answers.md](answers.md).
 
 1. In `prepare.c` (`sqlite3_prepare_v2`) and `vdbeapi.c` (`sqlite3_step`), what happens if another connection alters a table's schema between `Prepare` and `Step`, and which flag makes that recovery possible?
 2. In Experiment 1.2, how many `pwrite64` calls hit `t.db` during the committed `INSERT` in rollback mode versus WAL mode, and where do the new row's bytes go in each mode?
-3. Why did the Go driver issue more syscalls than the C CLI in Experiment 1.2's twin check (33 vs 31 in rollback mode, 18 vs 17 in WAL mode), and why does that difference not affect the database file or locking?
-4. Experiment 1.3 ran the same 7 recipe steps (0–6) in WAL mode once with a fresh connection per step and once on a single long-lived connection. Which exact bytes differed, and why did the same comparison produce `identical` files in rollback mode?
-5. In Experiment 1.3 variant 4 (merging steps 2+3 and 4+5 into single transactions in WAL mode), why did `secure_delete=ON` produce `identical` files while `secure_delete=OFF` differed on pages 24 and 28?
+3. Why did the Go driver issue more syscalls than the C CLI in Experiment 1.2's twin check (33 vs 31 in rollback mode, 18 vs 17 in WAL mode), why does that difference not affect the database file or locking, and what statement still makes the two builds diverge?
+4. Experiment 1.3 ran the same 7 recipe steps (0–6) in WAL mode once with a fresh connection per step and once on a single long-lived connection. Which exact bytes differed, why did the same comparison produce `identical` files in rollback mode, and when do multiple WAL sessions still leave `identical` files?
+5. In Experiment 1.3 variant 4 (merging steps 2+3 and 4+5 into single transactions in WAL mode), why did `secure_delete=ON` produce `identical` files while `secure_delete=OFF` differed on pages 24 and 28, and why is `secure_delete=FAST` not equivalent to `ON`?

@@ -114,8 +114,10 @@ func BuildManifest(f *dbfile.File) (equal.Manifest, error) {
 
 // Pages captures a closed database at dbPath into dir as pages.bin plus
 // manifest.txt. It refuses databases that are not at rest or whose byte size
-// disagrees with PageCount*PageSize, and re-checks at-rest status, size, and
-// mtime afterwards to catch a writer that started mid-capture.
+// disagrees with PageCount*PageSize, removes any prior capture in dir, writes
+// temporary .capture-tmp files, re-checks at-rest status, size, and mtime, and
+// renames the files into place only if every check passes so a failed capture
+// leaves no partial or stale capture behind.
 func Pages(dbPath, dir string) (equal.Manifest, error) {
 	if err := CheckAtRest(dbPath); err != nil {
 		return equal.Manifest{}, err
@@ -166,10 +168,16 @@ func Pages(dbPath, dir string) (equal.Manifest, error) {
 	return m, nil
 }
 
+// captureTmpSuffix is appended to pages.bin and manifest.txt until the final
+// post-capture stability checks pass.
 const captureTmpSuffix = ".capture-tmp"
 
+// afterCaptureWritten is a test hook invoked after the temp files are written
+// and before the final at-rest and stat checks run.
 var afterCaptureWritten = func(dbPath string) {}
 
+// writeCapture streams pages.bin and manifest.txt to temporary paths and then
+// verifies the source database remained at rest with unchanged size and mtime.
 func writeCapture(f *dbfile.File, dbPath string, before os.FileInfo, m equal.Manifest, pagesPath, manifestPath string) error {
 	if err := writePages(f, pagesPath, m); err != nil {
 		return err
@@ -191,6 +199,8 @@ func writeCapture(f *dbfile.File, dbPath string, before os.FileInfo, m equal.Man
 	return nil
 }
 
+// writePages writes every page image in manifest order to path, re-hashing each
+// page as it goes so a concurrent overwrite fails immediately.
 func writePages(f *dbfile.File, path string, m equal.Manifest) error {
 	out, err := os.Create(path)
 	if err != nil {
@@ -239,10 +249,11 @@ type PageError struct {
 func (e *PageError) Error() string { return fmt.Sprintf("capture page %d: %s", e.Page, e.Problem) }
 
 // Rebuild reconstructs a database file at outPath from a capture directory
-// alone. It validates the manifest sequence, refuses stale sidecar files next
-// to outPath, verifies every page's SHA-256 while streaming into a temporary
-// file, fsyncs, and atomically renames into place; on any failure no output
-// file is left behind.
+// alone. It validates the manifest sequence (requiring at least one page),
+// refuses stale sidecar files next to outPath, verifies every page's SHA-256
+// while streaming into a temporary file, fsyncs, runs a full page census on
+// the rebuilt image to confirm it agrees with the manifest, and atomically
+// renames into place; on any failure no output or temp file is left behind.
 func Rebuild(dir, outPath string) (equal.Manifest, error) {
 	m, err := ReadManifest(dir)
 	if err != nil {
@@ -320,6 +331,9 @@ func Rebuild(dir, outPath string) (equal.Manifest, error) {
 	return m, nil
 }
 
+// checkRebuilt runs dbfile's page census on the rebuilt temp file and compares
+// the resulting manifest against m, catching coordinated truncation (where both
+// pages.bin and manifest.txt drop trailing pages) and tampered page roles.
 func checkRebuilt(path string, m equal.Manifest) error {
 	f, err := dbfile.Open(path)
 	if err != nil {

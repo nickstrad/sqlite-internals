@@ -88,7 +88,9 @@ func headerOffsetFor(number int) int {
 }
 
 // ParseBTreePage decodes and validates a B-tree page header, its cell pointer
-// array, and its freeblock chain from raw page bytes.
+// array, its freeblock chain, its free-space bounds (btreeComputeFreeSpace,
+// src/btree.c:2146-2166), and its full cell/freeblock byte coverage
+// (checkTreePage, src/btree.c:11076-11108).
 func ParseBTreePage(data []byte, number int, usableSize int) (*BTreePage, error) {
 	if usableSize < MinUsableSize || usableSize > len(data) {
 		return nil, corruptPage(number, "usable size %d does not fit a %d-byte page", usableSize, len(data))
@@ -135,7 +137,9 @@ func ParseBTreePage(data []byte, number int, usableSize int) (*BTreePage, error)
 		}
 		p.CellPointers[i] = cellOffset
 	}
-	// Walk the freeblock list verifying ascending non-overlapping offsets and minimum 4-byte size (src/btreeInt.h:152-164).
+	// Walk the freeblock list verifying ascending offsets separated by at least
+	// 4 bytes (btreeComputeFreeSpace, src/btree.c:2146) and minimum 4-byte size
+	// (src/btreeInt.h:152-164).
 	previousEnd := 0
 	for next := p.FirstFreeblock; next != 0; {
 		if len(p.Freeblocks) >= usableSize/4 {
@@ -155,6 +159,7 @@ func ParseBTreePage(data []byte, number int, usableSize int) (*BTreePage, error)
 		previousEnd = next + size
 		next = be16(data[next:])
 	}
+	// Total free space must fit within the usable page (btreeComputeFreeSpace, src/btree.c:2166).
 	if free := p.CellContentStart + p.FragmentedBytes + p.FreeblockBytes(); free > usableSize {
 		return nil, corruptAt(number, offset+7, "content start %d + fragmented bytes %d + freeblock bytes %d = %d exceeds the usable size %d", p.CellContentStart, p.FragmentedBytes, p.FreeblockBytes(), free, usableSize)
 	}
@@ -164,8 +169,12 @@ func ParseBTreePage(data []byte, number int, usableSize int) (*BTreePage, error)
 	return p, nil
 }
 
+// byteRange is an inclusive [first, last] byte span inside a page's cell content area.
 type byteRange struct{ first, last int }
 
+// checkCoverage mirrors checkTreePage (src/btree.c:11076-11108): no byte of the
+// cell content area may belong to two cells or to both a cell and a freeblock,
+// and the bytes covered by neither must equal header byte 7 (FragmentedBytes).
 func (p *BTreePage) checkCoverage() error {
 	ranges := make([]byteRange, 0, p.CellCount+len(p.Freeblocks))
 	for i := range p.CellCount {

@@ -684,6 +684,8 @@ func TestDecodeValueEdgeCases(t *testing.T) {
 	}
 }
 
+// integrityCheckImage writes image to a temporary file and runs PRAGMA
+// integrity_check against it so corruption tests confirm SQLite agrees.
 func integrityCheckImage(t *testing.T, image []byte) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "check.db")
@@ -714,6 +716,9 @@ func integrityCheckImage(t *testing.T, image []byte) string {
 	return strings.Join(lines, " / ")
 }
 
+// TestWithoutRowidTableCensus verifies that a WITHOUT ROWID table (stored in an
+// index B-tree with overflow pages and a secondary index) passes a complete
+// census matching SQLite's dbstat.
 func TestWithoutRowidTableCensus(t *testing.T) {
 	path := newDatabase(t, nil,
 		"CREATE TABLE kv(k TEXT PRIMARY KEY, v BLOB) WITHOUT ROWID",
@@ -736,6 +741,8 @@ func TestWithoutRowidTableCensus(t *testing.T) {
 	}
 }
 
+// TestRejectsIndexEntryWithTableRoot verifies that an sqlite_schema index entry
+// pointing at a table B-tree root is still rejected as ErrCorrupt.
 func TestRejectsIndexEntryWithTableRoot(t *testing.T) {
 	path := newDatabase(t, nil, "CREATE TABLE t(a INTEGER PRIMARY KEY, b)", "CREATE INDEX t_b ON t(b)", "INSERT INTO t VALUES(1, 'x')")
 	f := openParsed(t, path)
@@ -767,6 +774,9 @@ func TestRejectsIndexEntryWithTableRoot(t *testing.T) {
 	}
 }
 
+// TestRejectsPageHeaderCorruptionLikeIntegrityCheck verifies five B-tree page
+// header and cell-overlap corruptions that PRAGMA integrity_check rejects are
+// all rejected with ErrCorrupt naming the damaged page.
 func TestRejectsPageHeaderCorruptionLikeIntegrityCheck(t *testing.T) {
 	path := newDatabase(t, nil,
 		"CREATE TABLE t(a INTEGER PRIMARY KEY, b)",
@@ -824,6 +834,9 @@ func TestRejectsPageHeaderCorruptionLikeIntegrityCheck(t *testing.T) {
 	}
 }
 
+// TestRejectsNonZeroNextOnLastOverflowPage verifies that a non-zero next pointer
+// on the final overflow page (self, another page, or out of range) is rejected
+// with ErrCorrupt just as PRAGMA integrity_check rejects it.
 func TestRejectsNonZeroNextOnLastOverflowPage(t *testing.T) {
 	path := newDatabase(t, nil, "CREATE TABLE t(a INTEGER PRIMARY KEY, b)", "INSERT INTO t VALUES(1, zeroblob(5000))")
 	good, err := os.ReadFile(path)
@@ -856,6 +869,8 @@ func TestRejectsNonZeroNextOnLastOverflowPage(t *testing.T) {
 	}
 }
 
+// TestWALModeFollowsReadVersion verifies that Header.WALMode depends only on
+// byte 19 (ReadVersion == 2), matching lockBtree (src/btree.c:3341).
 func TestWALModeFollowsReadVersion(t *testing.T) {
 	for _, c := range []struct {
 		write, read int

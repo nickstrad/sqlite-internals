@@ -403,6 +403,9 @@ func TestLocateCLIRespectsEnvAndPin(t *testing.T) {
 	}
 }
 
+// TestLocateCLIReportsErrNoCLIOnlyWhenNothingIsFound verifies that LocateCLI
+// returns ErrNoCLI when no binary exists anywhere, but returns a distinct error
+// when $SQLITE3_BIN explicitly names a missing path.
 func TestLocateCLIReportsErrNoCLIOnlyWhenNothingIsFound(t *testing.T) {
 	empty := t.TempDir()
 	t.Setenv(CLIEnv, "")
@@ -714,5 +717,57 @@ func TestUnstampedEmptyDatabaseIsStampedButUsedOneIsNot(t *testing.T) {
 		t.Fatal("database with a schema and application_id 0 was stamped")
 	} else if !strings.Contains(err.Error(), "application_id want") {
 		t.Fatal(err)
+	}
+}
+
+// TestDSNWithVFS verifies Options.VFS emits a vfs= URI parameter and reaches SQLite's VFS selection.
+func TestDSNWithVFS(t *testing.T) {
+	o := DefaultOptions()
+	o.VFS = "unix-none"
+	dsn, err := DSN("/x/t.db", o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(dsn, "vfs=unix-none") || !strings.HasPrefix(dsn, "file:/x/t.db?") {
+		t.Fatal(dsn)
+	}
+	o.VFS = ""
+	dsn, err = DSN("/x/t.db", o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(dsn, "vfs=") {
+		t.Fatal(dsn)
+	}
+	dir := t.TempDir()
+	_, err = Open(context.Background(), filepath.Join(dir, "w.db"), Options{File: DefaultFileSettings(), Conn: DefaultConnSettings(), SingleConnection: true, VFS: "unix-dotfile"})
+	if err == nil || !strings.Contains(err.Error(), "SQLite reports delete") {
+		t.Fatalf("WAL through unix-dotfile: %v", err)
+	}
+	file := DefaultFileSettings()
+	file.JournalMode = JournalDelete
+	db, err := Open(context.Background(), filepath.Join(dir, "v.db"), Options{File: file, Conn: DefaultConnSettings(), SingleConnection: true, VFS: "unix-dotfile"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("CREATE TABLE t(x)"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDisplayPath verifies repo-internal paths render relative and external paths stay unchanged.
+func TestDisplayPath(t *testing.T) {
+	root, err := RepoRoot()
+	if err != nil {
+		t.Skip(err)
+	}
+	if got := DisplayPath(filepath.Join(root, "internal", "sqlitex")); got != "internal/sqlitex" {
+		t.Fatal(got)
+	}
+	outside := t.TempDir()
+	resolved, _ := filepath.EvalSymlinks(outside)
+	if got := DisplayPath(outside); got != outside && got != resolved {
+		t.Fatal(got)
 	}
 }

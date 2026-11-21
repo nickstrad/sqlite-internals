@@ -376,6 +376,21 @@ func (p *straceParser) fillArgs(call *Syscall, argText string) {
 		}
 		call.Path = path
 		call.Flags = at(2)
+	case "newfstatat", "fstatat64", "statx", "faccessat", "faccessat2":
+		path, truncated := Unquote(at(1))
+		call.Truncated = truncated
+		if path == "" {
+			p.parseFD(call, at(0))
+			break
+		}
+		if !filepath.IsAbs(path) {
+			if dir := atDirPath(at(0)); dir != "" {
+				path = filepath.Join(dir, path)
+			}
+		}
+		call.Path = path
+	case "stat", "lstat", "access", "stat64", "lstat64":
+		call.Path, call.Truncated = Unquote(at(0))
 	case "pwrite64", "pread64", "pwrite", "pread":
 		p.parseFD(call, at(0))
 		call.Truncated = strings.HasSuffix(at(1), "...")

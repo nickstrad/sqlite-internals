@@ -68,12 +68,16 @@ func FileURI(path string, query url.Values) (string, error) {
 }
 
 // DSN builds the modernc.org/sqlite data source name for path and options,
-// encoding _txlock=immediate and mode=ro when requested. MemoryPath becomes
-// "file::memory:" (with ?_txlock=immediate if set) and rejects ReadOnly.
+// encoding _txlock=immediate, vfs=<name>, and mode=ro when requested.
+// MemoryPath becomes "file::memory:" (with query parameters if set) and
+// rejects ReadOnly.
 func DSN(path string, options Options) (string, error) {
 	query := url.Values{}
 	if options.ImmediateTx {
 		query.Set("_txlock", "immediate")
+	}
+	if options.VFS != "" {
+		query.Set("vfs", options.VFS)
 	}
 	if path == MemoryPath {
 		if options.ReadOnly {
