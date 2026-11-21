@@ -31,3 +31,4 @@ src/pager.c 4188 4205 databaseIsUnmoved
 src/pager.c 4222 4279 sqlite3PagerClose
 src/wal.c 2507 2571 sqlite3WalClose
 src/wal.c 1619 1630 walIndexClose
+src/prepare.c 323 333 BTREE_DEFAULT_CACHE_SIZE
