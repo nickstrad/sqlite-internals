@@ -23,6 +23,9 @@ Rulings applied (details: OUTLINE.md section 8):
 - Go for all code and scripts; working scripts in `agent_work/` (Go or bash), indexed.
 - Driver modernc.org/sqlite v1.60.1, no cgo/C. Rollback experiment 4.1 at full depth.
 - WAL is the platform default; per-chapter evaluation:
+  - Chapter 4: 4.1 is rollback mode by subject (the planned exception, ruling 9). The platform
+    stays WAL; 4.1 shows the two places a WAL platform still meets rollback mode: files created
+    or imported without the WAL switch, and the switch commit itself. 4.2 runs in WAL.
   - Chapter 5: WAL holds as the default. What it obliges a platform to own (each tied to an
     experiment in the chapter): run checkpoints itself, bound reader lifetime, treat `-wal` as
     part of the database while any connection is open, never ship `-shm`, watch WAL size,
@@ -79,7 +82,6 @@ a finished part A leaves `sqlite-p2-<name>.stageA`, a finished part B `sqlite-p2
 
 | Chunk | State (2026-11-21 01:45 UTC) |
 | --- | --- |
-| 4 | re-review NITS, 32 held / 0 broken; closing rewrite (stageB closing) running → accept → land |
 | 3 | part A: review NITS, run 1 16 held / 14 broken; Opus repair running |
 | 6 | part A: review FAIL, run 1 43 held / 6 broken; Opus repair running |
 | 8 | part A running (review + adversarial) |
@@ -89,7 +91,7 @@ a finished part A leaves `sqlite-p2-<name>.stageA`, a finished part B `sqlite-p2
 | 1 closing rewrite | done (66fca8e, merged) |
 | 2 closing rewrite | running in the ch02 worktree (stageB closing) |
 
-Closing prose record (commit of each chapter's closing Neon pass): chapter 5 — 394203d (single late prose pass); chapter 7 — c645979 (closing rewrite); chapter 1 — 66fca8e (retroactive closing rewrite, merged on main).
+Closing prose record (commit of each chapter's closing Neon pass): chapter 5 — 394203d (single late prose pass); chapter 7 — c645979 (closing rewrite); chapter 4 — a9fff51 (closing rewrite); chapter 1 — 66fca8e (retroactive closing rewrite, merged on main).
 
 Next steps, in order: land 4, 3, 6, 8 as their chains finish (each branch merges main before
 its part B); run part A for 6 and 8; closing rewrites for 1 and 2; build 10a and 10b; chain 9,
