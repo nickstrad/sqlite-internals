@@ -884,6 +884,7 @@ func TestWALModeFollowsReadVersion(t *testing.T) {
 	}
 }
 
+// TestRecordColumn checks column byte offsets, lengths, and serial types for valid records and rejection of malformed or short payloads.
 func TestRecordColumn(t *testing.T) {
 	payload := []byte{4, 0, 1, 0x17, 7, 'h', 'e', 'l', 'l', 'o'}
 	start, length, serial, err := RecordColumn(payload, 1)

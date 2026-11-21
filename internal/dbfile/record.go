@@ -189,6 +189,10 @@ func DecodeText(raw []byte, encoding uint32) (string, error) {
 	return "", fmt.Errorf("unknown text encoding %d", encoding)
 }
 
+// RecordColumn returns the byte offset, byte length, and serial type of 0-based
+// column within an SQLite binary record payload without decoding the values.
+// Callers use it to locate exact column bytes inside a leaf cell (for example,
+// to flip one payload byte in Experiment 9.3).
 func RecordColumn(payload []byte, column int) (start, length int, serialType uint64, err error) {
 	headerSize, n, err := Varint(payload)
 	if err != nil {

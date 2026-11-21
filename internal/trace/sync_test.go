@@ -2,6 +2,7 @@ package trace
 
 import "testing"
 
+// TestSyncsOf verifies sync counting, post-sync write tracking, path filtering, failed/unfinished call handling, and ftruncate offset calculation.
 func TestSyncsOf(t *testing.T) {
 	calls := []Syscall{
 		{Name: "pwrite64", Path: "/d/x-wal", Offset: 0, Length: 32, Result: 32},

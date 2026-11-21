@@ -1,3 +1,11 @@
+// Experiment 9.2 separates process-crash recovery from power-loss durability
+// in WAL mode across synchronous=OFF, NORMAL, and FULL (plus a NORMAL run with
+// a concurrent reader that stops the PASSIVE checkpoint short of the end).
+// Part B (portable) compares process-crash recovery against a file-level
+// power-cut model derived from SQLite's sync rules (src/pager.c:3658-3704,
+// src/wal.h:25-26, src/wal.c:2199-2395, 4038-4266) and cross-checked by strace
+// on Linux. Part A (Linux only) kills the writer child via strace --inject on
+// entry to every sync and six spread pwrite64 calls to verify crash recovery.
 package main
 
 import (
@@ -55,6 +63,10 @@ func (v variant) dirName() string {
 
 var modelVariants = []variant{{"OFF", 0}, {"NORMAL", 0}, {"FULL", 0}, {"NORMAL", readerFromStep}}
 
+// runChild executes the writer workload on one pinned OS thread (so strace's
+// syscall counter sees its I/O calls in deterministic order), commits recipe
+// steps 4-11 with one PASSIVE checkpoint after step 7, and exits with os.Exit(0)
+// without closing SQLite so the files remain exactly as a crashed process leaves them.
 func runChild(args []string) error {
 	flags := flag.NewFlagSet(childMode, flag.ContinueOnError)
 	db := flags.String("db", "", "")
@@ -186,15 +198,29 @@ type syncRule struct {
 	databaseUnsynced bool
 }
 
+// ruleCut computes which WAL bytes were synced and whether the database file
+// holds unsynced checkpoint writes, directly from SQLite's sync-flag rules:
+// sqlite3PagerSetFlags (src/pager.c:3658-3704) + WAL_SYNC_FLAGS/CKPT_SYNC_FLAGS
+// (src/wal.h:25-26), walFrames (src/wal.c:4121-4124, 4196-4213), and
+// walCheckpoint (src/wal.c:2277 syncs the WAL before backfilling; 2328-2335
+// syncs the database file only when mxSafeFrame == mxFrame).
 func ruleCut(level string, run writerRun) syncRule {
 	partialCheckpoint := run.checkpointed > 0 && run.checkpointed < run.logFrames
 	switch level {
 	case "OFF":
+		// At OFF, syncFlags and walSyncFlags are both 0; a checkpoint writes
+		// the database file without syncing it, putting power loss outside a
+		// WAL-truncation model.
 		if run.checkpoint != "" {
 			return syncRule{cut: 0, hasCut: true, outside: "the checkpoint wrote the database file and nothing was ever synced", databaseUnsynced: true}
 		}
 		return syncRule{cut: 0, hasCut: true}
 	case "NORMAL":
+		// At NORMAL, CKPT_SYNC_FLAGS is non-zero (header + checkpoint syncs)
+		// while WAL_SYNC_FLAGS is 0 (no per-commit sync). If a partial
+		// checkpoint stopped WAL restart, the last WAL sync is wal.c:2277 at
+		// the checkpointed end; if the WAL restarted, it is the 32-byte header
+		// sync at wal.c:4121-4124.
 		if run.lastEvent == "checkpoint" {
 			return syncRule{databaseUnsynced: partialCheckpoint}
 		}
@@ -373,6 +399,8 @@ func (x *lab) model(v variant) *trace.Result {
 	return result
 }
 
+// writerThread identifies the OS thread (tid) that executed the writer's
+// pwrite64 calls so killSweep counts syscalls on the LockOSThread-pinned writer.
 func writerThread(result *trace.Result) int {
 	counts := map[int]int{}
 	for _, call := range result.Log.Calls {
@@ -389,6 +417,11 @@ func writerThread(result *trace.Result) int {
 	return best
 }
 
+// killSweep kills a fresh writer child via strace --inject=SIGKILL on entry to
+// every sync and six evenly spaced pwrite64 calls, then reopens the database to
+// verify walIndexRecover (src/wal.c:1390-1614) always yields an exact recipe
+// step equal to lastAck or lastAck+1 (the commit whose frames were already in
+// the kernel page cache when its fsync was interrupted).
 func (x *lab) killSweep(level string, uninterrupted *trace.Result) {
 	tid := writerThread(uninterrupted)
 	syncs, writes := 0, 0

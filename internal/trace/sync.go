@@ -2,6 +2,8 @@ package trace
 
 import "fmt"
 
+// SyncRecord summarizes all successful fsync/fdatasync calls observed on one
+// file path together with any successful writes issued after the last sync.
 type SyncRecord struct {
 	Path           string
 	Syncs          int
@@ -12,6 +14,7 @@ type SyncRecord struct {
 	UnfinishedSeen bool
 }
 
+// String formats r as a concise summary of total syncs and post-sync writes.
 func (r SyncRecord) String() string {
 	if !r.HasUnsynced {
 		return fmt.Sprintf("%d sync(s); no write after the last one", r.Syncs)
@@ -29,6 +32,10 @@ func isFileWrite(name string) bool {
 	return false
 }
 
+// SyncsOf scans a parsed strace syscall list for path and returns how many
+// successful syncs ran on that file and which successful writes came after the
+// last sync. Failed calls are ignored; unfinished calls (for example, a call
+// interrupted by SIGKILL) are flagged in UnfinishedSeen rather than counted.
 func SyncsOf(calls []Syscall, path string) SyncRecord {
 	record := SyncRecord{Path: path, LastSync: -1}
 	for i, call := range calls {
@@ -52,6 +59,8 @@ func SyncsOf(calls []Syscall, path string) SyncRecord {
 	record.HasUnsynced = len(record.Unsynced) > 0
 	for i, call := range record.Unsynced {
 		offset := call.Offset
+		// For ftruncate, Length holds the new file size, which is the lowest
+		// byte offset affected by the truncation.
 		if call.Name == "ftruncate" {
 			offset = call.Length
 		}

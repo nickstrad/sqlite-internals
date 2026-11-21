@@ -14,32 +14,49 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/walfile"
 )
 
+// Object key prefixes and wire-format constants. Every snapshot and segment is
+// stored as a single self-contained object (magic line, JSON metadata line,
+// raw body) so one atomic PutIfAbsent publishes both metadata and payload.
 const (
+	// SnapshotPrefix is the key prefix for full-database snapshot objects.
 	SnapshotPrefix = "snapshots/"
+	// SegmentPrefix is the key prefix for WAL frame segment objects.
 	SegmentPrefix  = "segments/"
 	positionDigits = 12
 	snapshotMagic  = "walship snapshot v1"
 	segmentMagic   = "walship segment v1"
 )
 
+// Reasons recorded in SnapshotMeta.Reason explaining why a snapshot was taken.
 const (
-	ReasonInitial       = "initial"
-	ReasonPeriodic      = "periodic"
+	// ReasonInitial marks the base snapshot taken when opening an empty store.
+	ReasonInitial = "initial"
+	// ReasonPeriodic marks a checkpointed snapshot taken every SnapshotEvery segments.
+	ReasonPeriodic = "periodic"
+	// ReasonDiscontinuity marks a re-base snapshot taken after an unvouched WAL change.
 	ReasonDiscontinuity = "discontinuity"
 )
 
+// ErrMalformedObject reports a snapshot or segment object whose magic header,
+// JSON metadata, key naming, body length/hash, or frame layout is invalid.
 var ErrMalformedObject = errors.New("malformed walship object")
 
+// Generation identifies one WAL generation by the hex encoding of its 32-byte
+// WAL header (including its magic, checkpoint sequence, salts, and checksum).
+// An empty Header means no WAL file (or a zero-byte WAL) existed.
 type Generation struct {
 	Header string `json:"header"`
 }
 
+// GenerationOf returns the Generation encoded from a 32-byte WAL header slice.
 func GenerationOf(header []byte) Generation {
 	return Generation{Header: hex.EncodeToString(header)}
 }
 
+// None reports whether g represents the absence of a WAL header.
 func (g Generation) None() bool { return g.Header == "" }
 
+// Bytes decodes g.Header and verifies that it is exactly walfile.HeaderSize (32) bytes.
 func (g Generation) Bytes() ([]byte, error) {
 	raw, err := hex.DecodeString(g.Header)
 	if err != nil {
@@ -51,6 +68,8 @@ func (g Generation) Bytes() ([]byte, error) {
 	return raw, nil
 }
 
+// Salts returns salt-1 and salt-2 from bytes 16-23 of the WAL header, or (0, 0)
+// if g is empty or invalid.
 func (g Generation) Salts() (uint32, uint32) {
 	raw, err := g.Bytes()
 	if err != nil {
@@ -59,6 +78,7 @@ func (g Generation) Salts() (uint32, uint32) {
 	return binary.BigEndian.Uint32(raw[16:]), binary.BigEndian.Uint32(raw[20:])
 }
 
+// String formats g's checkpoint sequence and random salts for diagnostics.
 func (g Generation) String() string {
 	if g.None() {
 		return "no WAL header"
@@ -71,12 +91,19 @@ func (g Generation) String() string {
 	return fmt.Sprintf("checkpoint-seq=%d salt-1=0x%08x salt-2=0x%08x", binary.BigEndian.Uint32(raw[12:]), salt1, salt2)
 }
 
+// WALPosition records the exact cursor inside a WAL generation—header, 1-based
+// frame number (0 for the header itself), and cumulative checksum at that frame—
+// so the next segment can prove WAL continuity.
 type WALPosition struct {
 	Generation Generation `json:"generation"`
 	Frame      int        `json:"frame"`
 	Checksum   [2]uint32  `json:"checksum"`
 }
 
+// CommitPoint describes one committed transaction inside a SegmentMeta: its
+// stream position, 1-based WAL commit frame, committed database size in pages,
+// header user_version, and the SHA-256 of the complete checkpointed database
+// image at that commit.
 type CommitPoint struct {
 	Position    int64  `json:"position"`
 	Frame       int    `json:"frame"`
@@ -85,6 +112,8 @@ type CommitPoint struct {
 	StateSHA256 string `json:"state_sha256"`
 }
 
+// SnapshotMeta is the JSON metadata header stored ahead of a full raw database
+// image in a snapshot object.
 type SnapshotMeta struct {
 	Position    int64       `json:"position"`
 	Reason      string      `json:"reason"`
@@ -97,6 +126,9 @@ type SnapshotMeta struct {
 	BodySHA256  string      `json:"body_sha256"`
 }
 
+// SegmentMeta is the JSON metadata header stored ahead of raw WAL frames
+// [FirstFrame..LastFrame] in a segment object. BeforeSHA256 and AfterSHA256
+// chain consecutive segments (and their base snapshot) by full-image SHA-256.
 type SegmentMeta struct {
 	FirstPosition int64         `json:"first_position"`
 	LastPosition  int64         `json:"last_position"`
@@ -113,10 +145,13 @@ type SegmentMeta struct {
 	BodySHA256    string        `json:"body_sha256"`
 }
 
+// End returns the WALPosition at the final frame of m, used to check that the
+// following segment continues cleanly.
 func (m SegmentMeta) End() WALPosition {
 	return WALPosition{Generation: m.Generation, Frame: m.LastFrame, Checksum: m.LastChecksum}
 }
 
+// Commit looks up the CommitPoint for stream position within m.
 func (m SegmentMeta) Commit(position int64) (CommitPoint, bool) {
 	for _, c := range m.Commits {
 		if c.Position == position {
@@ -126,14 +161,18 @@ func (m SegmentMeta) Commit(position int64) (CommitPoint, bool) {
 	return CommitPoint{}, false
 }
 
+// SnapshotKey returns the fixed-width key for the snapshot at position.
 func SnapshotKey(position int64) string { return SnapshotPrefix + formatPosition(position) }
 
+// SegmentKey returns the fixed-width key for the segment starting at firstPosition.
 func SegmentKey(firstPosition int64) string { return SegmentPrefix + formatPosition(firstPosition) }
 
 func formatPosition(position int64) string {
 	return fmt.Sprintf("%0*d", positionDigits, position)
 }
 
+// ParseKey splits a snapshot or segment object key into its kind ("snapshot"
+// or "segment") and 12-digit decimal position.
 func ParseKey(key string) (kind string, position int64, err error) {
 	var rest string
 	switch {
@@ -159,6 +198,7 @@ func ParseKey(key string) (kind string, position int64, err error) {
 	return kind, position, nil
 }
 
+// SHA256Hex returns the lowercase hexadecimal SHA-256 digest of data.
 func SHA256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
@@ -188,6 +228,8 @@ func decodeObject(magic string, data []byte, meta any) ([]byte, error) {
 	if second < 0 {
 		return nil, fmt.Errorf("%w: no metadata line", ErrMalformedObject)
 	}
+	// Reject unknown JSON fields and trailing JSON values so metadata lines
+	// cannot smuggle extra state past validation.
 	decoder := json.NewDecoder(bytes.NewReader(rest[:second]))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(meta); err != nil {
@@ -209,12 +251,17 @@ func checkBody(body []byte, wantBytes int64, wantSHA256 string) error {
 	return nil
 }
 
+// EncodeSnapshot populates BodyBytes and BodySHA256 on meta and serializes the
+// snapshot header and raw database image into one object.
 func EncodeSnapshot(meta SnapshotMeta, image []byte) ([]byte, error) {
 	meta.BodyBytes = int64(len(image))
 	meta.BodySHA256 = SHA256Hex(image)
 	return encodeObject(snapshotMagic, meta, image)
 }
 
+// DecodeSnapshot parses and validates a snapshot object, checking its magic
+// line, JSON metadata, body length and SHA-256, power-of-two page size, page
+// count, WAL generation header length, and StateSHA256.
 func DecodeSnapshot(data []byte) (SnapshotMeta, []byte, error) {
 	var meta SnapshotMeta
 	body, err := decodeObject(snapshotMagic, data, &meta)
@@ -241,12 +288,18 @@ func DecodeSnapshot(data []byte) (SnapshotMeta, []byte, error) {
 	return meta, body, nil
 }
 
+// EncodeSegment populates BodyBytes and BodySHA256 on meta and serializes the
+// segment header and raw WAL frame bytes into one object.
 func EncodeSegment(meta SegmentMeta, frames []byte) ([]byte, error) {
 	meta.BodyBytes = int64(len(frames))
 	meta.BodySHA256 = SHA256Hex(frames)
 	return encodeObject(segmentMagic, meta, frames)
 }
 
+// DecodeSegment parses and validates a segment object's wire format, body hash,
+// and metadata invariants (frame count, consecutive commit positions, and final
+// commit hash). Call VerifySegmentFrames as well to check WAL header validity,
+// commit-frame alignment, and SQLite's cumulative checksum chain.
 func DecodeSegment(data []byte) (SegmentMeta, []byte, error) {
 	var meta SegmentMeta
 	body, err := decodeObject(segmentMagic, data, &meta)
@@ -305,6 +358,8 @@ func short(digest string) string {
 	return digest
 }
 
+// userVersion reads SQLite's PRAGMA user_version from database header bytes
+// 60-63 of page 1.
 func userVersion(image []byte) uint32 {
 	if len(image) < 64 {
 		return 0

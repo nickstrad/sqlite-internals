@@ -262,6 +262,12 @@ func (s *sqlSession) recipeStep(ctx context.Context, args []string) (string, err
 	return "", nil
 }
 
+// recipeSession opens a fresh SingleConnection handle with _txlock=immediate,
+// applies recipe step k, and closes that handle while the role's own s.conn
+// stays open. Opening a fresh connection per step reproduces the canonical
+// recipe's page-1 change counter (enabling exact E1 comparison against
+// recipe.StepHashes), while keeping s.conn open prevents sqlite3WalClose
+// (src/wal.c:2507-2571) from checkpointing and deleting the WAL on close.
 func (s *sqlSession) recipeSession(ctx context.Context, args []string) (string, error) {
 	k, err := oneInt(args, "recipe step")
 	if err != nil {

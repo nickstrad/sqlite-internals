@@ -12,6 +12,7 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/walfile"
 )
 
+// TestResumeWithNoWALSeesOfflineCommits verifies that resuming with no WAL detects offline commits whose -wal was deleted by checking the full page hash.
 func TestResumeWithNoWALSeesOfflineCommits(t *testing.T) {
 	h := newHarness(t, 2)
 	s := h.open(0, 2)
@@ -57,6 +58,7 @@ func TestResumeWithNoWALSeesOfflineCommits(t *testing.T) {
 	h.checkEveryPosition(h.catalog(), 2, 5)
 }
 
+// TestResumeRefusesADamagedObjectPastTheLastPosition verifies that Open fails with ErrBrokenChain instead of rewinding past a damaged latest segment.
 func TestResumeRefusesADamagedObjectPastTheLastPosition(t *testing.T) {
 	h := newHarness(t, 2)
 	s := h.open(0, 2)
@@ -107,6 +109,7 @@ func damagedBy(t *testing.T, meta SegmentMeta, frames []byte) string {
 	return catalog.Damaged[0].Problem
 }
 
+// TestSegmentHeaderAndCommitFramesAreVerifiedBeforeReplay confirms that forged WAL headers, wrong commit page counts, and commit points on non-commit frames are quarantined as Damaged before replay.
 func TestSegmentHeaderAndCommitFramesAreVerifiedBeforeReplay(t *testing.T) {
 	h := newHarness(t, 2)
 	s := h.open(0, 2)
@@ -176,6 +179,7 @@ func (f *failingDeleteStore) Delete(ctx context.Context, key string) error {
 	return f.Store.Delete(ctx, key)
 }
 
+// TestPruneReportsOnlyWhatItDeleted verifies that Prune returns only the keys deleted before a store.Delete error.
 func TestPruneReportsOnlyWhatItDeleted(t *testing.T) {
 	h := newHarness(t, 2)
 	s := h.open(2, 2)
@@ -193,6 +197,7 @@ func TestPruneReportsOnlyWhatItDeleted(t *testing.T) {
 	}
 }
 
+// TestDecodeSnapshotRefusesImpossibleShapes verifies that DecodeSnapshot rejects zero-page snapshots, non-power-of-two or out-of-range page sizes, and malformed WAL generation headers.
 func TestDecodeSnapshotRefusesImpossibleShapes(t *testing.T) {
 	image := make([]byte, 4096)
 	good := SnapshotMeta{Position: 1, Reason: ReasonInitial, PageSize: 4096, Pages: 1, StateSHA256: SHA256Hex(image)}
@@ -223,6 +228,7 @@ func TestDecodeSnapshotRefusesImpossibleShapes(t *testing.T) {
 	}
 }
 
+// TestOpenAcceptsJournalModeInAnyCase confirms that Open matches "wal" case-insensitively and rejects rollback journal modes with ErrNotWAL.
 func TestOpenAcceptsJournalModeInAnyCase(t *testing.T) {
 	h := newHarness(t, 2)
 	config := h.config(0, 2)

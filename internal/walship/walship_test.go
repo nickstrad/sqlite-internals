@@ -17,6 +17,7 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/walfile"
 )
 
+// TestMain dispatches internal/procs child roles when re-executed by lock tests, otherwise runs the test suite.
 func TestMain(m *testing.M) {
 	if procs.Serve(procs.Roles) {
 		return
@@ -125,6 +126,7 @@ func (h *harness) checkEveryPosition(catalog *Catalog, first, last int64) {
 	}
 }
 
+// TestShipAndRestoreEveryCommit ships recipe steps 3-12 across multiple WAL generations and periodic snapshots and verifies E1 restore of every position from every reachable snapshot.
 func TestShipAndRestoreEveryCommit(t *testing.T) {
 	h := newHarness(t, 2)
 	s := h.open(2, 2)
@@ -181,6 +183,7 @@ func TestShipAndRestoreEveryCommit(t *testing.T) {
 	}
 }
 
+// TestNothingNewShipsNothing verifies that running Cycle with no new committed frames publishes neither a segment nor a snapshot.
 func TestNothingNewShipsNothing(t *testing.T) {
 	h := newHarness(t, 2)
 	s := h.open(0, 2)
@@ -213,6 +216,7 @@ func (h *harness) keeper() *sql.Conn {
 	return conn
 }
 
+// TestResumeInTheSameGenerationContinues verifies that a reopened shipper continues shipping frames without snapshotting when a held reader kept the WAL in the same generation.
 func TestResumeInTheSameGenerationContinues(t *testing.T) {
 	h := newHarness(t, 2)
 	reader := h.keeper()
@@ -252,6 +256,7 @@ func TestResumeInTheSameGenerationContinues(t *testing.T) {
 	h.checkEveryPosition(h.catalog(), 2, 6)
 }
 
+// TestResumeAfterARestartTakesASnapshot verifies that a WAL restart while the shipper was closed triggers a discontinuity snapshot on resume.
 func TestResumeAfterARestartTakesASnapshot(t *testing.T) {
 	h := newHarness(t, 2)
 	h.keeper()
@@ -276,6 +281,7 @@ func TestResumeAfterARestartTakesASnapshot(t *testing.T) {
 	}
 }
 
+// TestOutsideCheckpointForcesSnapshot verifies that an outside TRUNCATE checkpoint while the shipper is closed forces a discontinuity snapshot and breaks PlanFrom across the gap.
 func TestOutsideCheckpointForcesSnapshot(t *testing.T) {
 	h := newHarness(t, 2)
 	keeper := h.keeper()
@@ -363,6 +369,7 @@ func planError(t *testing.T, store Store, target int64) error {
 	return err
 }
 
+// TestDamagedStoresAreRefusedBeforeReplay confirms missing, swapped, rekeyed, corrupted, and resealed segments are rejected during Plan before any page is applied.
 func TestDamagedStoresAreRefusedBeforeReplay(t *testing.T) {
 	h := newHarness(t, 2)
 	s := h.open(0, 2)
@@ -464,6 +471,7 @@ func TestDamagedStoresAreRefusedBeforeReplay(t *testing.T) {
 	}
 }
 
+// TestStandaloneWALIsAValidWAL checks that StandaloneWAL produces a walfile-valid WAL for every commit frame and that a wrong seed checksum is rejected.
 func TestStandaloneWALIsAValidWAL(t *testing.T) {
 	h := newHarness(t, 2)
 	s := h.open(0, 2)
@@ -502,6 +510,7 @@ func TestStandaloneWALIsAValidWAL(t *testing.T) {
 	}
 }
 
+// TestPruneKeepsWhatRestoresNeed verifies Prune deletes older snapshots and segments while keeping every position at or after keepFrom restorable.
 func TestPruneKeepsWhatRestoresNeed(t *testing.T) {
 	h := newHarness(t, 2)
 	s := h.open(2, 2)
@@ -534,6 +543,7 @@ func TestPruneKeepsWhatRestoresNeed(t *testing.T) {
 	}
 }
 
+// TestReadingTheWALInAProcessWithAConnectionKeepsItsLocks confirms that opening and closing -wal drops no POSIX locks (unlike closing -shm, which drops the write lock).
 func TestReadingTheWALInAProcessWithAConnectionKeepsItsLocks(t *testing.T) {
 	h := newHarness(t, 2)
 	options := procs.SQLOptions{Path: h.db, JournalMode: sqlitex.JournalWAL}

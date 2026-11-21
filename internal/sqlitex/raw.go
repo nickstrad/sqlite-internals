@@ -141,6 +141,9 @@ func Backup(ctx context.Context, source *sql.Conn, destinationPath string, pages
 	return BackupWithSourceExec(ctx, source, destinationPath, pagesPerStep, after)
 }
 
+// SourceExecer executes SQL statements on the raw driver connection underlying
+// a *sql.Conn while Conn.Raw holds that connection locked (used by
+// BackupWithSourceExec to run same-connection writes between backup steps).
 type SourceExecer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
@@ -161,6 +164,12 @@ func (e rawExecer) ExecContext(ctx context.Context, query string, args ...any) (
 	return e.conn.ExecContext(ctx, query, named)
 }
 
+// BackupWithSourceExec copies the database open on source to destinationPath
+// using SQLite's online backup API (sqlite3_backup_step, src/backup.c:323-591).
+// After each step it invokes afterStep with the step summary and a SourceExecer
+// bound to the same raw SQLite connection—needed because *sql.Conn is locked
+// inside Conn.Raw, so same-connection commits that trigger sqlite3BackupUpdate
+// (src/backup.c:688-715) must go through the raw driver connection.
 func BackupWithSourceExec(ctx context.Context, source *sql.Conn, destinationPath string, pagesPerStep int, afterStep func(BackupStep, SourceExecer) error) ([]BackupStep, error) {
 	if pagesPerStep == 0 {
 		return nil, errors.New("pagesPerStep must be non-zero; use -1 for all pages in one step")

@@ -256,6 +256,7 @@ func TestFailedCaptureLeavesNoCapture(t *testing.T) {
 	}
 }
 
+// TestVerifyImageNamesChangedPages verifies that VerifyImage reports every mutated page number and rejects invalid sizes or manifest sequences.
 func TestVerifyImageNamesChangedPages(t *testing.T) {
 	image := make([]byte, 3*512)
 	for i := range image {

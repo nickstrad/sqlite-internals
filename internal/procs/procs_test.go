@@ -802,6 +802,7 @@ func TestLockViewProcHolders(t *testing.T) {
 	}
 }
 
+// TestRecipeSessionCommitsOnAFreshConnection verifies that recipe-session commits on a fresh connection, keeps the WAL alive via the held connection, rejects replays/bad args, and matches the canonical step at E1 on close.
 func TestRecipeSessionCommitsOnAFreshConnection(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

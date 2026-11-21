@@ -10,6 +10,7 @@ import (
 	"testing"
 )
 
+// TestDirStoreSemantics checks atomic PutIfAbsent, Get, List prefixing, clean .tmp staging, idempotent Delete, invalid key rejection, and context cancellation.
 func TestDirStoreSemantics(t *testing.T) {
 	ctx := context.Background()
 	store, err := NewDirStore(t.TempDir())
@@ -71,6 +72,7 @@ func TestDirStoreSemantics(t *testing.T) {
 	}
 }
 
+// TestParseKey verifies parsing of fixed-width snapshot and segment keys and rejection of malformed keys.
 func TestParseKey(t *testing.T) {
 	kind, position, err := ParseKey(SegmentKey(42))
 	if err != nil || kind != "segment" || position != 42 {
@@ -87,6 +89,7 @@ func TestParseKey(t *testing.T) {
 	}
 }
 
+// TestObjectEncodingIsStrict verifies snapshot encode/decode round trips and rejection of altered bytes, bad magic, unknown JSON fields, extra JSON values, and mismatched hashes or page counts.
 func TestObjectEncodingIsStrict(t *testing.T) {
 	image := bytes.Repeat([]byte{7}, 1024)
 	meta := SnapshotMeta{Position: 3, Reason: ReasonInitial, PageSize: 512, Pages: 2, StateSHA256: SHA256Hex(image)}

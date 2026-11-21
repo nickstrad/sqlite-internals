@@ -356,6 +356,10 @@ func checkRebuilt(path string, m equal.Manifest) error {
 	return nil
 }
 
+// VerifyImage hashes every page of a raw database image against manifest m and
+// returns the 1-based page numbers whose SHA-256 differs. Unlike BuildManifest,
+// it performs no B-tree or header parsing, so it can identify damaged pages in
+// a structurally corrupt file without failing the census first.
 func VerifyImage(m equal.Manifest, image []byte) ([]int, error) {
 	if m.PageSize <= 0 {
 		return nil, fmt.Errorf("manifest page size %d", m.PageSize)

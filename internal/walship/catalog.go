@@ -9,36 +9,50 @@ import (
 	"sort"
 )
 
+// Sentinel errors returned while planning, executing, or pruning restores.
 var (
-	ErrNoSnapshot  = errors.New("no usable snapshot at or before the target")
+	// ErrNoSnapshot reports that no usable snapshot exists at or before the target position.
+	ErrNoSnapshot = errors.New("no usable snapshot at or before the target")
+	// ErrBrokenChain reports a missing, damaged, or non-contiguous segment or a post-replay state-hash mismatch.
 	ErrBrokenChain = errors.New("segment chain is broken")
-	ErrNoCommit    = errors.New("no commit point at that position")
+	// ErrNoCommit reports that a target position does not name any commit point inside its covering segment.
+	ErrNoCommit = errors.New("no commit point at that position")
 )
 
+// Snapshot is a validated snapshot object loaded from a Store.
 type Snapshot struct {
 	Key   string
 	Meta  SnapshotMeta
 	Image []byte
 }
 
+// Segment is a validated WAL segment object loaded from a Store.
 type Segment struct {
 	Key    string
 	Meta   SegmentMeta
 	Frames []byte
 }
 
+// Damaged records an object in a Store that failed key parsing, decoding, body
+// hashing, or WAL checksum-chain verification during LoadCatalog.
 type Damaged struct {
 	Key     string
 	Kind    string
 	Problem string
 }
 
+// Catalog holds all usable snapshots and segments loaded from a Store, sorted
+// by position, alongside any objects quarantined as Damaged.
 type Catalog struct {
 	Snapshots []Snapshot
 	Segments  []Segment
 	Damaged   []Damaged
 }
 
+// LoadCatalog lists, fetches, decodes, and verifies every snapshot and segment
+// object in store. Objects that fail key/metadata/body/checksum checks are
+// recorded in Catalog.Damaged instead of aborting the load, so undamaged
+// snapshots and segments remain usable for planning and diagnostics.
 func LoadCatalog(ctx context.Context, store Store) (*Catalog, error) {
 	catalog := &Catalog{}
 	for _, prefix := range []string{SnapshotPrefix, SegmentPrefix} {
@@ -46,6 +60,7 @@ func LoadCatalog(ctx context.Context, store Store) (*Catalog, error) {
 		if err != nil {
 			return nil, err
 		}
+		// Sort keys explicitly; Store.List makes no ordering guarantee.
 		sort.Strings(keys)
 		for _, key := range keys {
 			data, err := store.Get(ctx, key)
@@ -84,6 +99,9 @@ func (c *Catalog) add(key string, data []byte) {
 		if err == nil && meta.FirstPosition != position {
 			err = fmt.Errorf("%w: key names first position %d, metadata says %d", ErrMalformedObject, position, meta.FirstPosition)
 		}
+		// Verify the WAL header, commit frames, and checksum chain up front so
+		// damaged segments are rejected during LoadCatalog and Plan before any
+		// page is applied.
 		if err == nil {
 			err = VerifySegmentFrames(meta, frames)
 		}
@@ -95,6 +113,8 @@ func (c *Catalog) add(key string, data []byte) {
 	}
 }
 
+// LastPosition returns the highest usable stream position present in c (across
+// both snapshots and segments), or (0, false) if c has no usable objects.
 func (c *Catalog) LastPosition() (int64, bool) {
 	last, found := int64(0), false
 	for _, s := range c.Snapshots {
@@ -132,6 +152,8 @@ func (c *Catalog) segmentStartingAt(position int64) (Segment, error) {
 	return Segment{}, fmt.Errorf("%w: no segment starts at position %d", ErrBrokenChain, position)
 }
 
+// Plan is a verified restore plan from one base Snapshot through zero or more
+// contiguous Segments up to Target's CommitPoint.
 type Plan struct {
 	Target   int64
 	Snapshot Snapshot
@@ -139,8 +161,13 @@ type Plan struct {
 	Commit   CommitPoint
 }
 
+// Commits returns the number of shipped commits between p.Snapshot and p.Target.
 func (p Plan) Commits() int64 { return p.Target - p.Snapshot.Meta.Position }
 
+// PlanFrom builds a restore Plan starting at the specific snapshot at
+// snapshotPosition and advancing through contiguous segments to target. Every
+// link's BeforeSHA256, WAL generation, frame number, and seed checksum are
+// verified before Plan.Execute applies any page.
 func (c *Catalog) PlanFrom(snapshotPosition, target int64) (Plan, error) {
 	var snapshot *Snapshot
 	for i := range c.Snapshots {
@@ -184,6 +211,10 @@ func (c *Catalog) PlanFrom(snapshotPosition, target int64) (Plan, error) {
 	return plan, nil
 }
 
+// continues verifies that next chains cleanly from the previous state hash and
+// WAL position: within the same generation it must start at Frame+1 with
+// SeedChecksum == end.Checksum; in a new generation it must start at frame 1
+// seeded from the new 32-byte WAL header's checksum.
 func continues(end WALPosition, state string, next SegmentMeta) error {
 	if next.BeforeSHA256 != state {
 		return fmt.Errorf("its before hash %s is not the previous state %s", short(next.BeforeSHA256), short(state))
@@ -210,6 +241,8 @@ func continues(end WALPosition, state string, next SegmentMeta) error {
 	return nil
 }
 
+// Plan chooses the newest usable snapshot at or before target and returns
+// PlanFrom that snapshot to target, minimizing the number of segments replayed.
 func (c *Catalog) Plan(target int64) (Plan, error) {
 	for i := len(c.Snapshots) - 1; i >= 0; i-- {
 		if c.Snapshots[i].Meta.Position <= target {
@@ -219,6 +252,8 @@ func (c *Catalog) Plan(target int64) (Plan, error) {
 	return Plan{}, fmt.Errorf("%w: target %d", ErrNoSnapshot, target)
 }
 
+// RestoreReport summarizes the segments and frames replayed by Plan.Execute and
+// the final restored database image's SHA-256.
 type RestoreReport struct {
 	Plan            Plan
 	SegmentsApplied int
@@ -226,6 +261,9 @@ type RestoreReport struct {
 	StateSHA256     string
 }
 
+// Execute clones p.Snapshot.Image, applies each planned segment in order through
+// p.Commit.Frame using ApplySegment, and verifies the whole-image SHA-256 after
+// every segment and at the target commit point.
 func (p Plan) Execute() ([]byte, RestoreReport, error) {
 	image := append([]byte(nil), p.Snapshot.Image...)
 	report := RestoreReport{Plan: p}
@@ -257,6 +295,10 @@ func be32(b []byte) uint32 {
 	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
 }
 
+// Prune deletes snapshots and segments that are no longer needed to restore any
+// position at or after keepFrom. It keeps the newest usable snapshot at or
+// before keepFrom and everything after it, returning only the keys actually
+// deleted before any error.
 func Prune(ctx context.Context, store Store, keepFrom int64) ([]string, error) {
 	catalog, err := LoadCatalog(ctx, store)
 	if err != nil {
@@ -290,6 +332,9 @@ func Prune(ctx context.Context, store Store, keepFrom int64) ([]string, error) {
 	return deleted, nil
 }
 
+// WriteDatabase writes a restored database image to path and fsyncs it. It
+// refuses to overwrite an existing database file or write beside an existing
+// -wal, -shm, or -journal sidecar that SQLite would apply on open.
 func WriteDatabase(path string, image []byte) error {
 	for _, candidate := range []string{path, path + "-wal", path + "-shm", path + "-journal"} {
 		if _, err := os.Lstat(candidate); err == nil {
@@ -308,6 +353,8 @@ func WriteDatabase(path string, image []byte) error {
 	return errors.Join(writeErr, syncErr, closeErr)
 }
 
+// CopyStore copies every object from from into to using PutIfAbsent in sorted
+// key order, returning the number of objects copied.
 func CopyStore(ctx context.Context, from, to Store) (int, error) {
 	keys, err := from.List(ctx, "")
 	if err != nil {

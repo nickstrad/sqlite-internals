@@ -8,8 +8,17 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/walfile"
 )
 
+// ErrChecksumChain reports that a segment's raw WAL frames do not match its
+// generation salts or do not continue SQLite's cumulative WAL checksum chain
+// from SeedChecksum to LastChecksum.
 var ErrChecksumChain = errors.New("segment frames do not continue the WAL checksum chain")
 
+// VerifySegmentFrames validates a segment before any page is replayed: it parses
+// the 32-byte WAL generation header (magic, format version 3007000, page size,
+// header checksum), matches every frame's salts and page number, verifies a
+// one-to-one match between non-zero frame commit sizes and meta.Commits, and
+// walks SQLite's cumulative checksum chain (walDecodeFrame, src/wal.c:1390-1614)
+// from meta.SeedChecksum to meta.LastChecksum.
 func VerifySegmentFrames(meta SegmentMeta, frames []byte) error {
 	header, err := meta.Generation.Bytes()
 	if err != nil {
@@ -38,6 +47,9 @@ func VerifySegmentFrames(meta SegmentMeta, frames []byte) error {
 			return fmt.Errorf("%w: frame %d has page number 0", ErrChecksumChain, number)
 		}
 		listed := commit < len(meta.Commits) && meta.Commits[commit].Frame == number
+		// Require every frame with a non-zero commit-size field (frame header
+		// bytes 4-7) to match the next listed CommitPoint, and forbid listing a
+		// non-commit frame as a restore point.
 		if commitSize := binary.BigEndian.Uint32(frame[4:]); commitSize != 0 || listed {
 			if !listed || meta.Commits[commit].Pages != commitSize {
 				return fmt.Errorf("%w: frame %d has commit size %d, which the segment's commit points do not list", ErrMalformedObject, number, commitSize)
@@ -67,6 +79,12 @@ func VerifySegmentFrames(meta SegmentMeta, frames []byte) error {
 	return nil
 }
 
+// StandaloneWAL packages frames [meta.FirstFrame..throughFrame] with the
+// segment's 32-byte WAL header into a self-contained WAL file whose cumulative
+// frame checksums are re-chained starting from the header checksum. Re-chaining
+// is required because a segment starting at FirstFrame > 1 originally chained
+// from an earlier frame's checksum and would not validate on its own in
+// walfile.Parse or walfile.Replay.
 func StandaloneWAL(meta SegmentMeta, frames []byte, throughFrame int) ([]byte, error) {
 	if throughFrame < meta.FirstFrame || throughFrame > meta.LastFrame {
 		return nil, fmt.Errorf("frame %d is outside the segment's frames %d-%d", throughFrame, meta.FirstFrame, meta.LastFrame)
@@ -102,6 +120,10 @@ func StandaloneWAL(meta SegmentMeta, frames []byte, throughFrame int) ([]byte, e
 	return out, nil
 }
 
+// ApplySegment verifies meta and frames, builds a standalone WAL through
+// throughFrame, and replays it onto image using Chapter 5's walfile.Replay.
+// It fails unless every frame in [meta.FirstFrame..throughFrame] is valid and
+// throughFrame is a commit frame.
 func ApplySegment(image []byte, meta SegmentMeta, frames []byte, throughFrame int) ([]byte, walfile.ReplayReport, error) {
 	if err := VerifySegmentFrames(meta, frames); err != nil {
 		return nil, walfile.ReplayReport{}, err

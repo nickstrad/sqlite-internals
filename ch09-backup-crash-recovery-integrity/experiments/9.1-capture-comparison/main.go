@@ -1,3 +1,12 @@
+// Experiment 9.1 compares five SQLite capture methods—closed-file copy, online
+// backup API, VACUUM INTO, reading every page through sqlite_dbpage in one
+// read transaction, and copying the database file plus -wal under a held read
+// transaction—first on a quiet database (Part A) and then while a writer child
+// commits recipe steps concurrently (Part B). It also steps the backup API
+// 5 pages at a time to distinguish same-connection commits (which update in
+// place via sqlite3BackupUpdate, src/backup.c:688-715) from other-connection
+// commits (which restart from page 1 via sqlite3BackupRestart,
+// src/backup.c:728-734).
 package main
 
 import (
@@ -134,6 +143,9 @@ func (x *run) compare(capture string, k int, vacuumed bool) levels {
 	return result
 }
 
+// canonicalCapture runs VACUUM INTO on a scratch copy of capture so the
+// original capture file is never altered by opening it, allowing every method's
+// canonical-form byte equality to be measured directly.
 func (x *run) canonicalCapture(capture string) string {
 	path := capture + ".canonical"
 	if _, err := os.Stat(path); err == nil {
@@ -226,6 +238,8 @@ func (x *run) pageCount() int {
 	return pages
 }
 
+// copyLive delegates raw OS file copies to a short-lived child process so the
+// parent never opens and closes live.db in a process holding SQLite locks.
 func (x *run) copyLive(suffix, name string) {
 	if _, err := walfile.CopyLiveFiles(x.ctx, []walfile.CopyPair{{From: x.live + suffix, To: filepath.Join(x.dir, name)}}); err != nil {
 		x.lab.Fatal("copy", err)
@@ -285,6 +299,10 @@ func (x *run) quiet() {
 		x.lab.Fatal("E2 canonical", err)
 	}
 	fmt.Printf("backup API after VACUUM INTO vs the source after VACUUM INTO: %s\n", backupCanonical)
+	// Read the backup's schema cookie (header bytes 40-43) to show why its
+	// canonical form still differs from the source's at byte 43:
+	// sqlite3_backup_step sets the destination's cookie to old+1 (src/backup.c:448),
+	// and VACUUM INTO carries that offset forward by adding 1 again (src/vacuum.c:359).
 	backupCookie, sourceCookie := schemaCookie(x, x.path("a-backup.db")), schemaCookie(x, x.ref(quietStep))
 	fmt.Printf("schema cookie: backup %d, source %d\n", backupCookie, sourceCookie)
 	x.lab.Check(backupCanonical.Equal && slices.Equal(backupCanonical.IgnoredDiffering, []int{schemaCookieLowByte}) && backupCookie != sourceCookie,
@@ -392,6 +410,10 @@ func (x *run) underWriter() map[string]bool {
 	}
 	safe[methodFile] = x.report(methodFile, "b-replayed.db", false, afterCopy, everyLevel) && afterCopy >= seen
 
+	// Run VACUUM INTO while the writer child holds BEGIN IMMEDIATE with an
+	// uncommitted step: sqlite3RunVacuum opens only a read transaction on the
+	// source when pOut != NULL (src/vacuum.c:270), so it neither blocks nor
+	// sees the uncommitted writes.
 	fmt.Println("-- VACUUM INTO while the writer child holds the write lock with step uncommitted, then the writer commits")
 	before := x.next - 1
 	x.lab.Must(x.writer, "begin", "immediate")
@@ -410,10 +432,17 @@ func (x *run) underWriter() map[string]bool {
 	return safe
 }
 
+// backups runs two stepped backups (5 pages per step): one interleaved with
+// same-connection commits (via SourceExecer) and a single writer-child commit
+// to contrast sqlite3BackupUpdate with sqlite3BackupRestart, and a second
+// where the writer child commits after every step to show starvation.
 func (x *run) backups() bool {
 	fmt.Printf("-- backup API, %d pages per step; after step 2 and step 3 the backup's own connection commits a recipe step, after step 5 the writer child does\n", backupPages)
 	var copied []int
 	steps, err := sqlitex.BackupWithSourceExec(x.ctx, x.conn, x.path("b-backup.db"), backupPages, func(step sqlitex.BackupStep, exec sqlitex.SourceExecer) error {
+		// Track PageCount-Remaining (= iNext-1) rather than Remaining alone:
+		// sqlite3_backup_step recomputes Remaining from the current source size
+		// (src/backup.c:428-429), so Remaining rises whenever a commit grows the database.
 		copied = append(copied, step.PageCount-step.Remaining)
 		note := ""
 		switch step.Step {

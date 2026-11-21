@@ -1,3 +1,10 @@
+// Experiment 9.4 demonstrates Rebuild Ladder rung R6 using internal/walship:
+// continuous snapshot-plus-WAL-segment capture across shipper-owned checkpoints
+// and WAL restarts (Phase 1), discontinuity detection and re-basing after an
+// outside TRUNCATE checkpoint while the shipper was stopped (Phase 2), exact E1
+// point-in-time restore of every shipped position from both newest and older
+// snapshots, and pre-replay rejection of missing, swapped, and corrupted
+// segments.
 package main
 
 import (
@@ -72,6 +79,11 @@ func (x *run) closeShipper() {
 	}
 }
 
+// restoreEveryPosition rebuilds every stream position from baseStep to last,
+// checks E1 equality against recipe.StepHashes, verifies that every older
+// snapshot either reproduces identical bytes or refuses across a discontinuity
+// gap with ErrBrokenChain, and checks that newest-snapshot restores never
+// replay more than snapshotEvery segments.
 func (x *run) restoreEveryPosition(catalog *walship.Catalog, hashes []recipe.FileHashes) []int {
 	last, _ := catalog.LastPosition()
 	var steps []int
@@ -129,6 +141,9 @@ func countOlder(catalog *walship.Catalog, position int64) int {
 	return n
 }
 
+// tamper copies the finished store, applies one fault (missing, swapped, or
+// byte-flipped segment), and verifies Catalog.Plan fails with ErrBrokenChain
+// before any page is replayed.
 func (x *run) tamper(label string, target int64, damage func(walship.Store) error) {
 	copied, err := walship.NewDirStore(filepath.Join(x.dir, "tampered", label))
 	if err != nil {

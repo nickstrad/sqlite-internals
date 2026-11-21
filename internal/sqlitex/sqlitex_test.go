@@ -788,6 +788,7 @@ func TestDSNWithVFS(t *testing.T) {
 	}
 }
 
+// TestBackupWithSourceExecMirrorsSameConnectionWrites verifies that an UPDATE committed through SourceExecer between backup steps is mirrored without restarting the backup and that unconvertible arguments fail.
 func TestBackupWithSourceExecMirrorsSameConnectionWrites(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

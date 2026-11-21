@@ -1,3 +1,10 @@
+// Experiment 9.3 demonstrates why PRAGMA integrity_check and PRAGMA quick_check
+// verify B-tree structure and index consistency rather than data content. It
+// flips one byte in each of four distinct regions of a step-12 recipe database
+// (a B-tree page header cell count, an unindexed text column, an indexed
+// integer column, and a freelist leaf page) and compares integrity_check
+// (src/btree.c:11144-11295, src/pragma.c:1850-1857, 2084-2090), quick_check,
+// the E3 logical hash, and a Chapter 2 per-page SHA-256 manifest.
 package main
 
 import (
@@ -34,6 +41,10 @@ type verdicts struct {
 	caught                              [4]bool
 }
 
+// findSites uses internal/dbfile to locate four deterministic single-byte
+// corruption targets in f: a leaf page header's cell count, one ASCII letter
+// inside unindexed events.note, the 1-byte integer value of indexed
+// events.account_id, and the midpoint of a freelist leaf page.
 func findSites(f *dbfile.File) ([]site, error) {
 	census, err := f.Census()
 	if err != nil {
@@ -95,6 +106,9 @@ func corruptCopy(original []byte, s site, path string) error {
 	return os.WriteFile(path, image, 0o644)
 }
 
+// check runs PRAGMA integrity_check, PRAGMA quick_check, E3 logical hashing,
+// and capture.VerifyImage against path, confirming SQLite's read-only checks do
+// not modify the file bytes.
 func check(ctx context.Context, path string, original equal.Manifest, originalLogical equal.Logical) (verdicts, error) {
 	before, err := equal.FileSHA256(path)
 	if err != nil {
