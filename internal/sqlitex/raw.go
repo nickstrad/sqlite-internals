@@ -3,6 +3,7 @@ package sqlitex
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"net/url"
@@ -133,6 +134,34 @@ func backupDestinationURI(path string) (string, error) {
 // step so experiments can observe restarts or interleave writes. Backup checks
 // ctx.Err() before each step and finishes the handle before returning on cancellation.
 func Backup(ctx context.Context, source *sql.Conn, destinationPath string, pagesPerStep int, afterStep func(BackupStep) error) ([]BackupStep, error) {
+	var after func(BackupStep, SourceExecer) error
+	if afterStep != nil {
+		after = func(step BackupStep, _ SourceExecer) error { return afterStep(step) }
+	}
+	return BackupWithSourceExec(ctx, source, destinationPath, pagesPerStep, after)
+}
+
+type SourceExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+type rawExecer struct {
+	conn driver.ExecerContext
+}
+
+func (e rawExecer) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	named := make([]driver.NamedValue, len(args))
+	for i, arg := range args {
+		value, err := driver.DefaultParameterConverter.ConvertValue(arg)
+		if err != nil {
+			return nil, fmt.Errorf("argument %d: %w", i+1, err)
+		}
+		named[i] = driver.NamedValue{Ordinal: i + 1, Value: value}
+	}
+	return e.conn.ExecContext(ctx, query, named)
+}
+
+func BackupWithSourceExec(ctx context.Context, source *sql.Conn, destinationPath string, pagesPerStep int, afterStep func(BackupStep, SourceExecer) error) ([]BackupStep, error) {
 	if pagesPerStep == 0 {
 		return nil, errors.New("pagesPerStep must be non-zero; use -1 for all pages in one step")
 	}
@@ -143,11 +172,13 @@ func Backup(ctx context.Context, source *sql.Conn, destinationPath string, pages
 	var steps []BackupStep
 	err = withRawConn(ctx, source, "sqlite3_backup", func(c interface {
 		NewBackup(string) (*sqlite.Backup, error)
+		driver.ExecerContext
 	}) error {
 		backup, err := c.NewBackup(destination)
 		if err != nil {
 			return err
 		}
+		execer := rawExecer{conn: c}
 		for {
 			if err := ctx.Err(); err != nil {
 				backup.Finish()
@@ -161,7 +192,7 @@ func Backup(ctx context.Context, source *sql.Conn, destinationPath string, pages
 			step := BackupStep{Step: len(steps) + 1, More: more, Remaining: backup.Remaining(), PageCount: backup.PageCount()}
 			steps = append(steps, step)
 			if afterStep != nil {
-				if err := afterStep(step); err != nil {
+				if err := afterStep(step, execer); err != nil {
 					backup.Finish()
 					return err
 				}
