@@ -1,0 +1,12 @@
+# reading path (OUTLINE chapter 10), each re-checked against the pinned tree
+src/wal.c 2199 2395 walCheckpoint
+src/wal.c 2152 2166 walRestartHdr
+src/os_unix.c 1189 1342 Posix
+# added: spans the build notes cite
+src/os_unix.c 1282 1296 unixFileId
+src/os_unix.c 1323 1342 unixInodeInfo
+src/os_unix.c 1802 1833 unixFileLock
+src/os_unix.c 1866 2095 unixLock
+src/wal.c 2507 2571 sqlite3WalClose
+src/wal.c 3020 3272 walTryBeginRead
+src/wal.c 3875 3915 walRestartLog
