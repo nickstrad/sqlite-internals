@@ -508,6 +508,10 @@ func EncodeValue(value any) []byte {
 // inside a single read transaction so concurrent writers cannot split the
 // snapshot.
 func LogicalHash(ctx context.Context, conn *sql.Conn) (Logical, error) {
+	// Check cancellation up front, then run deferred BEGIN without cancellation.
+	// modernc.org/sqlite can return ctx.Err() after a statement already succeeded
+	// (stmt.go checks its watcher flag before disarming it), which would leave an
+	// open transaction behind an error. A deferred BEGIN takes no locks.
 	if err := ctx.Err(); err != nil {
 		return Logical{}, fmt.Errorf("begin read transaction: %w", err)
 	}
@@ -516,12 +520,16 @@ func LogicalHash(ctx context.Context, conn *sql.Conn) (Logical, error) {
 		return Logical{}, fmt.Errorf("begin read transaction: %w", err)
 	}
 	result, err := logicalHashInTx(ctx, conn)
+	// End the transaction without cancellation so a canceled caller context never
+	// leaks an open read transaction or pins a WAL read mark on conn.
 	if err != nil {
 		if _, rollbackErr := conn.ExecContext(uncancelable, "ROLLBACK"); rollbackErr != nil {
 			return Logical{}, errors.Join(err, fmt.Errorf("end read transaction: %w", rollbackErr))
 		}
 		return Logical{}, err
 	}
+	// If COMMIT fails, roll back before returning so conn never stays inside a
+	// transaction.
 	if _, commitErr := conn.ExecContext(uncancelable, "COMMIT"); commitErr != nil {
 		if _, rollbackErr := conn.ExecContext(uncancelable, "ROLLBACK"); rollbackErr != nil {
 			return Logical{}, fmt.Errorf("end read transaction: %w", errors.Join(commitErr, rollbackErr))

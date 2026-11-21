@@ -11,11 +11,15 @@ import (
 	"modernc.org/sqlite"
 )
 
+// lateCancelConnector wraps modernc.org/sqlite to deterministically trigger
+// a race that is microseconds wide in the real driver: a statement succeeds in
+// SQLite, the context ends right afterward, and the driver returns ctx.Err().
 type lateCancelConnector struct {
 	dsn                    string
 	successesReportedAsErr atomic.Int64
 }
 
+// Connect opens a real modernc.org/sqlite connection and wraps it in lateCancelConn.
 func (c *lateCancelConnector) Connect(context.Context) (driver.Conn, error) {
 	inner, err := (&sqlite.Driver{}).Open(c.dsn)
 	if err != nil {
@@ -24,13 +28,18 @@ func (c *lateCancelConnector) Connect(context.Context) (driver.Conn, error) {
 	return &lateCancelConn{Conn: inner, connector: c}, nil
 }
 
+// Driver returns the underlying modernc.org/sqlite driver.
 func (c *lateCancelConnector) Driver() driver.Driver { return &sqlite.Driver{} }
 
+// lateCancelConn forwards driver calls to modernc.org/sqlite and rewrites
+// succeeded ExecContext calls to ctx.Err() when ctx has ended.
 type lateCancelConn struct {
 	driver.Conn
 	connector *lateCancelConnector
 }
 
+// ExecContext runs the statement and, if it succeeded under a cancellable
+// context that has now ended, returns ctx.Err() while keeping the SQLite effect.
 func (c *lateCancelConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
 	result, err := c.Conn.(driver.ExecerContext).ExecContext(ctx, query, args)
 	if err != nil || ctx.Done() == nil {
@@ -45,26 +54,32 @@ func (c *lateCancelConn) ExecContext(ctx context.Context, query string, args []d
 	}
 }
 
+// QueryContext delegates directly to the wrapped modernc.org/sqlite connection.
 func (c *lateCancelConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	return c.Conn.(driver.QueryerContext).QueryContext(ctx, query, args)
 }
 
+// PrepareContext delegates directly to the wrapped modernc.org/sqlite connection.
 func (c *lateCancelConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
 	return c.Conn.(driver.ConnPrepareContext).PrepareContext(ctx, query)
 }
 
+// BeginTx delegates directly to the wrapped modernc.org/sqlite connection.
 func (c *lateCancelConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
 	return c.Conn.(driver.ConnBeginTx).BeginTx(ctx, opts)
 }
 
+// ResetSession delegates directly to the wrapped modernc.org/sqlite connection.
 func (c *lateCancelConn) ResetSession(ctx context.Context) error {
 	return c.Conn.(driver.SessionResetter).ResetSession(ctx)
 }
 
+// IsValid delegates directly to the wrapped modernc.org/sqlite connection.
 func (c *lateCancelConn) IsValid() bool {
 	return c.Conn.(driver.Validator).IsValid()
 }
 
+// TestLogicalHashEndsItsTransactionWhenAStatementSucceedsButReportsCancellation confirms LogicalHash never leaks a read transaction when ExecContext reports ctx.Err() after a statement succeeds.
 func TestLogicalHashEndsItsTransactionWhenAStatementSucceedsButReportsCancellation(t *testing.T) {
 	dir := t.TempDir()
 	path := buildDB(t, dir, "a.db", "CREATE TABLE t(id INTEGER PRIMARY KEY, v)", "INSERT INTO t VALUES (1, 'x'), (2, 'y')")
