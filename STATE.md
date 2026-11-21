@@ -74,7 +74,7 @@ a finished part A leaves `sqlite-p2-<name>.stageA`, a finished part B `sqlite-p2
 | --- | --- |
 | 7 | Neon re-review + touch-up running; then closing rewrite (stageB closing) → accept → land |
 | 4 | Neon finishing the adversarial suite; then part A from `rereview`; then stageB closing |
-| 5 | part A from `rereview` running; then stageB late (chapter text not written yet) |
+| 5 chapter 5 | done | Neon FAIL → one Opus repair → PASS | 28 held / 0 broken after repair (run 1: 7 broken) | merged 2629fec |
 | 3 | part A running (review + adversarial) |
 | 6, 8 | built (Opus), part A not started yet (start when a Neon slot frees; at most ~5 Neon runs at once) |
 | 9 | Opus build running |
