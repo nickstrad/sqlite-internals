@@ -883,3 +883,38 @@ func TestWALModeFollowsReadVersion(t *testing.T) {
 		}
 	}
 }
+
+// TestRecordColumn checks column byte offsets, lengths, and serial types for valid records and rejection of malformed or short payloads.
+func TestRecordColumn(t *testing.T) {
+	payload := []byte{4, 0, 1, 0x17, 7, 'h', 'e', 'l', 'l', 'o'}
+	start, length, serial, err := RecordColumn(payload, 1)
+	if err != nil || start != 4 || length != 1 || serial != 1 {
+		t.Fatalf("column 1: %d %d %d %v", start, length, serial, err)
+	}
+	start, length, serial, err = RecordColumn(payload, 2)
+	if err != nil || start != 5 || length != 5 || serial != 0x17 || string(payload[start:start+length]) != "hello" {
+		t.Fatalf("column 2: %d %d %d %v", start, length, serial, err)
+	}
+	start, length, _, err = RecordColumn(payload, 0)
+	if err != nil || start != 4 || length != 0 {
+		t.Fatalf("column 0: %d %d %v", start, length, err)
+	}
+	for name, bad := range map[string][]byte{
+		"no column 3":     payload,
+		"short body":      payload[:8],
+		"header too long": {9, 0, 1},
+		"empty":           {},
+		"reserved type":   {2, 10, 0},
+	} {
+		column := 2
+		if name == "no column 3" {
+			column = 3
+		}
+		if name == "reserved type" {
+			column = 0
+		}
+		if _, _, _, err := RecordColumn(bad, column); err == nil {
+			t.Fatalf("%s: accepted", name)
+		}
+	}
+}

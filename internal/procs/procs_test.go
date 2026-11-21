@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nickstrad/sqlite-internals/internal/recipe"
 	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
 )
 
@@ -798,5 +799,52 @@ func TestLockViewProcHolders(t *testing.T) {
 	}
 	if got := view.ProcHolders("no such range"); len(got) != 0 {
 		t.Errorf("unknown range %v", got)
+	}
+}
+
+// TestRecipeSessionCommitsOnAFreshConnection verifies that recipe-session commits on a fresh connection, keeps the WAL alive via the held connection, rejects replays/bad args, and matches the canonical step at E1 on close.
+func TestRecipeSessionCommitsOnAFreshConnection(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	t.Setenv("COURSE_WORK_DIR", filepath.Join(dir, "work"))
+	db := filepath.Join(dir, "r.db")
+	r := recipe.Default().WithSteps(3)
+	if err := r.Build(ctx, db, 1); err != nil {
+		t.Fatal(err)
+	}
+	options := SQLOptions{Path: db, JournalMode: sqlitex.JournalWAL, BusyTimeout: time.Second}
+	var out bytes.Buffer
+	script := NewScript(&out)
+	defer script.Kill()
+	writer, err := script.Spawn("writer", RoleSQL, options.Args()...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"2", "3"} {
+		if r, err := script.Do(writer, "recipe-session", k); err != nil || r.Code != 0 {
+			t.Fatalf("recipe-session %s: %+v %v", k, r, err)
+		}
+	}
+	if info, err := os.Stat(db + "-wal"); err != nil || info.Size() == 0 {
+		t.Fatalf("the held connection should keep the WAL: %v %v", info, err)
+	}
+	if r, err := script.Do(writer, "user-version"); err != nil || r.Value != "3" {
+		t.Fatalf("user-version %+v %v", r, err)
+	}
+	if r, err := script.Do(writer, "recipe-session", "3"); err != nil || r.Code == 0 {
+		t.Fatalf("re-applying step 3 must fail: %+v %v", r, err)
+	}
+	if r, err := script.Do(writer, "recipe-session", "x"); err != nil || r.Code != CodeNotSQLite {
+		t.Fatalf("bad argument: %+v %v", r, err)
+	}
+	if err := script.Close(); err != nil {
+		t.Fatal(err)
+	}
+	match, err := r.MatchStep(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !match.Found() || match.Step != 3 || !match.Exact {
+		t.Fatalf("match %s", match)
 	}
 }

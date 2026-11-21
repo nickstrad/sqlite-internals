@@ -1,0 +1,26 @@
+# reading path (OUTLINE chapter 9), each re-checked against the pinned tree
+src/wal.c 1390 1614 walIndexRecover
+src/backup.c 323 591 sqlite3_backup_step
+src/backup.c 688 712 backupUpdate
+src/backup.c 713 715 sqlite3BackupUpdate
+src/backup.c 728 734 sqlite3BackupRestart
+src/vacuum.c 143 427 sqlite3RunVacuum
+src/btree.c 11144 11295 sqlite3BtreeIntegrityCheck
+src/wal.c 2199 2395 walCheckpoint
+src/pager.c 3658 3704 sqlite3PagerSetFlags
+# added: spans the build notes cite
+src/backup.c 21 42 sqlite3_backup
+src/backup.c 226 228 isFatalError
+src/backup.c 652 660 sqlite3_backup_remaining
+src/backup.c 666 674 sqlite3_backup_pagecount
+src/pager.c 1783 1787 pager_reset
+src/pager.c 3225 3282 pagerWalFrames
+src/wal.h 25 26 WAL_SYNC_FLAGS
+src/wal.c 2152 2166 walRestartHdr
+src/wal.c 2507 2571 sqlite3WalClose
+src/wal.c 3020 3272 walTryBeginRead
+src/wal.c 3875 3915 walRestartLog
+src/wal.c 3938 3960 walWriteToLog
+src/wal.c 4038 4266 walFrames
+src/pragma.c 1850 1857 OP_AddImm
+src/pragma.c 2084 2090 integrityCheckResultRow

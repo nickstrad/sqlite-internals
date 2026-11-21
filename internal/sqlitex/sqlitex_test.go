@@ -787,3 +787,68 @@ func TestDSNWithVFS(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestBackupWithSourceExecMirrorsSameConnectionWrites verifies that an UPDATE committed through SourceExecer between backup steps is mirrored without restarting the backup and that unconvertible arguments fail.
+func TestBackupWithSourceExecMirrorsSameConnectionWrites(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	options := DefaultOptions()
+	options.SingleConnection = true
+	db, err := Open(ctx, filepath.Join(dir, "source.db"), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, "CREATE TABLE t(id INTEGER PRIMARY KEY, v BLOB)"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 40; i++ {
+		if _, err := db.ExecContext(ctx, "INSERT INTO t VALUES (?, zeroblob(3000))", i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	destination := filepath.Join(dir, "copy.db")
+	steps, err := BackupWithSourceExec(ctx, conn, destination, 5, func(step BackupStep, exec SourceExecer) error {
+		if step.Step != 2 {
+			return nil
+		}
+		for _, statement := range []string{"BEGIN IMMEDIATE", "UPDATE t SET v = ? WHERE id = ?", "COMMIT"} {
+			var args []any
+			if strings.HasPrefix(statement, "UPDATE") {
+				args = []any{[]byte("changed"), 1}
+			}
+			if _, err := exec.ExecContext(ctx, statement, args...); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i < len(steps); i++ {
+		if steps[i].Remaining >= steps[i-1].Remaining {
+			t.Fatalf("remaining did not fall at step %d: %+v", i+1, steps)
+		}
+	}
+	copyDB, err := sql.Open("sqlite", "file:"+destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer copyDB.Close()
+	var v []byte
+	if err := copyDB.QueryRow("SELECT v FROM t WHERE id = 1").Scan(&v); err != nil || string(v) != "changed" {
+		t.Fatalf("the copy misses the same-connection write: %q %v", v, err)
+	}
+	if _, err := BackupWithSourceExec(ctx, conn, filepath.Join(dir, "bad.db"), 5, func(step BackupStep, exec SourceExecer) error {
+		_, err := exec.ExecContext(ctx, "SELECT ?", struct{}{})
+		return err
+	}); err == nil {
+		t.Fatal("an unconvertible argument was accepted")
+	}
+}
