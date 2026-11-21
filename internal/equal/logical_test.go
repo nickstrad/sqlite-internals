@@ -311,23 +311,16 @@ func TestStorageClassesAndEncoding(t *testing.T) {
 	if strings.Join(classes, ",") != "integer,integer,text,real,blob,null,integer,integer,integer,real,text,integer" {
 		t.Fatal(classes)
 	}
-	encode := func(v any) []byte {
-		encoded, err := EncodeValue(v)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return encoded
-	}
 	cases := map[string][]byte{
-		"null":     encode(nil),
-		"int 1":    encode(int64(1)),
-		"real 1":   encode(float64(1)),
-		"text 1":   encode("1"),
-		"blob 1":   encode([]byte("1")),
-		"real -0":  encode(math.Copysign(0, -1)),
-		"real +0":  encode(float64(0)),
-		"empty":    encode(""),
-		"emptyblb": encode([]byte{}),
+		"null":     EncodeValue(nil),
+		"int 1":    EncodeValue(int64(1)),
+		"real 1":   EncodeValue(float64(1)),
+		"text 1":   EncodeValue("1"),
+		"blob 1":   EncodeValue([]byte("1")),
+		"real -0":  EncodeValue(math.Copysign(0, -1)),
+		"real +0":  EncodeValue(float64(0)),
+		"empty":    EncodeValue(""),
+		"emptyblb": EncodeValue([]byte{}),
 	}
 	seen := map[string]string{}
 	for name, encoded := range cases {

@@ -439,12 +439,15 @@ func (e streamEncoder) value(value any) error {
 	return nil
 }
 
-func EncodeValue(value any) ([]byte, error) {
+func EncodeValue(value any) []byte {
 	var b bytes.Buffer
-	if err := (streamEncoder{&b}).value(value); err != nil {
-		return nil, err
+	e := streamEncoder{&b}
+	if err := e.value(value); err != nil {
+		b.Reset()
+		e.text('U', fmt.Sprintf("%T", value))
+		e.text('v', fmt.Sprintf("%#v", value))
 	}
-	return b.Bytes(), nil
+	return b.Bytes()
 }
 
 func LogicalHash(ctx context.Context, conn *sql.Conn) (Logical, error) {

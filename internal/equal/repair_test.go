@@ -5,16 +5,31 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
 )
 
-func TestEncodeValueRefusesTypesWithoutAStorageClass(t *testing.T) {
-	for _, v := range []any{int(1), true, int32(1), float32(1), struct{}{}} {
-		if encoded, err := EncodeValue(v); err == nil || encoded != nil {
-			t.Fatalf("%T: encoded %q, err %v", v, encoded, err)
+func TestEncodeValueKeepsTypesWithoutAStorageClassApart(t *testing.T) {
+	values := []any{int(1), true, false, int32(1), float32(1), struct{}{}, int64(1), float64(1), "1", []byte("1"), nil}
+	seen := map[string]any{}
+	for _, v := range values {
+		encoded := EncodeValue(v)
+		if len(encoded) == 0 {
+			t.Fatalf("%T encodes to nothing", v)
 		}
+		if other, ok := seen[string(encoded)]; ok {
+			t.Fatalf("%#v and %#v encode the same", v, other)
+		}
+		seen[string(encoded)] = v
+	}
+	if string(EncodeValue(int(1))[0]) != "U" || string(EncodeValue(int64(1))[0]) != "I" {
+		t.Fatal("unsupported types must carry their own tag")
+	}
+	if _, err := StorageClassOf(int(1)); err == nil {
+		t.Fatal("the hash must still refuse a value with no storage class")
 	}
 }
 
@@ -86,19 +101,19 @@ func TestLogicalHashReadsMainWhenTempShadowsIt(t *testing.T) {
 
 type doneAfter struct {
 	context.Context
-	calls  int
-	limit  int
+	calls  atomic.Int64
+	limit  int64
+	once   sync.Once
 	closed chan struct{}
 }
 
 func newDoneAfter(limit int) *doneAfter {
-	return &doneAfter{Context: context.Background(), limit: limit, closed: make(chan struct{})}
+	return &doneAfter{Context: context.Background(), limit: int64(limit), closed: make(chan struct{})}
 }
 
 func (c *doneAfter) Done() <-chan struct{} {
-	c.calls++
-	if c.calls == c.limit {
-		close(c.closed)
+	if c.calls.Add(1) >= c.limit {
+		c.once.Do(func() { close(c.closed) })
 	}
 	return c.closed
 }
