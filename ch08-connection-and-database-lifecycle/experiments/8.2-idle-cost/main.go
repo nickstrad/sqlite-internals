@@ -414,8 +414,8 @@ func main() {
 	flag.Parse()
 	ctx := context.Background()
 	sqlitex.MustPinCheckMemory(ctx)
-	if *connections < 2 || *recipeStep < 1 || *recipeStep > recipe.DefaultSteps {
-		fatal("flags", fmt.Errorf("need -n >= 2 and 1 <= -step <= %d", recipe.DefaultSteps))
+	if *connections < 20 || *recipeStep < 1 || *recipeStep > recipe.DefaultSteps {
+		fatal("flags", fmt.Errorf("need -n >= 20 and 1 <= -step <= %d", recipe.DefaultSteps))
 	}
 	work := sqlitex.MustWorkDir("8.2")
 	soft, hard, err := procstat.FileLimit()

@@ -291,12 +291,12 @@ func partA(ctx context.Context, work string) {
 			}
 		}
 		open := byPhase["open"]
-		check(len(open.opens) == 1 && strings.HasSuffix(open.opens[0], ".db") && len(open.readsByDB) == 1 && open.readsByDB[0].Offset == 0 && open.readsByDB[0].Length == 100 && len(open.otherReads) == 0,
+		check(len(open.opens) == 1 && open.opens[0] == filepath.Base(path) && len(open.readsByDB) == 1 && open.readsByDB[0].Offset == 0 && open.readsByDB[0].Length == 100 && open.readsByDB[0].Result == 100 && len(open.otherReads) == 0,
 			fmt.Sprintf("%d table(s): open opens only the database file and reads only its 100-byte header", tables))
 		first := byPhase["first statement"]
-		firstPages, _ := pagesOf(first.readsByDB)
+		firstPages, firstWhole := pagesOf(first.readsByDB)
 		wantPages := schemaTreePages(ctx, path)
-		check(slices.Equal(sortedUnique(firstPages), sortedUnique(wantPages)),
+		check(firstWhole && slices.Equal(sortedUnique(firstPages), sortedUnique(wantPages)),
 			fmt.Sprintf("%d table(s): the first statement reads exactly the sqlite_schema b-tree pages (%d, from dbstat) plus t0001's root page", tables, len(wantPages)-1))
 		walOpen := slices.Index(first.events, "open "+filepath.Base(path)+"-wal")
 		pageOneReads := 0
@@ -512,7 +512,7 @@ func partB(ctx context.Context, work string) {
 			allAsDeclared = false
 		}
 		fmt.Printf("  %-20s %-12s %-12s %-12s %-12s %s\n", c.name, onOriginal[c.name], defaults[c.pragma], onCopy[c.pragma], onVacuum[c.pragma], home)
-		table = append(table, observed{Setting: c.name, Home: home, Set: onOriginal[c.name], Default: defaults[c.pragma], Copy: onCopy[c.pragma], VacuumInto: onVacuum[c.pragma]})
+		table = append(table, observed{Setting: c.name, Home: home, Set: onOriginal[c.name], Default: defaults[c.pragma], Copy: onCopy[c.pragma], VacuumInto: onVacuum[c.pragma], Placement: placement})
 	}
 	check(allAsDeclared, "every value set differs from the fresh default, and every setting that survived the copy is exactly a setting sqlitex.SettingPlacements declares as living in the file")
 	inFileKept := true
@@ -521,7 +521,11 @@ func partB(ctx context.Context, work string) {
 			inFileKept = false
 		}
 	}
-	check(inFileKept && onVacuum["journal_mode"] == sqlitex.JournalDelete, "VACUUM INTO keeps every file setting except journal_mode: its output is a rollback-mode file (header bytes 18-19 = 1)")
+	vacuumHeader, err := os.ReadFile(vacuumPath)
+	if err != nil || len(vacuumHeader) < 100 {
+		fatal("read VACUUM INTO header", fmt.Errorf("%d bytes, %v", len(vacuumHeader), err))
+	}
+	check(inFileKept && onVacuum["journal_mode"] == sqlitex.JournalDelete && vacuumHeader[18] == 1 && vacuumHeader[19] == 1, "VACUUM INTO keeps every file setting except journal_mode: its output is a rollback-mode file (header bytes 18-19 = 1)")
 
 	fmt.Println("\nthe two journal_mode cases and the deprecated default_cache_size:")
 	persistPath := filepath.Join(dir, "persist.db")

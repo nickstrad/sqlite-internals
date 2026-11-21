@@ -310,7 +310,7 @@ func runStream(ctx context.Context, mode, dir string) {
 	fmt.Printf("  reads whose user_version disagreed with the model: %d\n", readMismatches)
 	fmt.Printf("  final files vs the recipe state the model expects: %d exact bytes, %d equal except the change counter, %d wrong\n", exact, masked, wrong)
 	budget := int64(limit)*(2*cacheBudgetBytes()+uncountedPerConnection) + memoryConstant
-	fmt.Printf("INFO: %s peak process-memory growth %s; budget %d x (2 x %s cache + %s) + %s = %s\n", mode, mib(maxRSS), limit, mib(cacheBudgetBytes()), mib(uncountedPerConnection), mib(memoryConstant), mib(budget))
+	fmt.Printf("INFO: %s peak process-memory growth %s; budget %d x (2 x %d KiB cache + %d KiB) + %s = %s\n", mode, mib(maxRSS), limit, cacheBudgetBytes()/1024, uncountedPerConnection/1024, mib(memoryConstant), mib(budget))
 	fmt.Printf("INFO: %s mean read latency: warm (connection already open) %s over %d, cold (open + verify + read) %s over %d; stream took %s\n",
 		mode, meanOf(warm, warmCount), warmCount, meanOf(cold, coldCount), coldCount, elapsed.Round(time.Millisecond))
 	fmt.Printf("RESULT %s peak-fds=%d peak-rss=%d budget=%d warm-ns=%d cold-ns=%d\n", mode, maxFDs, maxRSS, budget, nanos(warm, warmCount), nanos(cold, coldCount))
@@ -619,7 +619,8 @@ func partB(ctx context.Context, work, master string) {
 	}
 	h.Release()
 	status = evict(m, dbID(3))
-	check(!status.AtRest && strings.Contains(strings.Join(status.Problems, ";"), "-shm exists"), "B4: with PERSIST_WAL the close checkpoints but keeps the -wal (with its bytes) and the -shm, so the manager refuses to call it at rest")
+	problems := strings.Join(status.Problems, ";")
+	check(!status.AtRest && strings.Contains(problems, "-wal holds") && strings.Contains(problems, "-shm exists"), "B4: with PERSIST_WAL the close checkpoints but keeps the -wal (with its bytes) and the -shm, so the manager refuses to call it at rest")
 	persisted := filepath.Join(dir, "persist-wal-copy.db")
 	if err := copyFile(path(3), persisted); err != nil {
 		fatal("copy", err)
@@ -633,8 +634,10 @@ func partB(ctx context.Context, work, master string) {
 		fatal("rename", err)
 	}
 	status = evict(m, dbID(4))
-	fmt.Printf("    left at the old name: %s\n", walSize(path(4)))
-	check(!status.AtRest && status.Problems[0] == "database file missing", "B5: the manager reports the database file missing at its path")
+	leftBehind := walSize(path(4))
+	fmt.Printf("    left at the old name: %s\n", leftBehind)
+	check(!status.AtRest && len(status.Problems) > 0 && status.Problems[0] == "database file missing", "B5: the manager reports the database file missing at its path")
+	check(leftBehind != "no -wal" && leftBehind != "-wal 0 bytes", "B5: a -wal with content stays behind at the old name")
 	expectStep(ctx, moved, 0, "B5: the moved file looks at rest but holds step 0: close saw the file had moved, skipped the checkpoint, and step 1 stayed in the -wal under the old name")
 
 	fmt.Println("B6. the file changes while it is closed")

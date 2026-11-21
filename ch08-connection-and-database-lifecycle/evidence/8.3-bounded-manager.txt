@@ -12,9 +12,9 @@ bounded run: capacity 64
   descriptors: 401 samples, peak 192 above the baseline; samples where descriptors != 3 x open connections: 0; after Close: 0
   reads whose user_version disagreed with the model: 0
   final files vs the recipe state the model expects: 970 exact bytes, 30 equal except the change counter, 0 wrong
-INFO: bounded peak process-memory growth 22.6 MiB; budget 64 x (2 x 0.2 MiB cache + 0.2 MiB) + 32.0 MiB = 80.0 MiB
-INFO: bounded mean read latency: warm (connection already open) 151µs over 1077, cold (open + verify + read) 5.353ms over 2338; stream took 30.113s
-INFO: RESULT bounded peak-fds=192 peak-rss=23650304 budget=83886080 warm-ns=151426 cold-ns=5353154
+INFO: bounded peak process-memory growth 22.7 MiB; budget 64 x (2 x 256 KiB cache + 256 KiB) + 32.0 MiB = 80.0 MiB
+INFO: bounded mean read latency: warm (connection already open) 112µs over 1077, cold (open + verify + read) 3.565ms over 2338; stream took 17.251s
+INFO: RESULT bounded peak-fds=192 peak-rss=23764992 budget=83886080 warm-ns=111987 cold-ns=3564824
 check ok: bounded: at every sample the process held exactly 3 descriptors per open connection, at most 192; none after Close
 check ok: bounded: never more than 64 connections open
 check ok: bounded: every eviction left the file at rest, and every reopen matched the sha256 recorded at its eviction
@@ -27,9 +27,9 @@ unbounded run: capacity 1000
   descriptors: 401 samples, peak 2598 above the baseline; samples where descriptors != 3 x open connections: 0; after Close: 0
   reads whose user_version disagreed with the model: 0
   final files vs the recipe state the model expects: 880 exact bytes, 120 equal except the change counter, 0 wrong
-INFO: unbounded peak process-memory growth 211.6 MiB; budget 1000 x (2 x 0.2 MiB cache + 0.2 MiB) + 32.0 MiB = 782.0 MiB
-INFO: unbounded mean read latency: warm (connection already open) 156µs over 2725, cold (open + verify + read) 1.941ms over 690; stream took 17.233s
-INFO: RESULT unbounded peak-fds=2598 peak-rss=221839360 budget=819986432 warm-ns=156358 cold-ns=1940578
+INFO: unbounded peak process-memory growth 211.4 MiB; budget 1000 x (2 x 256 KiB cache + 256 KiB) + 32.0 MiB = 782.0 MiB
+INFO: unbounded mean read latency: warm (connection already open) 144µs over 2725, cold (open + verify + read) 1.757ms over 690; stream took 13.082s
+INFO: RESULT unbounded peak-fds=2598 peak-rss=221691904 budget=819986432 warm-ns=143988 cold-ns=1757320
 check ok: unbounded: at every sample the process held exactly 3 descriptors per open connection, at most 2598; none after Close
 check ok: unbounded: never more than 1000 connections open
 check ok: unbounded: every eviction left the file at rest, and every reopen matched the sha256 recorded at its eviction
@@ -38,7 +38,7 @@ check ok: unbounded: every read saw the model's step, and every final file equal
 contrast:
 check ok: the unbounded run's peak descriptors exceed the bounded run's limit 3 x K = 192
 check ok: the unbounded run's peak process-memory growth exceeds the bounded run's (SHAPE)
-INFO: peak memory growth bounded 22.6 MiB vs unbounded 211.6 MiB; cold read 5.353154ms vs warm 151.426µs (bounded run)
+INFO: peak memory growth bounded 22.7 MiB vs unbounded 211.4 MiB; cold read 3.564824ms vs warm 111.987µs (bounded run)
 
 == B. when a closed WAL database is NOT a single file at rest ==
 B1. another process still has the database open when the manager closes its connection
@@ -48,7 +48,7 @@ check ok: B1: the manager's close could not checkpoint or delete the WAL (anothe
     db-0000.db: step 1 (exact bytes)
 check ok: B1: the last connection to close (the other process) checkpointed and deleted the WAL: at rest, holding step 1
 B2. a statement left open (rows not closed) when the handle is released
-    eviction of db-0001: not at rest: -wal holds 90672 bytes: the database file alone may lack committed transactions; -shm exists (32768 bytes): a connection is open or did not close cleanly
+    eviction of db-0001: not at rest: 1 connection(s) still open in this process: a statement, transaction or *sql.Conn was not closed, so database/sql closes the connection only when it is returned
 check ok: B2: database/sql cannot close a connection that a statement still uses, so DB.Close returned and the file is not at rest
     after rows.Close: at rest, 90112 bytes, sha256 6d8cfc77d5f514b26155ee7c31633198a55633b68b761ba297e4031b7e318924
     db-0001.db: step 1 (exact bytes)
@@ -70,6 +70,7 @@ B5. the file is renamed while its connection is open
     eviction of db-0004: not at rest: database file missing
     left at the old name: -wal 90672 bytes
 check ok: B5: the manager reports the database file missing at its path
+check ok: B5: a -wal with content stays behind at the old name
     moved.db: step 0 (exact bytes)
 check ok: B5: the moved file looks at rest but holds step 0: close saw the file had moved, skipped the checkpoint, and step 1 stayed in the -wal under the old name
 B6. the file changes while it is closed
