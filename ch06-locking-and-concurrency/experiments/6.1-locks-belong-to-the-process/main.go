@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -146,6 +148,83 @@ func walMode(ctx context.Context, lab *procs.Lab, dir string) {
 		"the file passes integrity_check and holds only the second process's row: the holder's transaction is lost, and the holder was told")
 }
 
+func walWithFrames(ctx context.Context, lab *procs.Lab, dir string) {
+	fmt.Println()
+	fmt.Println("== C. WAL mode, the WAL already holding a commit no checkpoint has copied (wal_autocheckpoint=0): a stray close of -shm only")
+	db, holder, contender := prepareIn(ctx, lab, filepath.Join(dir, "wal-with-frames"), procs.SQLOptions{JournalMode: sqlitex.JournalWAL})
+	shm := db + "-shm"
+	shmRanges := procs.ShmLockRanges()
+	lab.Must(holder, "exec", "INSERT INTO lab VALUES (1, 'seed')")
+	lab.Must(holder, "begin", "immediate")
+	lab.Must(holder, "exec", "INSERT INTO lab VALUES (2, 'holder')")
+	before := lab.Locks("-shm", shm, shmRanges)
+	lab.Check(procs.WriteLockedBy(before.Ranges, "WAL_WRITE_LOCK", holder.Pid) && procs.ReadLocked(before.Ranges, "WAL_READ_LOCK(1)") && procs.Unlocked(before.Ranges, "WAL_READ_LOCK(0)"),
+		"with frames in the WAL the holder reads through WAL_READ_LOCK(1), not WAL_READ_LOCK(0)")
+	refused := lab.Do(contender, "begin", "immediate")
+	lab.Check(refused.Code == sqlitex.CodeBusy, "a second process is refused: BEGIN IMMEDIATE returns SQLITE_BUSY (5)")
+	lab.Must(holder, "stray-close", "-shm")
+	after := lab.Locks("-shm", shm, shmRanges)
+	lab.Check(procs.Unlocked(after.Ranges, "WAL_WRITE_LOCK", "WAL_READ_LOCK(1)"), "the stray close of -shm releases the holder's write lock and read lock")
+	admitted := []procs.Result{lab.Do(contender, "begin", "immediate"), lab.Do(contender, "exec", "INSERT INTO lab VALUES (3, 'contender')"), lab.Do(contender, "commit")}
+	lab.Check(allOK(admitted), "the second process is admitted, writes and commits: every statement returns SQLITE_OK")
+	holderCommit := lab.Do(holder, "commit")
+	lab.Check(holderCommit.OK(),
+		"the holder's COMMIT also returns SQLITE_OK: it is not on WAL_READ_LOCK(0), so it never re-reads the wal-index header and writes its frames over the other commit's")
+	seen := lab.Do(contender, "query", rowsQuery)
+	lab.Check(seen.OK() && seen.Value == "2 row(s): seed,holder",
+		"the second process, still open, no longer sees the row it committed")
+	inspection := finalRows(ctx, lab, db, sqlitex.JournalWAL)
+	lab.Check(inspection.Integrity == "ok" && inspection.Values[0] == "2 row(s): seed,holder",
+		"the file passes integrity_check and holds the seed and the holder's row: a commit that returned SQLITE_OK is lost and neither process was told")
+}
+
+func walContenderExits(ctx context.Context, lab *procs.Lab, dir string) {
+	fmt.Println()
+	fmt.Println("== D. WAL mode as in B, but the second process closes its connection and exits before the holder commits")
+	db, holder, contender := prepareIn(ctx, lab, filepath.Join(dir, "wal-contender-exits"), procs.SQLOptions{JournalMode: sqlitex.JournalWAL})
+	lab.Must(holder, "begin", "immediate")
+	lab.Must(holder, "exec", "INSERT INTO lab VALUES (1, 'holder')")
+	lab.Must(holder, "stray-close", "db")
+	lab.Must(holder, "stray-close", "-shm")
+	admitted := []procs.Result{lab.Do(contender, "begin", "immediate"), lab.Do(contender, "exec", "INSERT INTO lab VALUES (2, 'contender')"), lab.Do(contender, "commit")}
+	lab.Check(allOK(admitted), "the second process is admitted, writes and commits: every statement returns SQLITE_OK")
+	if err := contender.Stop(); err != nil {
+		lab.Fatal("stop contender", err)
+	}
+	fmt.Printf("contender closed its connection and exited cleanly; then %s is %s and %s is %s\n",
+		filepath.Base(db)+"-wal", presence(db+"-wal"), filepath.Base(db)+"-shm", presence(db+"-shm"))
+	lab.Check(presence(db+"-wal") == "gone" && presence(db+"-shm") == "gone",
+		"seeing no other process's locks, the second process closed as the last connection and deleted -wal and -shm")
+	holderCommit := lab.Do(holder, "commit")
+	lab.Check(holderCommit.OK(), "the holder's COMMIT returns SQLITE_OK")
+	fmt.Printf("after the holder's commit: %s is %s\n", filepath.Base(db)+"-wal", presence(db+"-wal"))
+	lab.Check(presence(db+"-wal") == "gone", "no -wal file exists under that name: the holder wrote its commit into the deleted file it still had open")
+	inspection := finalRows(ctx, lab, db, sqlitex.JournalWAL)
+	lab.Check(inspection.Integrity == "ok" && inspection.Values[0] == "1 row(s): holder",
+		"the file passes integrity_check and holds only the holder's row: the second process's commit is lost and neither process was told")
+}
+
+func presence(path string) string {
+	_, err := os.Stat(path)
+	switch {
+	case err == nil:
+		return "present"
+	case errors.Is(err, fs.ErrNotExist):
+		return "gone"
+	default:
+		return "unreadable: " + err.Error()
+	}
+}
+
+func allOK(results []procs.Result) bool {
+	for _, r := range results {
+		if !r.OK() {
+			return false
+		}
+	}
+	return true
+}
+
 func main() {
 	if procs.Serve(procs.Roles) {
 		return
@@ -160,5 +239,7 @@ func main() {
 	lab := procs.NewLab(os.Stdout)
 	rollbackMode(ctx, lab, dir)
 	walMode(ctx, lab, dir)
+	walWithFrames(ctx, lab, dir)
+	walContenderExits(ctx, lab, dir)
 	lab.Report("LOCKS BELONG TO THE PROCESS")
 }
