@@ -224,7 +224,15 @@ func DecodeSnapshot(data []byte) (SnapshotMeta, []byte, error) {
 	if err := checkBody(body, meta.BodyBytes, meta.BodySHA256); err != nil {
 		return meta, nil, err
 	}
-	if meta.PageSize <= 0 || len(body)%meta.PageSize != 0 || uint32(len(body)/meta.PageSize) != meta.Pages {
+	if meta.PageSize < walfile.MinPageSize || meta.PageSize > walfile.MaxPageSize || meta.PageSize&(meta.PageSize-1) != 0 {
+		return meta, nil, fmt.Errorf("%w: snapshot page size %d", ErrMalformedObject, meta.PageSize)
+	}
+	if !meta.WAL.Generation.None() {
+		if _, err := meta.WAL.Generation.Bytes(); err != nil {
+			return meta, nil, fmt.Errorf("%w: snapshot WAL generation: %v", ErrMalformedObject, err)
+		}
+	}
+	if meta.Pages == 0 || len(body)%meta.PageSize != 0 || uint32(len(body)/meta.PageSize) != meta.Pages {
 		return meta, nil, fmt.Errorf("%w: snapshot body of %d bytes is not %d pages of %d bytes", ErrMalformedObject, len(body), meta.Pages, meta.PageSize)
 	}
 	if SHA256Hex(body) != meta.StateSHA256 {

@@ -15,12 +15,20 @@ func VerifySegmentFrames(meta SegmentMeta, frames []byte) error {
 	if err != nil {
 		return err
 	}
-	bigEndian := binary.BigEndian.Uint32(header[0:])&1 == 1
+	parsed, err := walfile.Parse(header)
+	if err != nil {
+		return fmt.Errorf("%w: segment WAL header: %v", ErrMalformedObject, err)
+	}
+	if parsed.PageSize() != meta.PageSize {
+		return fmt.Errorf("%w: segment WAL header page size %d, metadata page size %d", ErrMalformedObject, parsed.PageSize(), meta.PageSize)
+	}
+	bigEndian := parsed.Header.BigEndianChecksums()
 	frameSize := meta.PageSize + walfile.FrameHeaderSize
 	if len(frames) != (meta.LastFrame-meta.FirstFrame+1)*frameSize {
 		return fmt.Errorf("%w: %d bytes for frames %d-%d", ErrMalformedObject, len(frames), meta.FirstFrame, meta.LastFrame)
 	}
 	chain := walfile.Checksum(meta.SeedChecksum)
+	commit := 0
 	for offset, number := 0, meta.FirstFrame; offset < len(frames); offset, number = offset+frameSize, number+1 {
 		frame := frames[offset : offset+frameSize]
 		if string(frame[8:16]) != string(header[16:24]) {
@@ -28,6 +36,13 @@ func VerifySegmentFrames(meta SegmentMeta, frames []byte) error {
 		}
 		if binary.BigEndian.Uint32(frame[0:]) == 0 {
 			return fmt.Errorf("%w: frame %d has page number 0", ErrChecksumChain, number)
+		}
+		listed := commit < len(meta.Commits) && meta.Commits[commit].Frame == number
+		if commitSize := binary.BigEndian.Uint32(frame[4:]); commitSize != 0 || listed {
+			if !listed || meta.Commits[commit].Pages != commitSize {
+				return fmt.Errorf("%w: frame %d has commit size %d, which the segment's commit points do not list", ErrMalformedObject, number, commitSize)
+			}
+			commit++
 		}
 		next, err := walfile.ChecksumBytes(bigEndian, frame[:8], chain)
 		if err != nil {
@@ -42,6 +57,9 @@ func VerifySegmentFrames(meta SegmentMeta, frames []byte) error {
 			return fmt.Errorf("%w: frame %d stores a checksum the chain does not give", ErrChecksumChain, number)
 		}
 		chain = next
+	}
+	if commit != len(meta.Commits) {
+		return fmt.Errorf("%w: %d commit points, %d commit frames", ErrMalformedObject, len(meta.Commits), commit)
 	}
 	if chain != walfile.Checksum(meta.LastChecksum) {
 		return fmt.Errorf("%w: the chain does not end at the checksum the metadata records", ErrChecksumChain)

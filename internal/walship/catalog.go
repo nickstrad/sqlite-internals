@@ -282,9 +282,9 @@ func Prune(ctx context.Context, store Store, keepFrom int64) ([]string, error) {
 			deleted = append(deleted, s.Key)
 		}
 	}
-	for _, key := range deleted {
+	for i, key := range deleted {
 		if err := store.Delete(ctx, key); err != nil {
-			return deleted, err
+			return deleted[:i], err
 		}
 	}
 	return deleted, nil

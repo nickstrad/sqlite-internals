@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"strings"
 
 	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
 	"github.com/nickstrad/sqlite-internals/internal/walfile"
@@ -125,7 +126,7 @@ func Open(ctx context.Context, config Config) (*Shipper, error) {
 	if config.SnapshotEvery < 0 {
 		return nil, errors.New("walship: SnapshotEvery must not be negative")
 	}
-	if config.Options.File.JournalMode != sqlitex.JournalWAL {
+	if !strings.EqualFold(config.Options.File.JournalMode, sqlitex.JournalWAL) {
 		return nil, fmt.Errorf("%w: journal mode %q", ErrNotWAL, config.Options.File.JournalMode)
 	}
 	options := config.Options
@@ -186,6 +187,11 @@ func (s *Shipper) start(ctx context.Context) error {
 
 func (s *Shipper) resume(catalog *Catalog) error {
 	last, _ := catalog.LastPosition()
+	for _, d := range catalog.Damaged {
+		if _, position, err := ParseKey(d.Key); err == nil && position > last {
+			return fmt.Errorf("walship: resume: %w: the store holds a damaged object %s past the last usable position %d: %s", ErrBrokenChain, d.Key, last, d.Problem)
+		}
+	}
 	plan, err := catalog.Plan(last)
 	if err != nil {
 		return fmt.Errorf("walship: resume: %w", err)
@@ -341,9 +347,6 @@ func (s *Shipper) snapshot(ctx context.Context, reason string, position int64, d
 		if digest != s.state {
 			return nil, fmt.Errorf("%w: SQLite's pages hash to %s, the replayed state to %s", ErrMirrorDiverged, short(digest), short(s.state))
 		}
-		if frame != s.wal.Frame || generationOf(data, file) != s.wal.Generation {
-			return nil, fmt.Errorf("%w: the WAL moved under the write lock", ErrMirrorDiverged)
-		}
 	}
 	meta := SnapshotMeta{
 		Position: position, Reason: reason, PageSize: s.pageSize, Pages: uint32(len(image) / s.pageSize),
@@ -372,7 +375,10 @@ func (s *Shipper) Cycle(ctx context.Context) (CycleReport, error) {
 		if err != nil {
 			return err
 		}
-		start, change, reason := s.classify(data, file)
+		start, change, reason, err := s.classify(ctx, data, file)
+		if err != nil {
+			return err
+		}
 		report.Change, report.Reason = change, reason
 		if change == WALDiscontinuity {
 			meta, err := s.snapshot(ctx, ReasonDiscontinuity, s.position+1, data, file)
@@ -420,24 +426,33 @@ func (s *Shipper) Cycle(ctx context.Context) (CycleReport, error) {
 	return report, nil
 }
 
-func (s *Shipper) classify(data []byte, file *walfile.File) (WALPosition, WALChange, string) {
+func (s *Shipper) classify(ctx context.Context, data []byte, file *walfile.File) (WALPosition, WALChange, string, error) {
 	current := generationOf(data, file)
 	if current == s.wal.Generation {
+		if current.None() && !s.continuous {
+			image, err := s.readPages(ctx)
+			if err != nil {
+				return s.wal, WALUnchanged, "", err
+			}
+			if SHA256Hex(image) != s.state {
+				return s.wal, WALDiscontinuity, "there is no WAL and the database pages differ from the last shipped state", nil
+			}
+		}
 		if lastCommit(file) < s.wal.Frame {
-			return s.wal, WALDiscontinuity, fmt.Sprintf("the WAL holds %d committed frames, %d were already shipped", lastCommit(file), s.wal.Frame)
+			return s.wal, WALDiscontinuity, fmt.Sprintf("the WAL holds %d committed frames, %d were already shipped", lastCommit(file), s.wal.Frame), nil
 		}
 		if s.wal.Frame > 0 && chainAt(file, s.wal.Frame) != s.wal.Checksum {
-			return s.wal, WALDiscontinuity, fmt.Sprintf("frame %d no longer carries the shipped checksum", s.wal.Frame)
+			return s.wal, WALDiscontinuity, fmt.Sprintf("frame %d no longer carries the shipped checksum", s.wal.Frame), nil
 		}
-		return s.wal, WALUnchanged, ""
+		return s.wal, WALUnchanged, "", nil
 	}
 	if !s.continuous {
-		return s.wal, WALDiscontinuity, "the WAL header changed while the shipper held no read mark"
+		return s.wal, WALDiscontinuity, "the WAL header changed while the shipper held no read mark", nil
 	}
 	if !s.wal.Generation.None() && !s.fullyBackfilled {
-		return s.wal, WALDiscontinuity, "the WAL header changed although the shipper's last checkpoint did not copy every frame"
+		return s.wal, WALDiscontinuity, "the WAL header changed although the shipper's last checkpoint did not copy every frame", nil
 	}
-	return WALPosition{Generation: current, Frame: 0, Checksum: chainAt(file, 0)}, WALNewGeneration, ""
+	return WALPosition{Generation: current, Frame: 0, Checksum: chainAt(file, 0)}, WALNewGeneration, "", nil
 }
 
 func (s *Shipper) ship(ctx context.Context, data []byte, file *walfile.File) (*SegmentMeta, error) {
@@ -449,20 +464,21 @@ func (s *Shipper) ship(ctx context.Context, data []byte, file *walfile.File) (*S
 		FirstPosition: s.position + 1, Generation: s.wal.Generation, FirstFrame: first, LastFrame: last,
 		SeedChecksum: s.wal.Checksum, LastChecksum: chainAt(file, last), PageSize: s.pageSize, BeforeSHA256: s.state,
 	}
-	image := s.image
 	for _, frame := range file.Frames[first-1 : last] {
-		if !frame.IsCommit() {
-			continue
+		if frame.IsCommit() {
+			meta.Commits = append(meta.Commits, CommitPoint{
+				Position: s.position + int64(len(meta.Commits)) + 1, Frame: frame.Number, Pages: frame.CommitSize,
+			})
 		}
-		out, _, err := ApplySegment(s.image, meta, body, frame.Number)
+	}
+	image := s.image
+	for i := range meta.Commits {
+		out, _, err := ApplySegment(s.image, meta, body, meta.Commits[i].Frame)
 		if err != nil {
 			return nil, err
 		}
 		image = out
-		meta.Commits = append(meta.Commits, CommitPoint{
-			Position: s.position + int64(len(meta.Commits)) + 1, Frame: frame.Number, Pages: frame.CommitSize,
-			UserVersion: userVersion(out), StateSHA256: SHA256Hex(out),
-		})
+		meta.Commits[i].UserVersion, meta.Commits[i].StateSHA256 = userVersion(out), SHA256Hex(out)
 	}
 	meta.LastPosition = meta.Commits[len(meta.Commits)-1].Position
 	meta.AfterSHA256 = meta.Commits[len(meta.Commits)-1].StateSHA256
