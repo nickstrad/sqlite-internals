@@ -9,6 +9,7 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/rangefs"
 )
 
+// TestWipeInBatchesDeletesMoreThanOneBatch puts 1,003 objects into live SeaweedFS and verifies WipeInBatches deletes across two S3 DeleteObjects requests.
 func TestWipeInBatchesDeletesMoreThanOneBatch(t *testing.T) {
 	ctx := context.Background()
 	s, err := Connect(ctx, rangefs.S3ConfigFromEnv(), "course-ch10b", "test-wipe-batches")

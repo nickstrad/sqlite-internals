@@ -6,6 +6,10 @@ import (
 	"strconv"
 )
 
+// handleRelocation dispatches the relocation participant commands (seal, drain,
+// stage, activate [without-fence], retire, discard) plus status and check for
+// Serve's line protocol. The optional "without-fence" argument on activate
+// supports Experiment 10.3's skip-fence self-test mutant.
 func (n *Node) handleRelocation(ctx context.Context, command string, fields []string) string {
 	refused := func(err error) string { return fmt.Sprintf("refused %s: %s", command, Explain(err)) }
 	switch {

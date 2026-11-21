@@ -9,8 +9,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
+// deleteBatch is S3's maximum object count per DeleteObjects request.
 const deleteBatch = 1000
 
+// WipeInBatches lists every object under s.Prefix, removes them in S3
+// DeleteObjects batches of up to 1,000 keys, and re-lists to confirm the prefix
+// is empty before returning the deleted object count.
 func (s *Store) WipeInBatches(ctx context.Context) (int, error) {
 	keys, err := s.List(ctx, "")
 	if err != nil {

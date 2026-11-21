@@ -1,3 +1,9 @@
+// Package lab owns the shared experiment harness used by Experiments 10.2,
+// 10.3, and 10.4: resetting scratch work directories and S3 prefixes, managing
+// node child processes, tracking problem and standing-bounds lines across
+// replies, matching recovered images against recipe step hashes, running the
+// concurrent fleet checker subprocess, counting store operations, and
+// quiescing closed databases with a TRUNCATE checkpoint.
 package lab
 
 import (
@@ -16,6 +22,9 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
 )
 
+// Env bundles one experiment's scratch work directory, S3 store, shared
+// catalog, template node ProcessConfig, precomputed recipe step hashes, and
+// reply Tracker.
 type Env struct {
 	Ctx     context.Context
 	Work    string
@@ -26,10 +35,14 @@ type Env struct {
 	Tracker Tracker
 }
 
+// Connect connects to the SeaweedFS S3 store configured in the environment
+// using process.Bucket and process.Prefix.
 func Connect(ctx context.Context, process node.ProcessConfig) (*s3store.Store, error) {
 	return s3store.Connect(ctx, rangefs.S3ConfigFromEnv(), process.Bucket, process.Prefix)
 }
 
+// New prepares an Env for experiment name under _work/<name>/ and precomputes
+// the recipe step hashes used to verify recovered and rebuilt databases.
 func New(ctx context.Context, name string, store *s3store.Store, process node.ProcessConfig) (*Env, error) {
 	work, err := sqlitex.WorkDir(name)
 	if err != nil {
@@ -43,6 +56,8 @@ func New(ctx context.Context, name string, store *s3store.Store, process node.Pr
 	return &Env{Ctx: ctx, Work: work, Store: store, Process: process, Hashes: hashes}, nil
 }
 
+// ShownWork returns e.Work relative to the repository root when possible so
+// INFO lines never print machine-specific absolute paths.
 func (e *Env) ShownWork() string {
 	if root, err := sqlitex.RepoRoot(); err == nil {
 		if relative, err := filepath.Rel(root, e.Work); err == nil {
@@ -52,6 +67,8 @@ func (e *Env) ShownWork() string {
 	return e.Work
 }
 
+// Reset closes any open catalog, wipes e.Work and the experiment's S3 prefix,
+// opens a fresh catalog, and registers ids with node.PlatformSettings().
 func (e *Env) Reset(ids []string) error {
 	if e.Catalog != nil {
 		if err := e.Catalog.Close(); err != nil {
@@ -79,6 +96,7 @@ func (e *Env) Reset(ids []string) error {
 	return cat.RegisterAll(e.Ctx, ids, node.PlatformSettings())
 }
 
+// Close closes the open catalog handle, if any.
 func (e *Env) Close() error {
 	if e.Catalog == nil {
 		return nil
@@ -88,22 +106,28 @@ func (e *Env) Close() error {
 	return err
 }
 
+// Config returns a copy of e.Process specialized for node name and optional
+// faultstore rule string.
 func (e *Env) Config(name, fault string) node.ProcessConfig {
 	config := e.Process
 	config.Name, config.Fault = name, fault
 	return config
 }
 
+// Start launches a child node process with config and waits for its "ready" line.
 func (e *Env) Start(config node.ProcessConfig) (*node.Process, error) {
 	return node.StartProcess(e.Ctx, config.Name, config.Args()...)
 }
 
+// NodeDir returns the local directory owned by node name under e.Work.
 func (e *Env) NodeDir(name string) string { return filepath.Join(e.Work, name) }
 
+// DatabasePath returns the local path to database id inside nodeName's directory.
 func (e *Env) DatabasePath(nodeName, id string) string {
 	return filepath.Join(e.Work, nodeName, id+".db")
 }
 
+// Send dispatches command to node process p and records its reply in e.Tracker.
 func (e *Env) Send(p *node.Process, command string) (node.Reply, error) {
 	reply, err := p.Send(command)
 	if err == nil {
@@ -112,6 +136,8 @@ func (e *Env) Send(p *node.Process, command string) (node.Reply, error) {
 	return reply, err
 }
 
+// Stop cleanly closes node process p, records its closing reply in e.Tracker,
+// and appends a problem if the close reply did not start with "ok ".
 func (e *Env) Stop(p *node.Process) (node.Reply, error) {
 	reply, err := p.Close()
 	if err == nil {
@@ -123,6 +149,7 @@ func (e *Env) Stop(p *node.Process) (node.Reply, error) {
 	return reply, err
 }
 
+// Ids generates count zero-padded database ids ("<prefix>-0001" .. "<prefix>-NNNN").
 func Ids(prefix string, count int) []string {
 	ids := make([]string, count)
 	for i := range ids {
@@ -131,12 +158,15 @@ func Ids(prefix string, count int) []string {
 	return ids
 }
 
+// Tracker aggregates bounds checks, background node problems, and out-of-bounds
+// lines observed across all child processes in an experiment run.
 type Tracker struct {
 	Replies    int
 	Problems   []string
 	OverBounds []string
 }
 
+// Note records one interactive command reply from node name.
 func (t *Tracker) Note(name string, reply node.Reply) {
 	t.Replies++
 	for _, problem := range reply.Problems {
@@ -147,9 +177,15 @@ func (t *Tracker) Note(name string, reply node.Reply) {
 	}
 }
 
+// NoteOutput parses the captured stdout of a non-interactive (for example,
+// strace-killed) node process, discarding any trailing incomplete line left by
+// SIGKILL, recording bounds and problem lines, and returning all complete
+// "ok …"/"refused …" replies.
 func (t *Tracker) NoteOutput(name, stdout string) []string {
 	var replies []string
 	lines := strings.Split(stdout, "\n")
+	// A killed process may die mid-line; ignore a trailing line with no newline
+	// so partial stdout never turns into a false problem or acknowledgement.
 	if len(lines) > 0 && !strings.HasSuffix(stdout, "\n") {
 		lines = lines[:len(lines)-1]
 	}
@@ -170,12 +206,16 @@ func (t *Tracker) NoteOutput(name, stdout string) []string {
 	return replies
 }
 
+// Recovered summarizes matching a closed database image against the recipe's
+// known step hashes.
 type Recovered struct {
 	UserVersion int
 	Match       recipe.Match
 	RecipeState bool
 }
 
+// MatchFile verifies that path is at rest (no -wal/-shm sidecars), reads its
+// bytes, and matches them against e.Hashes.
 func (e *Env) MatchFile(path string) (Recovered, error) {
 	status, err := connmgr.CheckAtRest(path)
 	if err != nil {
@@ -191,10 +231,13 @@ func (e *Env) MatchFile(path string) (Recovered, error) {
 	return e.MatchImage(image)
 }
 
+// MatchImage matches raw database bytes image against e.Hashes.
 func (e *Env) MatchImage(image []byte) (Recovered, error) {
 	return MatchImage(e.Hashes, image)
 }
 
+// AtRestSHA256 verifies that database id on nodeName is at rest and returns its
+// SHA-256 hex digest.
 func (e *Env) AtRestSHA256(nodeName, id string) (string, error) {
 	status, err := connmgr.CheckAtRest(e.DatabasePath(nodeName, id))
 	if err != nil {

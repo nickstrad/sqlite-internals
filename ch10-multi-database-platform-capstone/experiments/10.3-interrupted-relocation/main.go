@@ -1,3 +1,19 @@
+// Experiment 10.3 tests the migration safety invariant: an interrupted
+// relocation cannot silently create two authoritative copies.
+//
+// Across 32 fault cases (coordinator stops after each of the 7 steps, source
+// and destination SIGKILLs, store faults on the final segment and fence puts,
+// and rolling back while the destination stays down), node a starts owning
+// db-0001 with two store-durable commits and one unshipped local-durable commit.
+// At every step boundary a client probes both nodes' status and sends writes to
+// both the catalog owner and the other node. After each fault, a fresh
+// relocate.Coordinator recovers from the catalog's relocations row and the S3
+// store by Resume or Rollback. The experiment verifies one owner, at most one
+// writable node at every boundary, E1 equality at the fence point, preservation
+// of every acknowledged write (including local-durable writes drained by step
+// 3), and standing resource bounds. A final self-test runs the skip-fence
+// mutant (no seal and no store fence) to show two writable nodes appear and
+// the lineage audit catches it.
 package main
 
 import (
@@ -64,10 +80,14 @@ type faultCase struct {
 
 const finalSegment, fenceSlot = "log/000000000004", "log/000000000006"
 
+// interrupts reports whether the injected fault is expected to stop Run before
+// step 7 finishes. Killing destination b after step 6 (Activate) does not
+// interrupt Run because step 7 (RetireSource) talks only to source a.
 func (c faultCase) interrupts() bool {
 	return !(c.kill == "b" && c.killAfter == relocate.Activate)
 }
 
+// String formats c's injected fault and recovery strategy for case headings.
 func (c faultCase) String() string {
 	var what string
 	switch {
@@ -248,6 +268,8 @@ func runCase(env *lab.Env, number int, c faultCase, skipFence bool) (bool, int) 
 		fatal("reset", err)
 	}
 	r := &run{env: env, nodes: map[string]*node.Process{}, skipFence: skipFence}
+	// Kill any remaining node process if recovery fails before verify stops them
+	// cleanly, so no child holds open files under _work/10.3/ across cases.
 	defer func() {
 		for name, p := range r.nodes {
 			if p != nil {

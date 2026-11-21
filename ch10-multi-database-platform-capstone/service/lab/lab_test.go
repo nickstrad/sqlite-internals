@@ -11,6 +11,7 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/walship"
 )
 
+// TestTrackerReadsTracedOutput checks NoteOutput and Note record bounds, problems, and replies while ignoring an incomplete trailing line.
 func TestTrackerReadsTracedOutput(t *testing.T) {
 	var tracker Tracker
 	replies := tracker.NoteOutput("a", "ready\nok write db-1 local-durable: x\nbounds descriptors=1 memory=2 ok\nproblem evict db-1: boom\nrefused write db-2 store-durable: not the owner\nbounds descriptors=1 memory=2 EXCEEDED: too many\nok wri")
@@ -23,6 +24,7 @@ func TestTrackerReadsTracedOutput(t *testing.T) {
 	}
 }
 
+// TestParsePassIsStrict verifies ParsePass accepts canonical checker pass replies and rejects mismatched failure counts, padding, or unknown lines.
 func TestParsePassIsStrict(t *testing.T) {
 	good := node.Reply{Line: "ok pass: databases 2, restore points 9, failed 1, bytes read 100", Problems: []string{"failed db-2: unrecoverable past position 3 (last good restore point 3): gap"}}
 	pass, err := ParsePass(good)
@@ -42,6 +44,7 @@ func TestParsePassIsStrict(t *testing.T) {
 	}
 }
 
+// TestMatchImageNamesRecipeStates verifies MatchImage accepts an unmodified recipe step, rejects a 1-bit flip or truncated image, and checks Ids formatting.
 func TestMatchImageNamesRecipeStates(t *testing.T) {
 	ctx := context.Background()
 	r := recipe.Default()
@@ -74,6 +77,7 @@ func TestMatchImageNamesRecipeStates(t *testing.T) {
 	}
 }
 
+// TestDatabasesInRefusesForeignKeys checks DatabasesIn extracts sorted database ids from fenced slot keys and rejects keys outside dbs/<id>/log/<pos>.
 func TestDatabasesInRefusesForeignKeys(t *testing.T) {
 	ctx := context.Background()
 	store, err := walship.NewDirStore(t.TempDir())

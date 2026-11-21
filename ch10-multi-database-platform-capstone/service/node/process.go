@@ -123,7 +123,8 @@ func (p *Process) Close() (Reply, error) {
 	return reply, errors.Join(p.stdin.Close(), p.cmd.Wait())
 }
 
-// ProcessConfig carries the command-line parameters for a node child process.
+// ProcessConfig carries the command-line parameters for a node child process,
+// including the optional AckBeforePut mutant flag for Experiment 10.2.
 type ProcessConfig struct {
 	Name         string
 	Work         string
@@ -135,7 +136,8 @@ type ProcessConfig struct {
 }
 
 // Args renders c into the flag slice expected by an experiment's "-role node"
-// entry point.
+// entry point. It appends "-ack-before-put" only when AckBeforePut is true so
+// experiments without that flag (such as 10.1) receive unchanged arguments.
 func (c ProcessConfig) Args() []string {
 	args := []string{"-role", "node", "-name", c.Name, "-work", c.Work, "-fault", c.Fault, "-bucket", c.Bucket, "-prefix", c.Prefix, "-capacity", fmt.Sprint(c.Capacity)}
 	if c.AckBeforePut {

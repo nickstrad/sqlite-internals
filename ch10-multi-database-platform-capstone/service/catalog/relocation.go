@@ -8,17 +8,35 @@ import (
 	"regexp"
 )
 
+// Relocation lifecycle states stored in the relocations table.
 const (
-	RelocationRunning    = "running"
-	RelocationDone       = "done"
+	// RelocationRunning marks a relocation that is still in progress and blocks
+	// a second concurrent relocation of the same database.
+	RelocationRunning = "running"
+	// RelocationDone marks a relocation whose destination fenced and activated
+	// and whose source retired cleanly.
+	RelocationDone = "done"
+	// RelocationRolledBack marks a relocation cancelled before the destination
+	// fenced the store, returning ownership to the source at a higher epoch.
 	RelocationRolledBack = "rolled-back"
+	// RelocationSuperseded marks a relocation overtaken by a newer epoch in the
+	// store (for example, an explicit takeover by another node).
 	RelocationSuperseded = "superseded"
 )
 
+// Sentinel errors returned by relocation state-machine transitions in the catalog.
 var (
-	ErrNotTheOwner        = errors.New("catalog: the database is not owned by that node")
-	ErrRelocationRunning  = errors.New("catalog: a relocation of the database is already running")
-	ErrNoRelocation       = errors.New("catalog: no running relocation of the database")
+	// ErrNotTheOwner reports that BeginRelocation's source is not the database's
+	// current catalog owner (or that the database has never been claimed).
+	ErrNotTheOwner = errors.New("catalog: the database is not owned by that node")
+	// ErrRelocationRunning reports that another relocation row for the database
+	// is already in the running state.
+	ErrRelocationRunning = errors.New("catalog: a relocation of the database is already running")
+	// ErrNoRelocation reports that no matching relocation row exists (or that
+	// FinishRelocation targeted a row that is no longer running).
+	ErrNoRelocation = errors.New("catalog: no running relocation of the database")
+	// ErrRelocationStepGoes reports that AdvanceRelocation tried to jump more
+	// than one step ahead of the recorded step, or targeted a non-running row.
 	ErrRelocationStepGoes = errors.New("catalog: a relocation can only record a step at most one past its last")
 	sha256Hex             = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
@@ -35,6 +53,9 @@ const relocationSchema = `CREATE TABLE IF NOT EXISTS relocations (
 	state TEXT NOT NULL
 ) STRICT`
 
+// Relocation is the coordinator's sole durable record of a database move from
+// Source (FromEpoch) to Destination (ToEpoch), tracking the last completed
+// step, the drained fence-point Position and SHA256, and State.
 type Relocation struct {
 	ID          string
 	Source      string
@@ -47,6 +68,7 @@ type Relocation struct {
 	State       string
 }
 
+// String formats r as a single-line summary for error messages and logs.
 func (r Relocation) String() string {
 	return fmt.Sprintf("relocation of %s from %s (epoch %d) to %s (epoch %d): step %d, position %d, state %s",
 		r.ID, r.Source, r.FromEpoch, r.Destination, r.ToEpoch, r.Step, r.Position, r.State)
@@ -57,6 +79,10 @@ func (c *Catalog) ensureRelocations(ctx context.Context) error {
 	return err
 }
 
+// BeginRelocation executes relocation step 1 atomically in one SQLite
+// transaction: it verifies source currently owns id with no running relocation,
+// reassigns databases.owner to destination while bumping epoch by 1 and
+// clearing location, and writes the running relocations row at step 1.
 func (c *Catalog) BeginRelocation(ctx context.Context, id, source, destination string) (Relocation, error) {
 	if source == destination || source == "" || destination == "" {
 		return Relocation{}, fmt.Errorf("catalog: relocate %s from %q to %q", id, source, destination)
@@ -88,6 +114,9 @@ func (c *Catalog) BeginRelocation(ctx context.Context, id, source, destination s
 	if running != 0 {
 		return Relocation{}, fmt.Errorf("%w: %s", ErrRelocationRunning, id)
 	}
+	// Updating databases and inserting the relocations row in the same
+	// transaction guarantees a crash cannot bump the epoch without leaving a
+	// relocation record for Resume or Rollback to recover from.
 	if _, err := tx.ExecContext(ctx, "UPDATE databases SET owner = ?, epoch = epoch + 1, location = '' WHERE id = ?", destination, id); err != nil {
 		return Relocation{}, err
 	}
@@ -99,6 +128,8 @@ func (c *Catalog) BeginRelocation(ctx context.Context, id, source, destination s
 	return r, tx.Commit()
 }
 
+// GetRelocation returns the stored Relocation row for id, or ErrNoRelocation if
+// none exists.
 func (c *Catalog) GetRelocation(ctx context.Context, id string) (Relocation, error) {
 	if err := c.ensureRelocations(ctx); err != nil {
 		return Relocation{}, err
@@ -112,6 +143,10 @@ func (c *Catalog) GetRelocation(ctx context.Context, id string) (Relocation, err
 	return r, err
 }
 
+// AdvanceRelocation records progress on a running relocation. It permits
+// re-recording an earlier step idempotently during Resume (keeping max(step, ?))
+// and forbids skipping ahead more than one step past the last recorded step.
+// Non-zero position and non-empty 64-hex digest overwrite the fence-point fields.
 func (c *Catalog) AdvanceRelocation(ctx context.Context, id string, step int, position int64, digest string) error {
 	if position < 0 || (digest != "" && !sha256Hex.MatchString(digest)) {
 		return fmt.Errorf("catalog: relocation of %s: position %d, sha256 %q", id, position, digest)
@@ -119,6 +154,8 @@ func (c *Catalog) AdvanceRelocation(ctx context.Context, id string, step int, po
 	if err := c.ensureRelocations(ctx); err != nil {
 		return err
 	}
+	// Allowing step <= recorded step keeps replayed steps idempotent on Resume
+	// while preventing out-of-order jumps past step+1.
 	result, err := c.DB.ExecContext(ctx, `UPDATE relocations SET step = max(step, ?),
 		position = CASE WHEN ? > 0 THEN ? ELSE position END,
 		sha256 = CASE WHEN ? <> '' THEN ? ELSE sha256 END
@@ -137,6 +174,8 @@ func (c *Catalog) AdvanceRelocation(ctx context.Context, id string, step int, po
 	return nil
 }
 
+// FinishRelocation transitions a running relocation row to one of the three
+// terminal states (RelocationDone, RelocationRolledBack, RelocationSuperseded).
 func (c *Catalog) FinishRelocation(ctx context.Context, id, state string) error {
 	if state != RelocationDone && state != RelocationRolledBack && state != RelocationSuperseded {
 		return fmt.Errorf("catalog: %q is not a final relocation state", state)

@@ -20,16 +20,24 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/walship"
 )
 
+// MatchImage hashes raw SQLite database bytes image against hashes, decodes
+// user_version from page-1 header bytes 60..63, and reports RecipeState true
+// only when the matched step equals user_version and either the bytes match
+// exactly or only the change counter differs with bytes 24..27 == 92..95.
 func MatchImage(hashes []recipe.FileHashes, image []byte) (Recovered, error) {
 	if len(image) < 100 {
 		return Recovered{}, errors.New("lab: an image shorter than the database header")
 	}
 	match := recipe.MatchHashes(hashes, recipe.HashImage(image))
+	// Bytes 60..63 of the SQLite header store PRAGMA user_version in big-endian.
 	version := int(image[60])<<24 | int(image[61])<<16 | int(image[62])<<8 | int(image[63])
 	ok := match.Found() && match.Step == version && (match.Exact || recipe.ChangeCountersAgree(image))
 	return Recovered{UserVersion: version, Match: match, RecipeState: ok}, nil
 }
 
+// DatabasesIn lists every key under "dbs/" in store, validates that every key
+// has the fenced slot layout "dbs/<id>/log/<pos>", and returns the sorted list
+// of distinct database ids.
 func DatabasesIn(ctx context.Context, store walship.Store) ([]string, error) {
 	keys, err := store.List(ctx, "dbs/")
 	if err != nil {
@@ -51,6 +59,7 @@ func DatabasesIn(ctx context.Context, store walship.Store) ([]string, error) {
 	return ids, nil
 }
 
+// FleetReport summarizes one full-store inspection pass across all databases.
 type FleetReport struct {
 	Databases     int
 	RestorePoints int
@@ -58,6 +67,9 @@ type FleetReport struct {
 	Failed        []fence.Inspection
 }
 
+// InspectFleet discovers every database in store and runs fence.Inspect in
+// parallel across workers goroutines, rebuilding every published restore point
+// in memory and verifying that each rebuilt image is a valid recipe state.
 func InspectFleet(ctx context.Context, store walship.Store, hashes []recipe.FileHashes, workers int) (FleetReport, error) {
 	ids, err := DatabasesIn(ctx, store)
 	if err != nil {
@@ -101,6 +113,9 @@ func InspectFleet(ctx context.Context, store walship.Store, hashes []recipe.File
 	return report, nil
 }
 
+// ServeChecker runs Experiment 10.4's standalone checker subprocess over the
+// same line protocol as node.Serve ("pass" and "close"), enforcing standing
+// bounds with OpenDatabases=0 (since the checker never opens SQLite files).
 func ServeChecker(ctx context.Context, store walship.Store, workers int, in io.Reader, out io.Writer) error {
 	hashes, err := recipe.Default().StepHashes(ctx)
 	if err != nil {
@@ -144,6 +159,8 @@ func ServeChecker(ctx context.Context, store walship.Store, workers int, in io.R
 	return lines.Err()
 }
 
+// CheckerPass holds the parsed counts and failure descriptions from one "pass"
+// reply emitted by ServeChecker.
 type CheckerPass struct {
 	Databases     int
 	RestorePoints int
@@ -152,6 +169,8 @@ type CheckerPass struct {
 	FailedLines   []string
 }
 
+// ParsePass strictly parses a ServeChecker "pass" reply and verifies that the
+// number of preceding "failed …" lines matches the reported failure count.
 func ParsePass(reply node.Reply) (CheckerPass, error) {
 	var pass CheckerPass
 	detail, found := strings.CutPrefix(reply.Line, "ok pass: ")
@@ -194,6 +213,8 @@ func scan(detail, format string, values ...any) error {
 	return nil
 }
 
+// CountingStore wraps a walship.Store and atomically counts Get, bytes read,
+// PutIfAbsent, and List calls across concurrent rebuild workers.
 type CountingStore struct {
 	walship.Store
 	gets  atomic.Int64
@@ -202,6 +223,7 @@ type CountingStore struct {
 	lists atomic.Int64
 }
 
+// Get forwards to Store.Get and increments the object and byte counters on success.
 func (c *CountingStore) Get(ctx context.Context, key string) ([]byte, error) {
 	data, err := c.Store.Get(ctx, key)
 	if err == nil {
@@ -211,25 +233,35 @@ func (c *CountingStore) Get(ctx context.Context, key string) ([]byte, error) {
 	return data, err
 }
 
+// PutIfAbsent increments the put counter and forwards to Store.PutIfAbsent.
 func (c *CountingStore) PutIfAbsent(ctx context.Context, key string, data []byte) error {
 	c.puts.Add(1)
 	return c.Store.PutIfAbsent(ctx, key, data)
 }
 
+// List increments the listing counter and forwards to Store.List.
 func (c *CountingStore) List(ctx context.Context, prefix string) ([]string, error) {
 	c.lists.Add(1)
 	return c.Store.List(ctx, prefix)
 }
 
+// Counts returns the total successful gets, bytes read, puts, and listings so far.
 func (c *CountingStore) Counts() (gets, bytes, puts, lists int64) {
 	return c.gets.Load(), c.bytes.Load(), c.puts.Load(), c.lists.Load()
 }
 
+// Quiesced holds the at-rest SHA256 and PRAGMA wal_checkpoint(TRUNCATE) result
+// recorded by TruncateAndHash.
 type Quiesced struct {
 	SHA256     string
 	Checkpoint sqlitex.CheckpointResult
 }
 
+// TruncateAndHash opens path with platform settings, runs
+// PRAGMA wal_checkpoint(TRUNCATE), closes the handle, and returns the at-rest
+// SHA-256 digest. After a clean writer shutdown sqlite3WalClose
+// (src/wal.c:2507-2571) has already checkpointed and removed -wal, so
+// Checkpoint.LogFrames is expected to be 0.
 func TruncateAndHash(ctx context.Context, path string) (Quiesced, error) {
 	options := recipe.Default().SQLiteOptions()
 	options.Conn = node.PlatformSettings()

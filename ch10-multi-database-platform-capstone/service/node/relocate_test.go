@@ -14,6 +14,7 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/walship"
 )
 
+// TestSealDrainStageActivateRetire walks all participant steps of a clean relocation and checks guards, idempotency, sidecar cleanup, and catalog state.
 func TestSealDrainStageActivateRetire(t *testing.T) {
 	ctx := context.Background()
 	c := newCluster(t, "db-1")
@@ -96,6 +97,7 @@ func TestSealDrainStageActivateRetire(t *testing.T) {
 	}
 }
 
+// TestActivateAdoptsAFenceItDidNotRecord verifies Activate adopts an already-landed fence snapshot from the store and rejects an older epoch with ErrFenced.
 func TestActivateAdoptsAFenceItDidNotRecord(t *testing.T) {
 	ctx := context.Background()
 	c := newCluster(t, "db-1")
@@ -142,6 +144,7 @@ func TestActivateAdoptsAFenceItDidNotRecord(t *testing.T) {
 	}
 }
 
+// TestRelocationCommandsAndReplies exercises the line-protocol relocation, status, and check commands through Serve.
 func TestRelocationCommandsAndReplies(t *testing.T) {
 	ctx := context.Background()
 	c := newCluster(t, "db-1")
@@ -185,6 +188,7 @@ func TestRelocationCommandsAndReplies(t *testing.T) {
 	}
 }
 
+// TestParseAckIsStrict verifies ParseAck accepts canonical LocalDurable and StoreDurable reply lines and rejects padding, extra tokens, or wrong formats.
 func TestParseAckIsStrict(t *testing.T) {
 	id, ack, err := ParseAck("ok write db-1 store-durable: acknowledged at epoch 2, user_version 3, stored through position 7")
 	if err != nil || id != "db-1" || ack != (Ack{Mode: StoreDurable, Epoch: 2, UserVersion: 3, Position: 7}) {
@@ -237,6 +241,7 @@ func relocateToB(t *testing.T, c *cluster, a, b *Node) (Drained, uint64) {
 	return drained, epoch
 }
 
+// TestRepeatedActivateRepairsAnUnrecordedFence verifies a repeated Activate re-records location, last_shipped, and schema_version when the store still ends at the fence.
 func TestRepeatedActivateRepairsAnUnrecordedFence(t *testing.T) {
 	ctx := context.Background()
 	c := newCluster(t, "db-1")
@@ -255,6 +260,7 @@ func TestRepeatedActivateRepairsAnUnrecordedFence(t *testing.T) {
 	}
 }
 
+// TestRepeatedActivateAfterLaterWritesKeepsTheCatalog ensures a repeated Activate does not rewind catalog metadata once the new owner has shipped past the fence.
 func TestRepeatedActivateAfterLaterWritesKeepsTheCatalog(t *testing.T) {
 	ctx := context.Background()
 	c := newCluster(t, "db-1")
@@ -274,6 +280,7 @@ func TestRepeatedActivateAfterLaterWritesKeepsTheCatalog(t *testing.T) {
 	}
 }
 
+// TestDrainReportsAFailedAtRestRecord confirms Drain returns an error when the final eviction reaches at-rest state but fails to write .atrest.
 func TestDrainReportsAFailedAtRestRecord(t *testing.T) {
 	ctx := context.Background()
 	c := newCluster(t, "db-1")

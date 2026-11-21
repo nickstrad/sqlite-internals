@@ -7,6 +7,8 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
 )
 
+// RegisterAll validates settings once and inserts every id into databases in a
+// single SQLite transaction, leaving any existing rows unchanged.
 func (c *Catalog) RegisterAll(ctx context.Context, ids []string, settings sqlitex.ConnSettings) error {
 	if err := settings.Validate(); err != nil {
 		return err
@@ -28,6 +30,8 @@ func (c *Catalog) RegisterAll(ctx context.Context, ids []string, settings sqlite
 	return tx.Commit()
 }
 
+// All returns every registered database Record ordered by id, validating each
+// row's stored settings JSON through Get.
 func (c *Catalog) All(ctx context.Context) ([]Record, error) {
 	rows, err := c.DB.QueryContext(ctx, "SELECT id FROM databases ORDER BY id")
 	if err != nil {

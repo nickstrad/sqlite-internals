@@ -7,16 +7,25 @@ import (
 	"strings"
 )
 
+// ErrRefused is matched by RefusedError via errors.Is when a node child process
+// returns a "refused …" line-protocol reply.
 var ErrRefused = errors.New("the node refused the command")
 
+// RefusedError wraps a node child process's "refused …" reply line so callers
+// can distinguish an explicit node refusal from a process crash or broken pipe.
 type RefusedError struct {
 	Line string
 }
 
+// Error returns the verbatim "refused …" line emitted by the node process.
 func (e *RefusedError) Error() string { return e.Line }
 
+// Is allows callers to match any RefusedError with errors.Is(err, ErrRefused).
 func (e *RefusedError) Is(target error) bool { return target == ErrRefused }
 
+// Remote invokes relocation, claim, status, and inspect operations over a live
+// node child Process, implementing relocate.Participant with strict reply
+// parsing and optional per-reply bounds tracking through OnReply.
 type Remote struct {
 	Process func() *Process
 	OnReply func(command string, reply Reply)
@@ -47,6 +56,8 @@ func (r Remote) call(command string) (string, error) {
 	return detail, nil
 }
 
+// scanExactly parses detail with fmt.Sscanf and re-formats the scanned values
+// to reject extra tokens, padding, or truncated replies that Sscanf alone accepts.
 func scanExactly(detail, format string, values ...any) error {
 	if _, err := fmt.Sscanf(detail, format, values...); err != nil {
 		return fmt.Errorf("node reply %q: %w", detail, err)
@@ -74,6 +85,7 @@ func scanExactly(detail, format string, values ...any) error {
 	return nil
 }
 
+// Seal sends "seal <id>" to the child process.
 func (r Remote) Seal(ctx context.Context, id string) error {
 	detail, err := r.call("seal " + id)
 	if err == nil && detail != "" {
@@ -82,6 +94,7 @@ func (r Remote) Seal(ctx context.Context, id string) error {
 	return err
 }
 
+// Drain sends "drain <id>" to the child process and parses the drained position and sha256.
 func (r Remote) Drain(ctx context.Context, id string) (Drained, error) {
 	var d Drained
 	detail, err := r.call("drain " + id)
@@ -91,6 +104,7 @@ func (r Remote) Drain(ctx context.Context, id string) (Drained, error) {
 	return d, err
 }
 
+// Stage sends "stage <id> <epoch>" to the child process and parses the staged position and sha256.
 func (r Remote) Stage(ctx context.Context, id string, epoch uint64) (Staged, error) {
 	var s Staged
 	detail, err := r.call(fmt.Sprintf("stage %s %d", id, epoch))
@@ -100,6 +114,9 @@ func (r Remote) Stage(ctx context.Context, id string, epoch uint64) (Staged, err
 	return s, err
 }
 
+// Activate sends "activate <id> <epoch> <position> <digest>" (plus
+// "without-fence" when fenceStore is false) and parses the resulting fence slot
+// and adoption flag.
 func (r Remote) Activate(ctx context.Context, id string, epoch uint64, position int64, digest string, fenceStore bool) (Activated, error) {
 	var a Activated
 	command := fmt.Sprintf("activate %s %d %d %s", id, epoch, position, digest)
@@ -113,6 +130,7 @@ func (r Remote) Activate(ctx context.Context, id string, epoch uint64, position 
 	return a, err
 }
 
+// Retire sends "retire <id>" to the child process.
 func (r Remote) Retire(ctx context.Context, id string) error {
 	detail, err := r.call("retire " + id)
 	if err == nil && detail != "" {
@@ -121,6 +139,7 @@ func (r Remote) Retire(ctx context.Context, id string) error {
 	return err
 }
 
+// Discard sends "discard <id>" to the child process.
 func (r Remote) Discard(ctx context.Context, id string) error {
 	detail, err := r.call("discard " + id)
 	if err == nil && detail != "" {
@@ -129,6 +148,7 @@ func (r Remote) Discard(ctx context.Context, id string) error {
 	return err
 }
 
+// Claim sends "claim <id>" to the child process and parses the ClaimResult.
 func (r Remote) Claim(ctx context.Context, id string) (ClaimResult, error) {
 	var c ClaimResult
 	detail, err := r.call("claim " + id)
@@ -138,10 +158,12 @@ func (r Remote) Claim(ctx context.Context, id string) (ClaimResult, error) {
 	return c, err
 }
 
+// Status sends "status <id>" to the child process and returns the status string.
 func (r Remote) Status(id string) (string, error) {
 	return r.call("status " + id)
 }
 
+// Inspect sends "check <id>" to the child process and parses user_version and integrity_check.
 func (r Remote) Inspect(ctx context.Context, id string) (Inspection, error) {
 	var i Inspection
 	detail, err := r.call("check " + id)
@@ -151,6 +173,8 @@ func (r Remote) Inspect(ctx context.Context, id string) (Inspection, error) {
 	return i, err
 }
 
+// ParseAck strictly parses an "ok write <id> <mode>: …" reply line into the
+// database id and Ack, rejecting malformed fields, padding, or trailing text.
 func ParseAck(line string) (string, Ack, error) {
 	rest, found := strings.CutPrefix(line, "ok write ")
 	head, detail, cut := strings.Cut(rest, ": ")

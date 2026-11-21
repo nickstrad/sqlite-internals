@@ -1,3 +1,20 @@
+// Experiment 10.4 implements Rebuild Ladder rung R7 (Fleet): it proves that
+// the S3 store plus the control-plane catalog is a complete saved state of a
+// multi-database fleet, and that every published restore point is internally
+// consistent.
+//
+// Eight writer node processes own equal shares of the fleet (default 500
+// databases; -databases 2000 for the outline's full-scale run), each keeping
+// at most -capacity databases open (default 32). Every database is claimed and
+// driven store-durable through recipe steps 1-4, then a schema rollout (recipe
+// step 5, CREATE INDEX events_by_account) is applied to half of each writer's
+// share and stopped. Meanwhile a separate checker process lists the store and
+// rebuilds every published restore point in memory against the recipe step
+// hashes. After quiescing (closing every writer, where sqlite3WalClose at
+// src/wal.c:2507-2571 leaves 0 frames for TRUNCATE) and deleting every local
+// file, 8 rebuild workers claim and restore the entire fleet from SeaweedFS S3
+// alone, verifying E1 byte equality, catalog schema versions, exact double-read
+// object counts, and standing descriptor and memory bounds throughout.
 package main
 
 import (
@@ -322,6 +339,8 @@ func main() {
 	if *databases < 2**writers || *writers < 1 || process.Capacity < 1 {
 		fatal("flags", fmt.Errorf("need -writers >= 1, -capacity >= 1 and at least two databases per writer"))
 	}
+	// Guard against hitting the process descriptor soft limit before launching
+	// writers; each open database needs up to 3*3 descriptors plus 32 reserve.
 	soft, _, err := procstat.FileLimit()
 	if err != nil {
 		fatal("file limit", err)
@@ -421,6 +440,8 @@ func main() {
 		}
 	}
 	check(final.Databases == len(f.ids) && final.Failed == 0, "after the rebuild every published restore point of every database rebuilds to a recipe state")
+	// node.Claim reads every existing slot twice: once in adapter.Refresh to
+	// check the lineage and once in walship.LoadCatalog to plan and restore.
 	gets, _, _, _ := f.rebuildCounts.Counts()
 	check(gets == 2*int64(final.RestorePoints-len(f.ids)), fmt.Sprintf("the rebuild read each of the %d slots it found exactly twice (once to check the lineage, once to restore)", final.RestorePoints-len(f.ids)))
 	closing, err := env.Stop(checker)

@@ -10,6 +10,7 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
 )
 
+// TestRelocationRecordMovesForwardOnly exercises BeginRelocation guards, monotonic and idempotent AdvanceRelocation rules, FinishRelocation terminal states, and starting a follow-up relocation.
 func TestRelocationRecordMovesForwardOnly(t *testing.T) {
 	ctx := context.Background()
 	c, err := Open(ctx, filepath.Join(t.TempDir(), "catalog.db"))
@@ -86,6 +87,7 @@ func TestRelocationRecordMovesForwardOnly(t *testing.T) {
 	}
 }
 
+// TestRegisterAllAndAll checks bulk transactional registration preserves existing rows, All returns sorted validated records, and invalid settings are rejected.
 func TestRegisterAllAndAll(t *testing.T) {
 	ctx := context.Background()
 	c, err := Open(ctx, filepath.Join(t.TempDir(), "catalog.db"))

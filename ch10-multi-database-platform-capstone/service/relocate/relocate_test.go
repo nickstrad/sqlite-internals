@@ -163,6 +163,7 @@ func itoa(v uint64) string {
 	}
 }
 
+// TestRelocationMovesOwnershipAndKeepsEveryWrite runs a full relocation end to end, confirming sealed-source refusal, retired-source cleanup, and destination writes.
 func TestRelocationMovesOwnershipAndKeepsEveryWrite(t *testing.T) {
 	l := newLab(t)
 	l.prepare()
@@ -200,6 +201,7 @@ func TestRelocationMovesOwnershipAndKeepsEveryWrite(t *testing.T) {
 	l.requireOwner("b", 2, 4)
 }
 
+// TestCrashAfterEveryStepResumesToOneOwner crashes the coordinator after each of the seven steps and verifies a fresh Coordinator rolls forward cleanly.
 func TestCrashAfterEveryStepResumesToOneOwner(t *testing.T) {
 	for _, step := range Steps() {
 		t.Run(step.String(), func(t *testing.T) {
@@ -222,6 +224,7 @@ func TestCrashAfterEveryStepResumesToOneOwner(t *testing.T) {
 	}
 }
 
+// TestRollbackBeforeTheFenceGivesTheSourceBackEveryWrite crashes after each pre-fence step and verifies Rollback returns ownership and all writes to the source.
 func TestRollbackBeforeTheFenceGivesTheSourceBackEveryWrite(t *testing.T) {
 	for _, step := range Steps()[:Activate-1] {
 		t.Run(step.String(), func(t *testing.T) {
@@ -250,6 +253,7 @@ func TestRollbackBeforeTheFenceGivesTheSourceBackEveryWrite(t *testing.T) {
 	}
 }
 
+// TestRollbackAfterTheFenceRollsForward verifies Rollback refuses to undo a landed fence, rolls forward instead, and returns ErrFenceInStore.
 func TestRollbackAfterTheFenceRollsForward(t *testing.T) {
 	l := newLab(t)
 	l.prepare()
@@ -265,6 +269,7 @@ func TestRollbackAfterTheFenceRollsForward(t *testing.T) {
 	l.requireOwner("b", 2, 3)
 }
 
+// TestStoreFaultsOnTheFinalShipAndTheFence injects FailBeforePut and FailAfterPut on the final segment and fence puts and checks Resume recovers every write.
 func TestStoreFaultsOnTheFinalShipAndTheFence(t *testing.T) {
 	for _, tc := range []struct {
 		fault   faultstore.Fault
@@ -304,6 +309,7 @@ func TestStoreFaultsOnTheFinalShipAndTheFence(t *testing.T) {
 	}
 }
 
+// TestSkippingTheFenceLeavesTwoWriters confirms the SkipFence mutant leaves both source and destination reporting writable.
 func TestSkippingTheFenceLeavesTwoWriters(t *testing.T) {
 	l := newLab(t)
 	l.prepare()
@@ -317,6 +323,7 @@ func TestSkippingTheFenceLeavesTwoWriters(t *testing.T) {
 	}
 }
 
+// TestActivateRefusesAStoreThatMovedAfterTheDrain checks Activate rejects a stale drained position with ErrMovedAfterDrain and a mismatched digest with ErrStagedMismatch.
 func TestActivateRefusesAStoreThatMovedAfterTheDrain(t *testing.T) {
 	l := newLab(t)
 	l.prepare()
@@ -347,6 +354,7 @@ var errUnreachable = errors.New("the node is not running")
 
 func (unreachable) Discard(ctx context.Context, id string) error { return errUnreachable }
 
+// TestRollbackWhileTheDestinationIsDown verifies Rollback marks the relocation rolled-back, returns DiscardErr, and permits a new relocation even when the destination is unreachable.
 func TestRollbackWhileTheDestinationIsDown(t *testing.T) {
 	ctx := context.Background()
 	l := newLab(t)
@@ -379,6 +387,7 @@ func TestRollbackWhileTheDestinationIsDown(t *testing.T) {
 	}
 }
 
+// TestRollbackFinishesARollbackThatStoppedAfterTheClaim checks that retrying Rollback after the source already re-claimed finishes as rolled-back rather than superseded.
 func TestRollbackFinishesARollbackThatStoppedAfterTheClaim(t *testing.T) {
 	ctx := context.Background()
 	l := newLab(t)
@@ -412,6 +421,7 @@ func TestRollbackFinishesARollbackThatStoppedAfterTheClaim(t *testing.T) {
 	l.requireOwner("a", 3, 3)
 }
 
+// TestRollbackStillReportsAThirdNodesTakeover ensures a higher epoch claimed by a node other than the source still finishes as Superseded with ErrSupersededBy.
 func TestRollbackStillReportsAThirdNodesTakeover(t *testing.T) {
 	ctx := context.Background()
 	l := newLab(t)

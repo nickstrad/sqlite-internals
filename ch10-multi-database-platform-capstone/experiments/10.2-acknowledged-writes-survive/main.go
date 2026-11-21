@@ -1,3 +1,21 @@
+// Experiment 10.2 tests two capstone invariants under process kills: every
+// database can be reopened after process failure, and no acknowledged durable
+// write is lost under its stated durability mode.
+//
+// One node owns 4 databases while keeping at most 2 open (forcing LRU eviction
+// on every round-robin write). Each run sends 12 writes in either local-durable
+// mode (synchronous=FULL; walFrames syncs -wal before COMMIT returns at
+// src/wal.c:4195-4213; recovery restarts on the local directory) or
+// store-durable mode (acknowledged after the segment put; recovery deletes the
+// node's entire directory and rebuilds every database from SeaweedFS S3).
+//
+// Part A (Linux only) uses strace to kill the node on entry to evenly spaced
+// fsync/fdatasync calls and verifies walIndexRecover (src/wal.c:1390-1614)
+// recovers every database cleanly with recovered user_version >= acknowledged.
+// Part B (portable) kills interactive runs at seeded random delays inside the
+// measured write-loop window (redrawing if a kill lands after the last reply).
+// Part C runs the ack-before-put mutant as a self-test to prove the checker
+// catches an unshipped store-durable acknowledgement.
 package main
 
 import (
@@ -145,6 +163,8 @@ func (x *experiment) randomKill(mode node.AckMode, delay time.Duration) (*outcom
 	if err != nil {
 		fatal("start node a", err)
 	}
+	// Time only the write loop (after setup and node startup) so random kill
+	// delays fall inside the active write window rather than after the last reply.
 	writesStarted := time.Now()
 	timer := time.AfterFunc(delay, func() { p.Signal() })
 	var replies []string
@@ -295,6 +315,8 @@ func (x *experiment) randomTimeKills(mode node.AckMode, rng *rand.Rand) {
 				fmt.Println("  violation: " + v)
 			}
 			violations += len(o.violations)
+			// Every draw is recovered and checked; redraw up to drawsPerRandomKill
+			// if the timer fired after all writes had already replied.
 			if o.replies < *writes {
 				inFlight++
 				break
@@ -335,6 +357,8 @@ func main() {
 	flag.Parse()
 	ctx := context.Background()
 	if *role == "node" {
+		// Pin the command loop to one OS thread so strace's per-thread syscall
+		// counter sees every SQLite fsync on a single deterministic thread.
 		runtime.LockOSThread()
 		if err := node.RunProcess(ctx, process); err != nil {
 			fatal("node "+process.Name, err)

@@ -58,6 +58,7 @@ func shippedStore(t *testing.T, writes int) *walship.DirStore {
 	return store
 }
 
+// TestInspectNamesTheLastGoodRestorePoint verifies Inspect rebuilds healthy chains and reports LastGood=2 on a deleted or corrupted slot 3 and 0 on an empty database.
 func TestInspectNamesTheLastGoodRestorePoint(t *testing.T) {
 	ctx := context.Background()
 	store := shippedStore(t, 3)
