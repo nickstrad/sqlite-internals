@@ -407,8 +407,12 @@ func runQuery(ctx context.Context, q query, local, vfsName string, remote *range
 	check(repeatStats.Requests() == 0 && pagesHeld <= cachePages, fmt.Sprintf("%s: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid; the %d reads so far fit in the %d-page cache)", q.name, pagesHeld, cachePages))
 }
 
+// smallCachePages shrinks the page cache below the 18-page events scan to show
+// that immutable=1 skips change-counter invalidation but does not prevent cache
+// eviction (pager.c:5033-5056,5436; default cache is -2000 KiB, sqliteLimit.h:161).
 const smallCachePages = 4
 
+// mustCachePages returns the connection's PRAGMA cache_size expressed in pages.
 func mustCachePages(ctx context.Context, db *sql.DB) int {
 	var cacheSize int
 	if err := db.QueryRowContext(ctx, "PRAGMA cache_size").Scan(&cacheSize); err != nil {
@@ -420,6 +424,8 @@ func mustCachePages(ctx context.Context, db *sql.DB) int {
 	return cacheSize
 }
 
+// smallCache repeats the full events scan with a 4-page cache on one immutable=1
+// connection, showing that evicted pages still incur remote range requests.
 func smallCache(ctx context.Context, q query, vfsName string, remote *rangefs.FS) {
 	db, err := openSingle(remoteDSN(vfsName, snapshotName, "immutable=1"))
 	if err != nil {

@@ -708,30 +708,21 @@ func attackCOST05(ctx context.Context) {
 		fatal("cost05 trunc", err)
 	}
 
-	// EXTRA: every commit should have 5 syncs [db:1 dir:2 journal:2] (100 total).
+	// EXTRA: every commit makes 5 syncs [db:1 dir:2 journal:2] (100 total; 2nd dir sync in unixDelete).
 	extraOK := mExtra.all.totalSyncs() == 100 && roleList(mExtra.all.syncs) == "db:20 dir:40 journal:40"
-	// PERSIST/NORMAL: commit 1 reuses the journal created during CREATE TABLE (or creates once), so commits 2..20 have 0 dir syncs and 0 unlinks!
-	persistNoDirAfter1 := mPersist.all.unlinks["journal"] == 0
-	for i := 1; i < len(mPersist.commits); i++ {
-		if mPersist.commits[i].syncs["dir"] != 0 || mPersist.commits[i].totalSyncs() != 2 {
-			persistNoDirAfter1 = false
-		}
-	}
-	// TRUNCATE/FULL: commits 2..20 have 3 syncs (db:1 journal:2, 0 dir syncs) and 0 unlinks!
-	truncNoDirAfter1 := mTrunc.all.unlinks["journal"] == 0
-	for i := 1; i < len(mTrunc.commits); i++ {
-		if mTrunc.commits[i].syncs["dir"] != 0 || mTrunc.commits[i].totalSyncs() != 3 {
-			truncNoDirAfter1 = false
-		}
-	}
+	// PERSIST/NORMAL on unix: 0 unlinks, but pager_unlock closes the journal (no UNDELETABLE_WHEN_OPEN)
+	// so unixOpen re-arms UNIXFILE_DIRSYNC every commit, and zeroJournalHdr adds a 2nd journal sync -> 4 syncs/commit (80 total).
+	persistOK := mPersist.all.unlinks["journal"] == 0 && mPersist.all.totalSyncs() == 80 && roleList(mPersist.all.syncs) == "db:20 dir:20 journal:40"
+	// TRUNCATE/FULL on unix: 0 unlinks, still 1 dir sync/commit, plus post-ftruncate journal sync -> 5 syncs/commit (100 total).
+	truncOK := mTrunc.all.unlinks["journal"] == 0 && mTrunc.all.totalSyncs() == 100 && roleList(mTrunc.all.syncs) == "db:20 dir:20 journal:60"
 	emit("COST-05",
 		"20x50 commits in delete/EXTRA, persist/NORMAL, and truncate/FULL under strace",
-		"delete/EXTRA makes 5 syncs/commit (2 dir); persist/NORMAL and truncate/FULL eliminate dir syncs and unlinks after journal creation",
+		"delete/EXTRA makes 5 syncs/commit (2 dir); on unix persist/NORMAL (4 syncs/commit) and truncate/FULL (5 syncs/commit) eliminate unlinks but still sync dir every commit",
 		fmt.Sprintf("delete/EXTRA:%d(%s); persist/NORMAL:%d(%s) unlinks=%s; truncate/FULL:%d(%s) unlinks=%s",
 			mExtra.all.totalSyncs(), roleList(mExtra.all.syncs),
 			mPersist.all.totalSyncs(), roleList(mPersist.all.syncs), roleList(mPersist.all.unlinks),
 			mTrunc.all.totalSyncs(), roleList(mTrunc.all.syncs), roleList(mTrunc.all.unlinks)),
-		extraOK && persistNoDirAfter1 && truncNoDirAfter1)
+		extraOK && persistOK && truncOK)
 }
 
 // COST-06: Held reader blocking checkpoint past wal_autocheckpoint under WAL/NORMAL.

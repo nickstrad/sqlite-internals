@@ -14,6 +14,8 @@ func committedOutcome() outcome {
 	return outcome{userVersion: faultStep, rowPresent: true, integrity: "ok", match: recipe.Match{Step: faultStep, Exact: true}}
 }
 
+// TestTrialHeld verifies that trialHeld rejects unfired in-range faults,
+// masked-only hash matches, close errors, wrong error codes, and fired controls.
 func TestTrialHeld(t *testing.T) {
 	if !trialHeld(1, 3, true, rolledBackOutcome()) {
 		t.Fatal("fired rollback rejected")

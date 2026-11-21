@@ -550,13 +550,14 @@ func attackMAP04(ctx context.Context, cli sqlitex.CLI) {
 			preads++
 		}
 	}
-	// 7.1 checks: every xRead makes exactly one pread64, and every data-page read goes through xRead.
-	// With mmap_size enabled, unixRead serves mapped ranges with 0 pread64 and table pages come via xFetch.
-	claimHeld := scanOut == "100|60000" && xReadsWithoutPread == 0 && xFetches == 0
+	// 7.1's 1-to-1 xRead -> pread64 mapping holds with mmap off (the default, MMAP_SIZE=0).
+	// With PRAGMA mmap_size>0, reads still cross the VFS via xFetch (pager.c:5687) and mapped
+	// unixRead memcpy (os_unix.c:3533-3548), bypassing pread64.
+	claimHeld := scanOut == "100|60000" && xFetches > 0 && xReadsWithoutPread > 0
 	emit("MAP-04",
 		"full table scan (100x600B rows) in CLI -vfstrace+strace with PRAGMA mmap_size=268435456",
-		"each xRead maps to 1 pread64 and DB page reads go through xRead->pread64 (7.1 claim without mmap caveat)",
-		fmt.Sprintf("scan=%q xRead=%d xReadWith0Pread=%d pread64=%d xFetch=%d (mmap reads bypass pread64 via xFetch and mapped unixRead)", scanOut, xReads, xReadsWithoutPread, preads, xFetches),
+		"with mmap_size>0, data reads pass through xFetch and mapped unixRead (0 pread64), narrowing 7.1's xRead->pread64 rule to default mmap_size=0",
+		fmt.Sprintf("scan=%q xRead=%d xReadWith0Pread=%d pread64=%d xFetch=%d", scanOut, xReads, xReadsWithoutPread, preads, xFetches),
 		claimHeld)
 }
 
@@ -733,8 +734,8 @@ exec "%s" "$@"
 		held)
 }
 
-// MAP-08: Verify 7.1's macOS portable() check logic (main.go:159 checks "delete=1" on vfstrace raw line)
-// against actual CLI -vfstrace output.
+// MAP-08: Verify 7.1's repaired macOS portable() check (closeLifecycle matching delFlag=1 in c.Args)
+// against actual CLI -vfstrace output and 7.1's source.
 func attackMAP08(ctx context.Context, cli sqlitex.CLI) {
 	dir := cleanDir(filepath.Join(scratchRoot, "map08-portable"))
 	dbPath := filepath.Join(dir, dbName)
@@ -746,23 +747,29 @@ func attackMAP08(ctx context.Context, cli sqlitex.CLI) {
 	if err != nil {
 		fatal("map08 vfstrace", err)
 	}
+	root, err := sqlitex.RepoRoot()
+	if err != nil {
+		fatal("map08 repo root", err)
+	}
+	srcBytes, err := os.ReadFile(filepath.Join(root, "ch07-vfs-and-filesystem-io", "experiments", "7.1-vfs-calls-to-syscalls", "main.go"))
+	if err != nil {
+		fatal("map08 read 7.1", err)
+	}
+	src := string(srcBytes)
+	srcUsesDelFlag := strings.Contains(src, `"delFlag=1"`) && !strings.Contains(src, `"delete=1"`)
 	var unmapRaw string
-	matchedPortableCheck := false
-	matchedDelFlag := false
+	matchedDelFlagArg := false
 	for _, c := range trace.RelativeVFS(dir, vt.Calls) {
 		if c.Method == "xShmUnmap" {
 			unmapRaw = c.Raw
-			if strings.Contains(c.Raw, "delete=1") {
-				matchedPortableCheck = true
-			}
-			if strings.Contains(c.Raw, "delFlag=1") {
-				matchedDelFlag = true
+			if slices.Contains(c.Args, "delFlag=1") {
+				matchedDelFlagArg = true
 			}
 		}
 	}
 	emit("MAP-08",
-		"replay 7.1 portable() macOS check (strings.Contains(c.Raw, \"delete=1\")) on real CLI -vfstrace",
-		"7.1 portable() matches xShmUnmap close line so 7.1 passes on macOS",
-		fmt.Sprintf("matched_delete=1:%t matched_delFlag=1:%t raw=%q", matchedPortableCheck, matchedDelFlag, unmapRaw),
-		matchedPortableCheck)
+		"replay 7.1 closeLifecycle() macOS check (delFlag=1 in c.Args) on real CLI -vfstrace",
+		"7.1 source checks delFlag=1 (not delete=1) and matches real CLI xShmUnmap close line",
+		fmt.Sprintf("srcUsesDelFlag=%t matched_delFlag=1:%t raw=%q", srcUsesDelFlag, matchedDelFlagArg, unmapRaw),
+		srcUsesDelFlag && matchedDelFlagArg)
 }

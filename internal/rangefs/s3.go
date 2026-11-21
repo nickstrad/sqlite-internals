@@ -134,7 +134,9 @@ func (s S3Source) Stat(ctx context.Context, name string) (int64, error) {
 }
 
 // ReadRange calls GetObject with an inclusive byte-range header for len(p)
-// bytes starting at offset.
+// bytes starting at offset. It verifies that Content-Range begins with
+// "bytes OFF-LAST/", rejecting S3 endpoints that ignore Range and return the
+// full object.
 func (s S3Source) ReadRange(ctx context.Context, name string, offset int64, p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil

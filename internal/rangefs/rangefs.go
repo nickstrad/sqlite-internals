@@ -32,7 +32,8 @@ const (
 	KindRange RequestKind = "range"
 )
 
-// Request logs one remote operation issued through FS.
+// Request logs one remote operation issued through FS. For a failed or short
+// range read, Failed is true and Length records only the bytes actually received.
 type Request struct {
 	Kind   RequestKind
 	Name   string
@@ -92,9 +93,9 @@ func Summarize(requests []Request) Stats {
 }
 
 // FS adapts a Source into a read-only fs.FS and fs.StatFS that records every
-// remote request. Open and Stat each issue one Source.Stat call; each Read or
-// ReadAt on an open file issues one Source.ReadRange call for the exact bytes
-// requested, clipped at EOF.
+// remote request. Open and Stat each issue one Source.Stat call; each non-empty
+// Read or ReadAt on an open file issues one Source.ReadRange call for the exact
+// bytes requested, clipped at EOF (a zero-length read issues no request).
 type FS struct {
 	source Source
 	ctx    context.Context
@@ -103,7 +104,8 @@ type FS struct {
 	requests []Request
 }
 
-// New returns an FS that performs all Source calls using ctx.
+// New returns an FS that performs all Source calls using ctx. A nil ctx
+// defaults to context.Background().
 func New(ctx context.Context, source Source) *FS {
 	if ctx == nil {
 		ctx = context.Background()

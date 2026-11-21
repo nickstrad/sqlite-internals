@@ -890,7 +890,7 @@ func attackGOVFS06(v *govfs.VFS) {
 	emit("GOVFS-06",
 		"query SQLITE_FCNTL_VFSNAME on a connection opened via govfs (comparing against vfstrace.c:711-716 shim contract)",
 		fmt.Sprintf("VFS stack string starts with %q (e.g. %q)", wantPrefix, wantPrefix+"unix"),
-		fmt.Sprintf("SQLITE_FCNTL_VFSNAME returned %q (govfs forwards op=12 without prepending its own name)", gotName),
+		fmt.Sprintf("SQLITE_FCNTL_VFSNAME returned %q", gotName),
 		held)
 }
 

@@ -90,6 +90,8 @@ func vfsCurrentTime(tls *libc.TLS, pVfs uintptr, pOut uintptr) int32 {
 	return rc
 }
 
+// vfsGetLastError forwards xGetLastError and records the call, matching
+// vfstraceGetLastError (vfstrace.c:1091-1101).
 func vfsGetLastError(tls *libc.TLS, pVfs uintptr, nByte int32, zOut uintptr) int32 {
 	rc := funcAt[vfsGetLastErrorFunc](realVFS().FxGetLastError)(tls, registry.realVFS, nByte, zOut)
 	vfsFor(pVfs).record(Call{Method: "xGetLastError", Amount: int64(nByte), Result: rc})
@@ -284,6 +286,9 @@ func ioUnfetch(tls *libc.TLS, pFile uintptr, offset int64, p uintptr) int32 {
 	return call.Result
 }
 
+// prependVFSName implements the shim contract for SQLITE_FCNTL_VFSNAME
+// (sqlite.h.in:1008-1018, vfstrace.c:711-716): prepend "<shimName>/" to the
+// lower VFS's sqlite3_malloc'd name string, freeing the old buffer.
 func prependVFSName(tls *libc.TLS, shimName string, pArg uintptr) int32 {
 	slot := at[uintptr](pArg)
 	stack := shimName

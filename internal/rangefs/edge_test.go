@@ -52,6 +52,8 @@ func openStub(t *testing.T, src *stubSource) (*FS, fs.File) {
 	return fsys, f
 }
 
+// TestZeroLengthReadAtLogsNothing verifies that a zero-byte ReadAt issues no
+// Source.ReadRange call and appends no bogus range entry to the request log.
 func TestZeroLengthReadAtLogsNothing(t *testing.T) {
 	src := &stubSource{data: make([]byte, 100)}
 	fsys, f := openStub(t, src)
@@ -64,6 +66,8 @@ func TestZeroLengthReadAtLogsNothing(t *testing.T) {
 	}
 }
 
+// TestFailedRangeCountsNoBytes verifies that a failing ReadRange logs a Failed
+// request with 0 bytes received rather than the requested length.
 func TestFailedRangeCountsNoBytes(t *testing.T) {
 	src := &stubSource{data: make([]byte, 8192), readErr: errors.New("boom")}
 	fsys, f := openStub(t, src)
@@ -80,6 +84,8 @@ func TestFailedRangeCountsNoBytes(t *testing.T) {
 	}
 }
 
+// TestShortRangeCountsReceivedBytes verifies that a short ReadRange logs only
+// the bytes actually received and still returns an error.
 func TestShortRangeCountsReceivedBytes(t *testing.T) {
 	src := &stubSource{data: make([]byte, 8192), short: 100}
 	fsys, f := openStub(t, src)
@@ -92,6 +98,8 @@ func TestShortRangeCountsReceivedBytes(t *testing.T) {
 	}
 }
 
+// TestSeekAndStatAfterClose verifies that Seek and Stat reject calls on a
+// closed file with fs.ErrClosed.
 func TestSeekAndStatAfterClose(t *testing.T) {
 	_, f := openStub(t, &stubSource{data: make([]byte, 10)})
 	f.Close()
@@ -103,6 +111,8 @@ func TestSeekAndStatAfterClose(t *testing.T) {
 	}
 }
 
+// TestNilContextDefaults verifies that New(nil, ...) falls back to
+// context.Background() instead of panicking in net/http.
 func TestNilContextDefaults(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", "4")
@@ -136,6 +146,8 @@ func hostileS3(t *testing.T, contentRange string, status int) S3Source {
 	return S3Source{Client: NewS3Client(S3Config{Endpoint: srv.URL, Region: "us-east-1", AccessKey: "k", SecretKey: "s"}), Bucket: "b"}
 }
 
+// TestS3RejectsIgnoredRange verifies that S3Source.ReadRange rejects a 200 OK
+// response lacking Content-Range instead of returning bytes from offset 0.
 func TestS3RejectsIgnoredRange(t *testing.T) {
 	src := hostileS3(t, "", http.StatusOK)
 	n, err := src.ReadRange(context.Background(), "a.db", 4096, make([]byte, 4096))
@@ -144,6 +156,8 @@ func TestS3RejectsIgnoredRange(t *testing.T) {
 	}
 }
 
+// TestS3RejectsWrongContentRange verifies that S3Source.ReadRange rejects a 206
+// response whose Content-Range covers a different byte range than requested.
 func TestS3RejectsWrongContentRange(t *testing.T) {
 	src := hostileS3(t, "bytes 0-4095/8192", http.StatusPartialContent)
 	if _, err := src.ReadRange(context.Background(), "a.db", 4096, make([]byte, 4096)); err == nil {
@@ -151,6 +165,8 @@ func TestS3RejectsWrongContentRange(t *testing.T) {
 	}
 }
 
+// TestS3AcceptsMatchingContentRange verifies that S3Source.ReadRange succeeds
+// when Content-Range matches the requested byte span.
 func TestS3AcceptsMatchingContentRange(t *testing.T) {
 	src := hostileS3(t, "bytes 4096-8191/8192", http.StatusPartialContent)
 	buf := make([]byte, 4096)

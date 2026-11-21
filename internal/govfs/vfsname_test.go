@@ -18,6 +18,8 @@ func cString(t *testing.T, tls *libc.TLS, s string) uintptr {
 	return p
 }
 
+// TestFileControlVFSNameIncludesShim verifies that SQLITE_FCNTL_VFSNAME on a
+// connection opened via govfs returns "<shim>/unix" per sqlite.h.in:1008-1018.
 func TestFileControlVFSNameIncludesShim(t *testing.T) {
 	v := registerForTest(t, Options{})
 	tls := libc.NewTLS()

@@ -150,7 +150,7 @@ All functions below are in copied [`os_unix.c`](os_unix.c), with lock constants 
      || eType==SQLITE_OPEN_WAL
   ));
   ```
-- **Positioned reads and writes:** `unixRead` ([`src/os_unix.c:3512-3579`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L3512-L3579)) calls `seekAndRead` ([`src/os_unix.c:3463-3505`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L3463-L3505)), which loops `pread`/`pread64` until all requested bytes arrive or EOF is reached. If fewer bytes arrive than requested, `unixRead` zero-fills the remainder of the buffer and returns `SQLITE_IOERR_SHORT_READ` (lines 3575–3577); SQLite expects this exact behavior when reading the 100-byte header of a new empty file or probing past the end of a journal. `unixWrite` ([`src/os_unix.c:3643-3721`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L3643-L3721)) loops `seekAndWriteFd` ([`src/os_unix.c:3588-3624`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L3588-L3624)), which issues `pwrite`/`pwrite64` in chunks of at most 128 KiB and maps `ENOSPC` to `SQLITE_FULL` and other write errors to `SQLITE_IOERR_WRITE` (lines 3710–3717).
+- **Positioned reads and writes:** `unixRead` ([`src/os_unix.c:3512-3579`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L3512-L3579)) calls `seekAndRead` ([`src/os_unix.c:3463-3505`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L3463-L3505)), which loops `pread`/`pread64` until all requested bytes arrive or EOF is reached—when memory-mapped I/O is off (SQLite's default `SQLITE_DEFAULT_MMAP_SIZE 0`, `src/sqliteInt.h:1113-1115`). When `PRAGMA mmap_size > 0` is enabled, the pager fetches mapped database pages through `xFetch` (`getPageMMap`, `src/pager.c:5687`) and `unixRead` copies ranges inside `mmapSize` directly with `memcpy` (`os_unix.c:3533-3548`) without issuing `pread64`. If fewer bytes arrive than requested, `unixRead` zero-fills the remainder of the buffer and returns `SQLITE_IOERR_SHORT_READ` (lines 3575–3577); SQLite expects this exact behavior when reading the 100-byte header of a new empty file or probing past the end of a journal. `unixWrite` ([`src/os_unix.c:3643-3721`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L3643-L3721)) loops `seekAndWriteFd` ([`src/os_unix.c:3588-3624`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L3588-L3624)), which issues `pwrite`/`pwrite64` in chunks of at most 128 KiB and maps `ENOSPC` to `SQLITE_FULL` and other write errors to `SQLITE_IOERR_WRITE` (lines 3710–3717).
 - **Syncing files and directories:** `unixSync` ([`src/os_unix.c:3911-3956`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L3911-L3956)) decodes `isDataOnly` and `isFullsync` (`(flags & 0x0F) == SQLITE_SYNC_FULL`), calls `full_fsync` ([`src/os_unix.c:3778-3849`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L3778-L3849)), and then checks `UNIXFILE_DIRSYNC` ([`src/os_unix.c:3941-3953`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/os_unix.c#L3941-L3953)):
   ```c
   if( pFile->ctrlFlags & UNIXFILE_DIRSYNC ){
@@ -184,7 +184,7 @@ All functions below are in copied [`os_unix.c`](os_unix.c), with lock constants 
 
 ### 3.3 How commits and checkpoints drive `xWrite` and `xSync`
 
-- **Rollback-journal commit (`journal_mode=delete`):** `sqlite3PagerCommitPhaseOne` ([`src/pager.c:6511-6730`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L6511-L6730)) calls `syncJournal` ([`src/pager.c:4332-4441`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L4332-L4441)). At `synchronous=NORMAL`, `syncJournal` updates the 12-byte journal header and calls `xSync` on `-journal` once (which also triggers the one-time directory sync inside `unixSync`). At `synchronous=FULL`, `syncJournal` calls `xSync` on `-journal`, writes the 12-byte header count, and calls `xSync` on `-journal` a second time. Next, the pager writes every dirty page to the main `.db` file and calls `xSync` on `.db`. Finally, `pager_end_transaction` ([`src/pager.c:2052-2180`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L2052-L2180)) closes and deletes `-journal` (`xDelete`, passing `dirSync=1` only at `synchronous=EXTRA`).
+- **Rollback-journal commit (`journal_mode=delete`, `persist`, `truncate`):** `sqlite3PagerCommitPhaseOne` ([`src/pager.c:6511-6730`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L6511-L6730)) calls `syncJournal` ([`src/pager.c:4332-4441`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L4332-L4441)). At `synchronous=NORMAL`, `syncJournal` updates the 12-byte journal header and calls `xSync` on `-journal` once (which also triggers the one-time directory sync inside `unixSync`). At `synchronous=FULL`, `syncJournal` calls `xSync` on `-journal`, writes the 12-byte header count, and calls `xSync` on `-journal` a second time. Next, the pager writes every dirty page to the main `.db` file and calls `xSync` on `.db`. Finally, `pager_end_transaction` ([`src/pager.c:2052-2180`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/pager.c#L2052-L2180)) finalizes `-journal`: in `DELETE` mode it closes and unlinks `-journal` (`xDelete`, passing `dirSync=1` only at `synchronous=EXTRA`, which adds a second directory sync for `5` syncs/commit); in `PERSIST` mode it zeros the journal header and syncs `-journal` again (`zeroJournalHdr`, `src/pager.c:1399-1415`); in `TRUNCATE` mode it calls `ftruncate(0)` and—at `FULL`—syncs `-journal` again (`src/pager.c:2086-2098`). Neither `PERSIST` nor `TRUNCATE` eliminates the directory sync on Unix: `pager_unlock` (`src/pager.c:1891-1895`) closes the journal whenever the lock drops unless the VFS advertises `SQLITE_IOCAP_UNDELETABLE_WHEN_OPEN` (which `unix` does not), so the next write transaction reopens `-journal` with `SQLITE_OPEN_CREATE` and `unixOpen` (`os_unix.c:6569-6572`, `6777`) re-arms `UNIXFILE_DIRSYNC`.
 - **WAL commit and checkpoint (`journal_mode=wal`):** `walFrames` ([`src/wal.c:4038-4266`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L4038-L4266)) checks whether the WAL is fully checkpointed and can be reused from frame 0 via `walRestartLog` ([`src/wal.c:3875-3915`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L3875-L3915)). When starting at frame 0 (brand-new WAL or right after a restart), it writes the 32-byte WAL header and syncs it (`syncHeader`, [`src/wal.c:4114-4124`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L4114-L4124)) using checkpoint sync flags—which are active at **both** `NORMAL` and `FULL` (off only at `OFF`). Then it appends each dirty page as a 24-byte frame header plus a 4,096-byte page image. At `synchronous=FULL`, it calls `xSync` on `-wal` at commit; at `synchronous=NORMAL`, commit sync flags are zero, so ordinary commits issue zero syncs. When a **checkpoint** runs (`walCheckpoint`, [`src/wal.c:2199-2395`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/wal.c#L2199-L2395)), SQLite syncs `-wal` (at line 2277), copies committed pages to `.db`, truncates `.db` if needed, and syncs `.db` (at line 2333)—two syncs at both `NORMAL` and `FULL`.
 
 ### 3.4 The shim pattern in `ext/misc/vfstrace.c`
@@ -205,7 +205,7 @@ Copied as [`vfstrace.c`](vfstrace.c), SQLite's tracing shim demonstrates how any
 
 ### Experiment 7.1 — VFS calls mapped to syscalls (`7.1-vfs-calls-to-syscalls`)
 
-- **Claim:** Every byte SQLite reads or writes passes through a VFS method, and each VFS call maps to a specific `os_unix.c` function and specific kernel syscalls: every `xRead` executes one `pread64`, every `xWrite` executes one `pwrite64` at the exact same file, offset, and length, every `xSync` executes one `fsync`/`fdatasync` of its own file, the parent directory is synced once inside the first `xSync` of a newly created `-journal` or `-wal`, and `-wal`/`-shm` are created on first use and unlinked on last close.
+- **Claim:** Every byte SQLite reads or writes passes through a VFS method, and each VFS call maps to a specific `os_unix.c` function and specific kernel syscalls: with memory-mapped I/O off (the default, `PRAGMA mmap_size=0`, visible as `xFileControl(t.db,MMAP_SIZE,0)`), every `xRead` executes one `pread64`, every `xWrite` executes one `pwrite64` at the exact same file, offset, and length, no `pread64`/`pwrite64`/`read`/`write`/`writev` on database, journal, WAL, or shm files occurs outside `xRead`, `xWrite`, or `xShmMap`, every `xSync` executes one `fsync`/`fdatasync` of its own file, the parent directory is synced once inside the first `xSync` of a newly created `-journal` or `-wal`, and `-wal`/`-shm` are created on first use and unlinked on last close.
 - **Evidence form:** `EXACT` (all lines except `INFO:` lines must match identically on every run).
 - **Platform:** **Linux only** for the merged syscall stream (`strace`). Requires the pinned `sqlite3` CLI (`go run ./cmd/course build-tools`). On macOS, the program prints the CLI `-vfstrace` call list without syscalls; run the full Linux experiment with `docker compose run --rm lab go run ./ch07-vfs-and-filesystem-io/experiments/7.1-vfs-calls-to-syscalls`.
 
@@ -286,6 +286,10 @@ var unixFunction = map[string]string{
 // xAccess (os_unix.c:6881-6903), xFileSize, and xFullPathname show their kernel
 // calls. fchown is omitted because unixOpen only calls it when running as root.
 var tracedSyscalls = append(append([]string(nil), trace.DefaultSyscalls...), "fstat", "newfstatat", "statx", "stat", "lstat", "access", "faccessat", "faccessat2")
+
+// byteMovingSyscalls lists every traced canonical syscall that transfers file
+// bytes, used to verify no database/journal/WAL/shm byte I/O escapes the VFS.
+var byteMovingSyscalls = []string{"pread64", "pwrite64", "read", "write", "writev"}
 
 var failures []string
 
@@ -375,30 +379,29 @@ func portable(ctx context.Context, cli sqlitex.CLI, request trace.CLITrace, dir 
 		}
 		fmt.Printf("  %s\n", c.String())
 	}
-	walOpen, walDelete, shmDelete := false, false, false
+	walOpen, walDelete, shmDelete := closeLifecycle(calls)
+	check(walOpen, "the -wal file is opened through xOpen")
+	check(walDelete && shmDelete, "at the last close the -wal is deleted (xDelete) and the -shm is unmapped with delFlag=1")
+}
+
+// closeLifecycle checks the VFS-only trace (used on non-Linux hosts) for WAL
+// open, WAL deletion, and shm unmap with delFlag=1 (vfstrace.c:843).
+func closeLifecycle(calls []trace.VFSCall) (walOpen, walDelete, shmDelete bool) {
 	for _, c := range calls {
 		switch {
 		case c.Method == "xOpen" && c.File == dbName+"-wal":
 			walOpen = true
 		case c.Method == "xDelete" && strings.HasSuffix(c.File, dbName+"-wal"):
 			walDelete = true
-		case c.Method == "xShmUnmap" && strings.Contains(c.Raw, "delete=1"):
+		case c.Method == "xShmUnmap" && slices.Contains(c.Args, "delFlag=1"):
 			shmDelete = true
 		}
 	}
-	check(walOpen, "the -wal file is opened through xOpen")
-	check(walDelete && shmDelete, "at the last close the -wal is deleted (xDelete) and the -shm is unmapped with delete=1")
+	return walOpen, walDelete, shmDelete
 }
 
-type stream struct {
-	events []trace.Event
-	keep   []bool
-}
-
-func onDisk(dir string) func(trace.Syscall) bool {
-	return func(s trace.Syscall) bool {
-		return s.Path == "." || s.Path == dbName || strings.HasPrefix(s.Path, dbName+"-")
-	}
+func onDisk(s trace.Syscall) bool {
+	return s.Path == "." || s.Path == dbName || strings.HasPrefix(s.Path, dbName+"-")
 }
 
 func syscallLine(s trace.Syscall) string {
@@ -421,7 +424,7 @@ func eventLine(e trace.Event) string {
 }
 
 func analyze(m *trace.Merged, dir string) {
-	relevant := onDisk(dir)
+	relevant := onDisk
 	var kept []int
 	for i, e := range m.Events {
 		if e.Kind == trace.EventSyscall && !relevant(*e.Syscall) {
@@ -578,7 +581,7 @@ func analyze(m *trace.Merged, dir string) {
 			continue
 		}
 		name := trace.CanonicalName(e.Syscall.Name)
-		if name != "pwrite64" && name != "pread64" {
+		if !slices.Contains(byteMovingSyscalls, name) {
 			continue
 		}
 		if e.Enclosed < 0 {
@@ -652,7 +655,7 @@ func analyze(m *trace.Merged, dir string) {
 	for _, p := range readProblems {
 		fmt.Printf("  %s\n", p)
 	}
-	check(len(outsideIO) == 0, "every pread64/pwrite64 on the database, journal, WAL and shm files happened inside xRead, xWrite or xShmMap")
+	check(len(outsideIO) == 0, "every pread64/pwrite64/read/write/writev on the database, journal, WAL and shm files happened inside xRead, xWrite or xShmMap")
 	for _, p := range outsideIO {
 		fmt.Printf("  %s\n", p)
 	}
@@ -1019,7 +1022,7 @@ files left in the directory after the CLI exits: t.db
 
 check ok: each of the 12 xWrite calls made exactly one pwrite64 to the same file, offset and length
 check ok: each of the 7 xRead calls made exactly one pread64 of the same file, offset and length
-check ok: every pread64/pwrite64 on the database, journal, WAL and shm files happened inside xRead, xWrite or xShmMap
+check ok: every pread64/pwrite64/read/write/writev on the database, journal, WAL and shm files happened inside xRead, xWrite or xShmMap
 check ok: each of the 8 xSync calls made exactly one fsync/fdatasync of its own file
 check ok: the directory is synced twice, inside the first xSync of the new journal and of the new WAL (unixSync's one-time directory sync)
 check ok: the -wal file is created (O_CREAT) at its first use, by xOpen
@@ -1048,7 +1051,7 @@ ALL CHECKS PASSED
 - **Lines 214–236 (STEP 4: `INSERT INTO t VALUES(1, 'one')`).** Takes `READ1` shared (byte `124`) and `WRITE` exclusive (byte `120`), writes one frame (`n=24 ofst=8272` and `n=4096 ofst=8296`), syncs `t.db-wal`, and unlocks. Zero reads or writes touch `t.db`.
 - **Lines 237–282 (STEP 5: `PRAGMA wal_checkpoint(TRUNCATE)`).** Locks `CKPT` (byte `121`) and `WRITE` (byte `120`), syncs `t.db-wal` (line 250), reads the two latest page images from `t.db-wal` (`off=56` and `off=8296`), writes them to `t.db` (`off=0` and `off=4096`), truncates `t.db` to `8192`, syncs `t.db`, takes exclusive locks on `READ1`–`READ4` (`start=124 len=4`), truncates `t.db-wal` to `0`, unlocks, and prints `0|0|0`.
 - **Lines 283–305 (STEP 6: close).** Checks `HAS_MOVED` (`stat t.db`), takes `EXCLUSIVE` lock on `t.db` (probing `t.db-shm` byte `128` first), checks `PERSIST_WAL` (returns `0`), calls `xShmUnmap(delFlag=1)` (`unlink t.db-shm` then `close`), closes `t.db-wal`, calls `xDelete("t.db-wal", 0)` (`unlink t.db-wal`), unlocks, and closes `t.db`.
-- **Lines 308–349 (summary table, sync counts, and checks).** Every one of the 19 VFS methods maps to its `unix*` function and exact syscall counts: `xWrite` (12 calls → 12 `pwrite64`), `xRead` (7 → 7 `pread64`), `xSync` (8 → 10 `sync`, 2 `open`, 2 `close`), `xShmMap` (2 → `open`, `fcntl`×3, `ftruncate`, `pwrite64`×8, `mmap`, `stat`×4), `xShmLock` (36 → 36 `fcntl`), `xAccess` (6 → 6 `stat`), `xDelete` (2 → 2 `unlink`). All 10 sync syscalls are accounted for (`t.db` 2, `t.db-journal` 2, `t.db-wal` 4, directory `.` 2), only `t.db` remains on disk, and all 9 checks pass.
+- **Lines 308–349 (summary table, sync counts, and checks).** Every one of the 19 VFS methods maps to its `unix*` function and exact syscall counts: `xWrite` (12 calls → 12 `pwrite64`), `xRead` (7 → 7 `pread64`), `xSync` (8 → 10 `sync`, 2 `open`, 2 `close`), `xShmMap` (2 → `open`, `fcntl`×3, `ftruncate`, `pwrite64`×8, `mmap`, `stat`×4), `xShmLock` (36 → 36 `fcntl`), `xAccess` (6 → 6 `stat`), `xDelete` (2 → 2 `unlink`). No `pread64`, `pwrite64`, `read`, `write`, or `writev` syscall on the database, journal, WAL, or shm files occurred outside `xRead`, `xWrite`, or `xShmMap`. The 1-to-1 `xRead` → `pread64` check holds here because memory-mapped I/O is off by default (`xFileControl(t.db,MMAP_SIZE,0)` at line 31); with `PRAGMA mmap_size > 0`, reads still go through the VFS (`xFetch` and `unixRead`'s mapped `memcpy`) while bypassing `pread64`. All 10 sync syscalls are accounted for (`t.db` 2, `t.db-journal` 2, `t.db-wal` 4, directory `.` 2), only `t.db` remains on disk, and all 9 checks pass. Unit tests in [`7.1-vfs-calls-to-syscalls/main_test.go`](experiments/7.1-vfs-calls-to-syscalls/main_test.go) verify `closeLifecycle` (used by the non-Linux `portable()` path) against real `-vfstrace` lines containing `delFlag=1`.
 
 ---
 
@@ -1329,7 +1332,6 @@ func child(args []string) {
 type counts struct {
 	writes    int
 	bytes     int64
-	reads     int
 	syncs     map[string]int
 	opens     map[string]int
 	unlinks   map[string]int
@@ -1366,7 +1368,7 @@ func fileRole(path string) string {
 
 func (c *counts) add(s trace.Syscall) {
 	role := fileRole(s.Path)
-	if role == "" {
+	if role == "" || !s.Succeeded() {
 		return
 	}
 	switch trace.CanonicalName(s.Name) {
@@ -1375,8 +1377,6 @@ func (c *counts) add(s trace.Syscall) {
 		if s.Result > 0 {
 			c.bytes += s.Result
 		}
-	case "pread64":
-		c.reads++
 	case "sync":
 		c.syncs[role]++
 	case "open":
@@ -1395,12 +1395,32 @@ type commitShape struct {
 }
 
 type measurement struct {
-	commits   []*counts
 	all       *counts
 	close     *counts
 	shapes    map[commitShape]int
 	shapeList []commitShape
 	sequence  []commitShape
+}
+
+// classifyWALCommits verifies every WAL commit fits the plain, checkpoint, or
+// post-checkpoint restart shape and that at least one checkpoint+restart pair
+// occurred (preventing vacuous passes if wal_autocheckpoint never triggered).
+func classifyWALCommits(sequences [][]commitShape, plain, restart, checkpoint string) (ok bool, checkpoints, restarts int) {
+	ok = true
+	for _, sequence := range sequences {
+		for i, s := range sequence {
+			switch {
+			case !s.dbWrites && s.syncs == plain:
+			case s.dbWrites && s.syncs == checkpoint:
+				checkpoints++
+			case !s.dbWrites && s.syncs == restart && i > 0 && sequence[i-1].dbWrites:
+				restarts++
+			default:
+				ok = false
+			}
+		}
+	}
+	return ok && checkpoints > 0 && restarts == checkpoints, checkpoints, restarts
 }
 
 func roleList(m map[string]int) string {
@@ -1473,7 +1493,6 @@ func measure(ctx context.Context, dir string, c cell) (*measurement, error) {
 		if i == c.commits() {
 			continue
 		}
-		m.commits = append(m.commits, target)
 		dbWrites := false
 		for _, s := range seg {
 			if trace.CanonicalName(s.Name) == "pwrite64" && s.Path == dbName {
@@ -1541,22 +1560,11 @@ func report(results map[cell]*measurement) {
 	}
 	for _, sync := range []string{sqlitex.SyncNormal, sqlitex.SyncFull} {
 		plain, restart, checkpoint := walShapes(sync)
-		ok := true
-		checkpoints, restarts := 0, 0
+		var sequences [][]commitShape
 		for _, batch := range []int{totalRows, 50, 1} {
-			m := results[cell{sqlitex.JournalWAL, sync, batch}]
-			for i, s := range m.sequence {
-				switch {
-				case !s.dbWrites && s.syncs == plain:
-				case s.dbWrites && s.syncs == checkpoint:
-					checkpoints++
-				case !s.dbWrites && s.syncs == restart && i > 0 && m.sequence[i-1].dbWrites:
-					restarts++
-				default:
-					ok = false
-				}
-			}
+			sequences = append(sequences, results[cell{sqlitex.JournalWAL, sync, batch}].sequence)
 		}
+		ok, checkpoints, restarts := classifyWALCommits(sequences, plain, restart, checkpoint)
 		check(ok, fmt.Sprintf("WAL at %s: a commit makes [%s]; the commit that runs an automatic checkpoint makes [%s] (%d such), and the next commit, which restarts the WAL and writes a new WAL header, makes [%s] (%d such)", sync, plain, checkpoint, checkpoints, restart, restarts))
 	}
 	one := results[cell{sqlitex.JournalDelete, sqlitex.SyncFull, 1}].all.totalSyncs()
@@ -1655,7 +1663,7 @@ ALL CHECKS PASSED
   - **Deriving the rollback 1-row cost from the code:** Each 1-row commit modifies 2 pages (page 1 for the file change counter and page 2 or the active table leaf). SQLite writes a 512-byte journal header (`1` `pwrite64`), 2 page records of `4 + 4096 + 4 = 4104` bytes written as 3 `pwrite64` calls each (`6` `pwrite64`), the 12-byte journal header update (`1` `pwrite64`), and the 2 updated pages to `t.db` (`2` `pwrite64`): `10` `pwrite64` and `512 + 2×4104 + 12 + 2×4096 = 16,924` bytes per ordinary commit (with occasional B-tree leaf splits adding extra pages, totaling `10,028` writes and `17,038,688` bytes across 1,000 commits).
   - **WAL mode versus rollback mode:** At `1000 x 1` under `NORMAL`, WAL executes **2,139 `pwrite64`** (`4,461,320` bytes—nearly 4× fewer bytes than rollback's `17,038,688`) and **3 syncs** total (`db:1 wal:2`) versus rollback's **3,000 syncs**—a 1,000× reduction in syncs—with **0** journal/directory opens and **0** unlinks during the workload. At `1000 x 1` under `FULL`, WAL executes **1,003 syncs** (`db:1 wal:1002`) versus rollback's **4,000 syncs**. Every plain 1-row WAL commit writes 1 frame: 2 `pwrite64` calls (`24 + 4096 = 4,120` bytes).
 - **Lines 21–34 (syncs per commit — correcting the WAL/`NORMAL` rule):**
-  - Every rollback commit at `NORMAL` makes `[db:1 dir:1 journal:1]` (`3` syncs) and at `FULL` makes `[db:1 dir:1 journal:2]` (`4` syncs), regardless of batch size. Remember these are **sync syscalls**, not VFS `xSync` calls (which are `2` and `3` because the directory sync happens inside the journal's first `xSync`, `os_unix.c:3941-3953`).
+  - Every rollback `DELETE` commit at `NORMAL` makes `[db:1 dir:1 journal:1]` (`3` syncs) and at `FULL` makes `[db:1 dir:1 journal:2]` (`4` syncs), regardless of batch size. Remember these are **sync syscalls**, not VFS `xSync` calls (which are `2` and `3` because the directory sync happens inside the journal's first `xSync`, `os_unix.c:3941-3953`). Outside this 12-cell matrix, probing the other rollback settings on Linux (`20 x 50` commits in adversarial test `COST-05`) confirms `delete/EXTRA` costs **5 syncs/commit** (`db:20 dir:40 journal:40`, with the second directory sync inside `unixDelete`), while `persist/NORMAL` (`80` syncs: `db:20 dir:20 journal:40`, `0` unlinks) and `truncate/FULL` (`100` syncs: `db:20 dir:20 journal:60`, `0` unlinks) eliminate `unlink` syscalls but still pay the directory sync on every commit on Unix (because `pager_unlock` closes the journal without `SQLITE_IOCAP_UNDELETABLE_WHEN_OPEN`) plus a final journal sync in `zeroJournalHdr` / post-`ftruncate`. Unit tests in [`7.2-io-cost-by-pattern/main_test.go`](experiments/7.2-io-cost-by-pattern/main_test.go) verify that `counts.add` skips failed syscalls and `classifyWALCommits` requires at least one checkpoint followed by a matching restart.
   - In WAL mode at `1 x 1000` (30 frames) and `20 x 50` (87 frames), the WAL never reaches `wal_autocheckpoint=1000`, so every commit makes `0` syncs at `NORMAL` and `1` sync (`wal:1`) at `FULL`.
   - In WAL mode at `1000 x 1`, the WAL crosses 1,000 frames partway through the run:
     - **`wal NORMAL 1000 x 1`:** `998` commits make **0 syncs** `[-]`; **1 commit** runs the automatic checkpoint (`walCheckpoint`, `wal.c:2199-2395`) and makes **2 syncs** `[db:1 wal:1] +db-writes`; and the **1 commit right after it** restarts the WAL (`walRestartLog`, `wal.c:3875-3915`) and syncs its new 32-byte header (`wal.c:4114-4124`), making **1 sync** `[wal:1]`.
@@ -1668,7 +1676,7 @@ ALL CHECKS PASSED
 
 ### 5.2 Shared package `internal/govfs`
 
-`internal/govfs` registers a pure-Go forwarding VFS shim on top of `modernc.org/sqlite`'s default `"unix"` VFS with zero cgo and zero custom C. It intercepts all 9 filesystem-level VFS methods and all 18 per-file `sqlite3_io_methods` slots (versions 1–3), records every call in memory, and can inject single-shot errors on `xRead`, `xWrite`, `xSync`, or `xTruncate`. Its unit tests live in [`internal/govfs/govfs_test.go`](../internal/govfs/govfs_test.go) and [`internal/govfs/signature_test.go`](../internal/govfs/signature_test.go) (`go test ./internal/govfs/`).
+`internal/govfs` registers a pure-Go forwarding VFS shim on top of `modernc.org/sqlite`'s default `"unix"` VFS with zero cgo and zero custom C. It intercepts all 9 filesystem-level VFS methods and all 18 per-file `sqlite3_io_methods` slots (versions 1–3), records every call in memory, and can inject single-shot errors on `xRead`, `xWrite`, `xSync`, or `xTruncate`. Its unit tests live in [`internal/govfs/govfs_test.go`](../internal/govfs/govfs_test.go), [`internal/govfs/inject_test.go`](../internal/govfs/inject_test.go), [`internal/govfs/vfsname_test.go`](../internal/govfs/vfsname_test.go), and [`internal/govfs/signature_test.go`](../internal/govfs/signature_test.go) (`go test ./internal/govfs/`).
 
 #### `internal/govfs/cfunc.go`
 
@@ -1708,14 +1716,11 @@ func at[T any](address uintptr) *T {
 func codeAddress(funcAddress uintptr) uintptr {
 	return *at[uintptr](funcAddress)
 }
-
-// pointerSize is the byte width of a C pointer on the target architecture.
-const pointerSize = unsafe.Sizeof(uintptr(0))
 ```
 
 **Walk-through (`cfunc.go`) — `unsafe`, ccgo's function-pointer convention, and why it is sound at this pin:**
 
-Every line of `unsafe` pointer manipulation in `internal/govfs` lives in this 37-line file (plus two `unsafe.Sizeof` calls in `govfs.go`).
+Every line of `unsafe` pointer conversion in `internal/govfs` lives in this 34-line file (plus two `unsafe.Sizeof` calls in `govfs.go` and one `unsafe.Slice` in `methods.go`'s `prependVFSName`).
 
 - **How `modernc.org/sqlite/lib` represents C function pointers.** `modernc.org/sqlite` is produced by `ccgo`, which translates C structs such as `sqlite3_vfs` and `sqlite3_io_methods` into Go structs whose function-pointer fields have type `uintptr`. To store a top-level Go function in a `uintptr` field, `ccgo`'s runtime helper (`__ccgo_fp`) reads the second word (the data word) of an `any` interface holding that function—which in the Go runtime points to the function's static `funcval` struct whose first word is the machine-code entry point. `funcAddress(f any)` performs that exact read, `funcAt[F](address)` reinterprets a stored `uintptr` back into a callable Go function value of type `F`, and `codeAddress(funcAddress)` dereferences the first word of the `funcval` so `runtime.FuncForPC` can resolve the function's symbol name.
 - **Why `at[T](address)` is safe here and why `go vet` passes cleanly.** `at[T](address)` converts a `uintptr` into `*T` via `*(**T)(unsafe.Pointer(&address))`. Normally, Go's `unsafeptr` analyzer forbids converting an arbitrary `uintptr` to `unsafe.Pointer` because the Go garbage collector can move or collect Go heap objects if their addresses are hidden in integers. Here, `go vet`'s default `unsafeptr` check does not flag `*(**T)(unsafe.Pointer(&address))`—and the check is **not** disabled—but the actual safety guarantee comes from the **allocation rule**: every `uintptr` dereferenced by `at[T]` points into memory outside the Go garbage collector's heap:
@@ -1962,13 +1967,11 @@ var registry = struct {
 	byName    map[string]*VFS
 	files     map[uintptr]*openFile
 	tables    map[[2]uintptr]methodTable
-	checked   map[uintptr]error
 }{
 	byAddress: map[uintptr]*VFS{},
 	byName:    map[string]*VFS{},
 	files:     map[uintptr]*openFile{},
 	tables:    map[[2]uintptr]methodTable{},
-	checked:   map[uintptr]error{},
 }
 
 // ErrAlreadyRegistered is returned by Register when SQLite already has a VFS
@@ -2005,6 +2008,19 @@ func Register(name string, options Options) (*VFS, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Free C-allocated name and sqlite3_vfs memory on any failure path; this
+	// defer runs before tls.Close() in LIFO order.
+	var address uintptr
+	registered := false
+	defer func() {
+		if registered {
+			return
+		}
+		libc.Xfree(tls, cname)
+		if address != 0 {
+			sqlite3.Xsqlite3_free(tls, address)
+		}
+	}()
 	if sqlite3.Xsqlite3_vfs_find(tls, cname) != 0 {
 		return nil, fmt.Errorf("govfs: %q: %w", name, ErrAlreadyRegistered)
 	}
@@ -2022,7 +2038,7 @@ func Register(name string, options Options) (*VFS, error) {
 		registry.realVFS = real
 	}
 	real := at[sqlite3.Tsqlite3_vfs](registry.realVFS)
-	address := sqlite3.Xsqlite3_malloc64(tls, uint64(unsafe.Sizeof(sqlite3.Tsqlite3_vfs{})))
+	address = sqlite3.Xsqlite3_malloc64(tls, uint64(unsafe.Sizeof(sqlite3.Tsqlite3_vfs{})))
 	if address == 0 {
 		return nil, errors.New("govfs: out of memory")
 	}
@@ -2047,6 +2063,7 @@ func Register(name string, options Options) (*VFS, error) {
 		delete(registry.byName, name)
 		return nil, fmt.Errorf("govfs: sqlite3_vfs_register: %d", rc)
 	}
+	registered = true
 	return v, nil
 }
 
@@ -2160,28 +2177,27 @@ func (v *VFS) setError(err error) {
 	v.mu.Unlock()
 }
 
-func (v *VFS) injected(c Call, code int32) int32 {
-	c.Result = code
-	c.Injected = true
-	v.record(c)
-	return code
-}
-
-func (v *VFS) inject(method string, kind FileKind) (int32, bool) {
+// injectFault checks whether c matches the armed fault and, if it is the Nth
+// match, completes the injected Call, appends it when recording is enabled, and
+// stores it in v.fired under one lock so Disarm never sees a half-filled Call.
+func (v *VFS) injectFault(c Call) (int32, bool) {
 	if v == nil {
 		return 0, false
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	f := v.fault
-	if f == nil || v.fired != nil || f.Method != method || (f.Kind != KindNone && f.Kind != kind) {
+	if f == nil || v.fired != nil || f.Method != c.Method || (f.Kind != KindNone && f.Kind != c.Kind) {
 		return 0, false
 	}
 	v.faultSeen++
 	if v.faultSeen != f.Nth {
 		return 0, false
 	}
-	v.fired = &Call{}
+	c.Result = f.Code
+	c.Injected = true
+	v.appendLocked(&c)
+	v.fired = &c
 	return f.Code, true
 }
 
@@ -2191,21 +2207,16 @@ func (v *VFS) record(c Call) {
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if c.Injected && v.fired != nil {
-		v.seq++
-		c.Seq = v.seq
-		*v.fired = c
-		if v.recording {
-			v.calls = append(v.calls, c)
-		}
-		return
-	}
+	v.appendLocked(&c)
+}
+
+func (v *VFS) appendLocked(c *Call) {
 	if !v.recording {
 		return
 	}
 	v.seq++
 	c.Seq = v.seq
-	v.calls = append(v.calls, c)
+	v.calls = append(v.calls, *c)
 }
 
 func vfsFor(pVfs uintptr) *VFS {
@@ -2275,6 +2286,8 @@ func methodTableFor(v *VFS, real uintptr) (uintptr, error) {
 	registry.Lock()
 	defer registry.Unlock()
 	if existing, ok := registry.tables[key]; ok {
+		// Another goroutine populated the cache first; free our unused table.
+		sqlite3.Xsqlite3_free(tls, address)
 		return existing.address, nil
 	}
 	registry.tables[key] = methodTable{address: address, version: version}
@@ -2282,7 +2295,7 @@ func methodTableFor(v *VFS, real uintptr) (uintptr, error) {
 }
 ```
 
-**Walk-through (`govfs.go`).** `Register` validates the name and `IOVersion` (`0` defaults to `3`; `1..3` allowed), ensures SQLite does not already have a VFS with that name (`ErrAlreadyRegistered`), runs the startup self-checks once against `sqlite3_vfs_find(NULL)`, allocates a C-memory `Tsqlite3_vfs` with `sqlite3_malloc64`, copies the default VFS into it, increases `FszOsFile` by `headerSize` (`8` bytes for our leading `pMethods` pointer), swaps in the 9 wrapped VFS slots, and calls `sqlite3_vfs_register`. `methodTableFor` caches one C-allocated `Tsqlite3_io_methods` table per `(shim VFS, real method table)` pair with `iVersion = min(v.ioVersion, realTable.FiVersion)`, leaving null slots null—so registering with `IOVersion: 1` omits `xShm*` and prevents WAL mode. `VFS` also manages call recording (`Calls`, `TakeCalls`, `Reset`, `SetRecording`) and single-shot fault injection (`Arm`, `Disarm`) on `xRead`, `xWrite`, `xSync`, and `xTruncate`.
+**Walk-through (`govfs.go`).** `Register` validates the name and `IOVersion` (`0` defaults to `3`; `1..3` allowed), ensures SQLite does not already have a VFS with that name (`ErrAlreadyRegistered`), runs the startup self-checks once against `sqlite3_vfs_find(NULL)`, allocates a C-memory `Tsqlite3_vfs` with `sqlite3_malloc64`, copies the default VFS into it, increases `FszOsFile` by `headerSize` (`8` bytes for our leading `pMethods` pointer), swaps in the 9 wrapped VFS slots, and calls `sqlite3_vfs_register`; a `defer` frees `cname` (`libc.Xfree`) and `address` (`sqlite3_free`) on any failure return (running before `tls.Close()` in LIFO order). `methodTableFor` caches one C-allocated `Tsqlite3_io_methods` table per `(shim VFS, real method table)` pair with `iVersion = min(v.ioVersion, realTable.FiVersion)`, freeing any losing allocation on a concurrent race and leaving null slots null—so registering with `IOVersion: 1` omits `xShm*` and prevents WAL mode. `VFS` also manages call recording (`Calls`, `TakeCalls`, `Reset`, `SetRecording`) and single-shot fault injection (`Arm`, `Disarm`) on `xRead`, `xWrite`, `xSync`, and `xTruncate`; `injectFault` matches the fault, sets `Result` and `Injected`, appends via `appendLocked` only when recording is enabled (so `seq` does not advance when recording is off), and stores `v.fired` under one `v.mu` lock so a concurrent `Disarm` never sees a half-filled `Call`.
 
 #### `internal/govfs/methods.go`
 
@@ -2291,6 +2304,8 @@ func methodTableFor(v *VFS, real uintptr) (uintptr, error) {
 package govfs
 
 import (
+	"unsafe"
+
 	"modernc.org/libc"
 	sqlite3 "modernc.org/sqlite/lib"
 )
@@ -2346,7 +2361,11 @@ func vfsDelete(tls *libc.TLS, pVfs uintptr, zName uintptr, syncDir int32) int32 
 
 func vfsAccess(tls *libc.TLS, pVfs uintptr, zName uintptr, flags int32, pResOut uintptr) int32 {
 	rc := funcAt[vfsAccessFunc](realVFS().FxAccess)(tls, registry.realVFS, zName, flags, pResOut)
-	vfsFor(pVfs).record(Call{Method: "xAccess", File: displayName(goString(zName)), Flags: int64(flags), Out: int64(*at[int32](pResOut)), Result: rc})
+	call := Call{Method: "xAccess", File: displayName(goString(zName)), Flags: int64(flags), Result: rc}
+	if rc == 0 && pResOut != 0 {
+		call.Out = int64(*at[int32](pResOut))
+	}
+	vfsFor(pVfs).record(call)
 	return rc
 }
 
@@ -2374,10 +2393,12 @@ func vfsCurrentTime(tls *libc.TLS, pVfs uintptr, pOut uintptr) int32 {
 	return rc
 }
 
-// vfsGetLastError forwards without recording, matching vfstrace.c, because
-// SQLite calls it only while formatting a prior error.
+// vfsGetLastError forwards xGetLastError and records the call, matching
+// vfstraceGetLastError (vfstrace.c:1091-1101).
 func vfsGetLastError(tls *libc.TLS, pVfs uintptr, nByte int32, zOut uintptr) int32 {
-	return funcAt[vfsGetLastErrorFunc](realVFS().FxGetLastError)(tls, registry.realVFS, nByte, zOut)
+	rc := funcAt[vfsGetLastErrorFunc](realVFS().FxGetLastError)(tls, registry.realVFS, nByte, zOut)
+	vfsFor(pVfs).record(Call{Method: "xGetLastError", Amount: int64(nByte), Result: rc})
+	return rc
 }
 
 func vfsCurrentTimeInt64(tls *libc.TLS, pVfs uintptr, pOut uintptr) int32 {
@@ -2405,8 +2426,8 @@ func ioRead(tls *libc.TLS, pFile uintptr, buf uintptr, amount int32, offset int6
 	f := fileFor(pFile)
 	call := f.call("xRead")
 	call.Amount, call.Offset = int64(amount), offset
-	if code, ok := f.vfs.inject("xRead", f.kind); ok {
-		return f.vfs.injected(call, code)
+	if code, ok := f.vfs.injectFault(call); ok {
+		return code
 	}
 	call.Result = funcAt[ioReadFunc](realMethods(f).FxRead)(tls, inner(pFile), buf, amount, offset)
 	f.vfs.record(call)
@@ -2417,8 +2438,8 @@ func ioWrite(tls *libc.TLS, pFile uintptr, buf uintptr, amount int32, offset int
 	f := fileFor(pFile)
 	call := f.call("xWrite")
 	call.Amount, call.Offset = int64(amount), offset
-	if code, ok := f.vfs.inject("xWrite", f.kind); ok {
-		return f.vfs.injected(call, code)
+	if code, ok := f.vfs.injectFault(call); ok {
+		return code
 	}
 	call.Result = funcAt[ioWriteFunc](realMethods(f).FxWrite)(tls, inner(pFile), buf, amount, offset)
 	f.vfs.record(call)
@@ -2429,8 +2450,8 @@ func ioTruncate(tls *libc.TLS, pFile uintptr, size int64) int32 {
 	f := fileFor(pFile)
 	call := f.call("xTruncate")
 	call.Amount = size
-	if code, ok := f.vfs.inject("xTruncate", f.kind); ok {
-		return f.vfs.injected(call, code)
+	if code, ok := f.vfs.injectFault(call); ok {
+		return code
 	}
 	call.Result = funcAt[ioTruncateFunc](realMethods(f).FxTruncate)(tls, inner(pFile), size)
 	f.vfs.record(call)
@@ -2441,8 +2462,8 @@ func ioSync(tls *libc.TLS, pFile uintptr, flags int32) int32 {
 	f := fileFor(pFile)
 	call := f.call("xSync")
 	call.Flags = int64(flags)
-	if code, ok := f.vfs.inject("xSync", f.kind); ok {
-		return f.vfs.injected(call, code)
+	if code, ok := f.vfs.injectFault(call); ok {
+		return code
 	}
 	call.Result = funcAt[ioSyncFunc](realMethods(f).FxSync)(tls, inner(pFile), flags)
 	f.vfs.record(call)
@@ -2453,7 +2474,9 @@ func ioFileSize(tls *libc.TLS, pFile uintptr, pSize uintptr) int32 {
 	f := fileFor(pFile)
 	call := f.call("xFileSize")
 	call.Result = funcAt[ioFileSizeFunc](realMethods(f).FxFileSize)(tls, inner(pFile), pSize)
-	call.Out = *at[int64](pSize)
+	if call.Result == 0 && pSize != 0 {
+		call.Out = *at[int64](pSize)
+	}
 	f.vfs.record(call)
 	return call.Result
 }
@@ -2480,7 +2503,9 @@ func ioCheckReservedLock(tls *libc.TLS, pFile uintptr, pResOut uintptr) int32 {
 	f := fileFor(pFile)
 	call := f.call("xCheckReservedLock")
 	call.Result = funcAt[ioCheckReservedLockFunc](realMethods(f).FxCheckReservedLock)(tls, inner(pFile), pResOut)
-	call.Out = int64(*at[int32](pResOut))
+	if call.Result == 0 && pResOut != 0 {
+		call.Out = int64(*at[int32](pResOut))
+	}
 	f.vfs.record(call)
 	return call.Result
 }
@@ -2490,6 +2515,9 @@ func ioFileControl(tls *libc.TLS, pFile uintptr, op int32, pArg uintptr) int32 {
 	call := f.call("xFileControl")
 	call.Flags = int64(op)
 	call.Result = funcAt[ioFileControlFunc](realMethods(f).FxFileControl)(tls, inner(pFile), op, pArg)
+	if op == sqlite3.SQLITE_FCNTL_VFSNAME && call.Result == CodeOK && pArg != 0 {
+		call.Result = prependVFSName(tls, f.vfs.name, pArg)
+	}
 	f.vfs.record(call)
 	return call.Result
 }
@@ -2560,13 +2588,34 @@ func ioUnfetch(tls *libc.TLS, pFile uintptr, offset int64, p uintptr) int32 {
 	f.vfs.record(call)
 	return call.Result
 }
+
+// prependVFSName implements the shim contract for SQLITE_FCNTL_VFSNAME
+// (sqlite.h.in:1008-1018, vfstrace.c:711-716): prepend "<shimName>/" to the
+// lower VFS's sqlite3_malloc'd name string, freeing the old buffer.
+func prependVFSName(tls *libc.TLS, shimName string, pArg uintptr) int32 {
+	slot := at[uintptr](pArg)
+	stack := shimName
+	if *slot != 0 {
+		stack += "/" + libc.GoString(*slot)
+	}
+	buffer := sqlite3.Xsqlite3_malloc64(tls, uint64(len(stack)+1))
+	if buffer == 0 {
+		return sqlite3.SQLITE_NOMEM
+	}
+	copy(unsafe.Slice(at[byte](buffer), len(stack)+1), stack+"\x00")
+	sqlite3.Xsqlite3_free(tls, *slot)
+	*slot = buffer
+	return CodeOK
+}
 ```
 
 **Walk-through (`methods.go`).** Holds the 27 wrapper functions called by SQLite:
 
 - `vfsOpen` clears `header.FpMethods = 0` first (honoring `os.c:230`'s assertion that a failed open leaves `pMethods == 0`), forwards `xOpen` to the underlying VFS using `inner(pFile)` (`pFile + 8`), verifies and builds the shim `sqlite3_io_methods` table if the underlying open populated `pMethods`, stores the `*openFile` metadata in `registry.files[pFile]`, and writes our shim table pointer into `header.FpMethods`. If a self-check fails, it closes the real file, saves the error for `VFS.Err()`, and returns `SQLITE_CANTOPEN` (`14`).
-- `vfsGetLastError` forwards without recording, matching `vfstrace.c`, because SQLite invokes it only while formatting an earlier error.
-- `ioRead`, `ioWrite`, `ioTruncate`, and `ioSync` check `f.vfs.inject(method, f.kind)` before calling the real method. When the N-th matching call arrives, `injected` records the call with `Injected: true` and returns the configured error code without calling `os_unix.c`; all other calls forward normally and record their result.
+- `vfsGetLastError` forwards `xGetLastError` and records the call (`Amount = nByte`), matching `vfstraceGetLastError` (`ext/misc/vfstrace.c:1091-1101`).
+- `vfsAccess`, `ioFileSize`, and `ioCheckReservedLock` dereference their output pointers (`pResOut`, `pSize`) only when the underlying call returned `0` and the pointer is non-zero.
+- `ioFileControl` honors the `SQLITE_FCNTL_VFSNAME` shim stack contract (`src/sqlite.h.in:1008-1018`, `ext/misc/vfstrace.c:711-716`): when `op == SQLITE_FCNTL_VFSNAME` succeeds, `prependVFSName` allocates `"<shimName>/<lower>"` with `sqlite3_malloc64`, frees the lower VFS's string, and stores the new pointer in `*pArg` (tested in [`internal/govfs/vfsname_test.go`](../internal/govfs/vfsname_test.go)).
+- `ioRead`, `ioWrite`, `ioTruncate`, and `ioSync` build their `Call` and check `f.vfs.injectFault(call)` before calling the real method. When the N-th matching call arrives, `injectFault` atomically marks `Injected: true`, appends (if recording), stores `v.fired`, and returns the configured error code without calling `os_unix.c`; all other calls forward normally and record their result.
 
 #### `internal/govfs/call.go`
 
@@ -3391,7 +3440,7 @@ func partA(ctx context.Context, cli sqlitex.CLI, v *govfs.VFS, dir string, c con
 		}
 		fmt.Printf("  first difference at call %d: Go %q, CLI %q\n", first+1, at(goKeys, first), at(cliKeys, first))
 	}
-	check(same && goCounts.String() == cliCounts.String(), fmt.Sprintf("%s: the Go driver makes the same %d VFS calls, in the same order with the same files, offsets, lengths, lock levels and sync labels, as the C CLI", c, len(goCalls)))
+	check(same && len(goCalls) > 0 && goCounts.String() == cliCounts.String(), fmt.Sprintf("%s: the Go driver makes the same %d VFS calls, in the same order with the same files, offsets, lengths, lock levels and sync labels, as the C CLI", c, len(goCalls)))
 	var flags []string
 	for _, call := range goCalls {
 		if call.Method == "xSync" {
@@ -3443,12 +3492,34 @@ func printCountTable(table map[config]govfs.Counts) {
 
 type outcome struct {
 	stepErr     string
+	stepCode    int
 	where       string
 	closeErr    string
 	userVersion int
 	rowPresent  bool
 	integrity   string
 	match       recipe.Match
+}
+
+// rolledBack reports whether a faulted trial returned primary SQLITE_IOERR,
+// closed cleanly, and left the database byte-identical to step faultStep-1.
+func (o outcome) rolledBack() bool {
+	return o.stepCode == int(govfs.CodeIOErr) && o.closeErr == "" && !o.rowPresent && o.integrity == "ok" && o.match.Step == faultStep-1 && o.match.Exact && o.userVersion == faultStep-1
+}
+
+// committed reports whether an unreached-fault control trial committed cleanly
+// and left the database byte-identical to step faultStep.
+func (o outcome) committed() bool {
+	return o.stepErr == "" && o.closeErr == "" && o.rowPresent && o.match.Step == faultStep && o.match.Exact
+}
+
+// trialHeld enforces that faults armed within 1..total actually fired and rolled
+// back, while the N=total+1 control did not fire and committed normally.
+func trialHeld(n, total int, fired bool, o outcome) bool {
+	if n <= total {
+		return fired && o.rolledBack()
+	}
+	return !fired && o.committed()
 }
 
 func (o outcome) String() string {
@@ -3653,6 +3724,7 @@ func partB(ctx context.Context, v *govfs.VFS, dir, journal string) {
 			o := inspect(ctx, r, trial, markerID)
 			if stepErr != nil {
 				o.stepErr, o.where = errorText(stepErr), where
+				o.stepCode, _ = sqlitex.PrimaryErrorCode(stepErr)
 			}
 			if closeErr != nil {
 				o.closeErr = errorText(closeErr)
@@ -3662,14 +3734,13 @@ func partB(ctx context.Context, v *govfs.VFS, dir, journal string) {
 				target = strings.Replace(report.Call.String(), filepath.Base(trial), dbName, 1)
 			}
 			fmt.Printf("  %s #%d -> %s\n      %s\n", method, n, target, o)
-			if report.Fired {
-				ok := o.stepErr != "" && !o.rowPresent && o.integrity == "ok" && o.match.Step == faultStep-1 && o.userVersion == faultStep-1
-				if !ok {
+			if n <= total {
+				if !trialHeld(n, total, report.Fired, o) {
 					allRolledBack = false
 					summary = append(summary, fmt.Sprintf("%s #%d", method, n))
 				}
 			} else {
-				check(o.stepErr == "" && o.rowPresent && o.match.Step == faultStep, fmt.Sprintf("%s: with %s #%d never reached, the step commits normally", journal, method, n))
+				check(trialHeld(n, total, report.Fired, o), fmt.Sprintf("%s: with %s #%d never reached, the step commits normally", journal, method, n))
 			}
 			if err := recipe.RemoveDatabase(trial); err != nil {
 				fatal("remove", err)
@@ -3679,7 +3750,7 @@ func partB(ctx context.Context, v *govfs.VFS, dir, journal string) {
 		if !allRolledBack {
 			claim += "; exceptions: " + strings.Join(summary, ", ")
 		}
-		check(allRolledBack, claim)
+		check(allRolledBack && total > 0, claim)
 	}
 }
 ```
@@ -4128,14 +4199,14 @@ ALL CHECKS PASSED
   - **WAL clean run (lines 141–147):** Because the step-3 database is at rest with no `-wal`, step 4 creates the WAL and makes **51 `xWrite`** calls to `t.db-wal` (`103,032` bytes: 1 32-byte header + 25 frames of 2 writes each) and **2 `xSync`** calls (`xSync` #1 at call 26 for the WAL header; `xSync` #2 at call 77 for the commit). Without faults, the file equals step 4 exactly.
   - **WAL fault trials (lines 148–261):** Failing `xWrite #1` through `xWrite #51` and `xSync #1` through `xSync #2` (**53 fired faults total**) returns `SQLite error code 10 (disk I/O error (10))` at **`COMMIT`** in every trial (nothing is written to `-wal` before `COMMIT` because dirty pages stay in the page cache). Reopening with the default VFS yields `user_version=3`, marker row absent, `integrity ok`, and `file = step 3 (exact bytes)`. Notice `xSync #2` (lines 256–257): even though all 25 frames—including the commit frame—were already written to `t.db-wal`, failing the commit `xSync` aborts before `walFrames` updates the WAL-index header in `-shm`; when the connection closes, SQLite checkpoints only up to the previous committed frame (0) and deletes `-wal`, leaving step 3 untouched. Trials `xWrite #52` and `xSync #3` are never reached and commit cleanly to step 4.
   - **`DELETE` clean run (lines 263–271):** **66 `xWrite`** calls (`41` to `t.db-journal` = `53,876` bytes; `25` to `t.db` = `102,400` bytes) and **3 `xSync`** calls (`t.db-journal` at calls 67 and 69, `t.db` at call 97 of 103).
-  - **`DELETE` fault trials (lines 272–417):** Failing `xWrite #1` through `#66` and `xSync #1` through `#3` (**69 fired faults total**) returns error code 10 and leaves `user_version=3`, marker row absent, `integrity ok`, and `file = step 3 (exact bytes)` in every trial—including `xWrite #42` through `#66` and `xSync #3`, where pages had already been overwritten in `t.db` and SQLite rolled them back from `t.db-journal`. Unlike WAL mode, the first 40 `xWrite` faults surface *mid-transaction* when a statement first dirties a page and writes its pre-image into `t.db-journal`: statement 1 (`INSERT INTO accounts`, 4 trials), statement 5 (`INSERT INTO documents`, 6 trials), statement 9 (`INSERT INTO events`, 3 trials), statement 54 (`UPDATE documents SET`, 12 trials), and statement 55 (`DELETE FROM documents`, 15 trials). Trials `#41`–`#66` and all 3 `xSync` trials surface at `COMMIT`. `db.Close()` returned no error in any trial.
+  - **`DELETE` fault trials (lines 272–417):** Failing `xWrite #1` through `#66` and `xSync #1` through `#3` (**69 fired faults total**) returns error code 10 and leaves `user_version=3`, marker row absent, `integrity ok`, and `file = step 3 (exact bytes)` in every trial—including `xWrite #42` through `#66` and `xSync #3`, where pages had already been overwritten in `t.db` and SQLite rolled them back from `t.db-journal`. Unlike WAL mode, the first 40 `xWrite` faults surface *mid-transaction* when a statement first dirties a page and writes its pre-image into `t.db-journal`: statement 1 (`INSERT INTO accounts`, 4 trials), statement 5 (`INSERT INTO documents`, 6 trials), statement 9 (`INSERT INTO events`, 3 trials), statement 54 (`UPDATE documents SET`, 12 trials), and statement 55 (`DELETE FROM documents`, 15 trials). Trials `#41`–`#66` and all 3 `xSync` trials surface at `COMMIT`. `db.Close()` returned no error in any trial. Every trial is checked by `trialHeld` (unit-tested in [`7.3-go-vfs-shim/main_test.go`](experiments/7.3-go-vfs-shim/main_test.go)), requiring `Fired == (n <= total)`, primary error code `10` (`SQLITE_IOERR`), clean close, and an exact unmasked byte match (`match.Exact`).
   - **Scope not tested in Part B:** `xRead` and `xTruncate` faults (supported by `internal/govfs`), `synchronous=NORMAL`, multi-fault commits, and faults during reopen.
 
 ---
 
 ### 5.4 Shared package `internal/rangefs`
 
-`internal/rangefs` adapts any byte-range object store (`HTTPSource` or `S3Source`) into a read-only Go `io/fs.FS` and `fs.StatFS` that logs every metadata lookup and byte-range read. Passed to `modernc.org/sqlite/vfs.New`, it lets SQLite query a remote snapshot page by page with no local copy, no caching, and no read-ahead. Its unit tests live in [`internal/rangefs/rangefs_test.go`](../internal/rangefs/rangefs_test.go) (`go test ./internal/rangefs/`).
+`internal/rangefs` adapts any byte-range object store (`HTTPSource` or `S3Source`) into a read-only Go `io/fs.FS` and `fs.StatFS` that logs every metadata lookup and byte-range read. Passed to `modernc.org/sqlite/vfs.New`, it lets SQLite query a remote snapshot page by page with no local copy, no caching, and no read-ahead. Its unit tests live in [`internal/rangefs/rangefs_test.go`](../internal/rangefs/rangefs_test.go) and [`internal/rangefs/edge_test.go`](../internal/rangefs/edge_test.go) (`go test ./internal/rangefs/`).
 
 #### `internal/rangefs/rangefs.go`
 
@@ -4175,13 +4246,15 @@ const (
 	KindRange RequestKind = "range"
 )
 
-// Request logs one remote operation issued through FS.
+// Request logs one remote operation issued through FS. For a failed or short
+// range read, Failed is true and Length records only the bytes actually received.
 type Request struct {
 	Kind   RequestKind
 	Name   string
 	Offset int64
 	Length int64
 	Found  bool
+	Failed bool
 }
 
 // String formats a Request as a single readable line for evidence output.
@@ -4193,6 +4266,9 @@ func (r Request) String() string {
 		}
 		return fmt.Sprintf("stat %s (absent)", r.Name)
 	case KindRange:
+		if r.Failed {
+			return fmt.Sprintf("range %s at %d failed (%d bytes received)", r.Name, r.Offset, r.Length)
+		}
 		return fmt.Sprintf("range %s bytes %d-%d (%d bytes)", r.Name, r.Offset, r.Offset+r.Length-1, r.Length)
 	}
 	return string(r.Kind)
@@ -4231,9 +4307,9 @@ func Summarize(requests []Request) Stats {
 }
 
 // FS adapts a Source into a read-only fs.FS and fs.StatFS that records every
-// remote request. Open and Stat each issue one Source.Stat call; each Read or
-// ReadAt on an open file issues one Source.ReadRange call for the exact bytes
-// requested, clipped at EOF.
+// remote request. Open and Stat each issue one Source.Stat call; each non-empty
+// Read or ReadAt on an open file issues one Source.ReadRange call for the exact
+// bytes requested, clipped at EOF (a zero-length read issues no request).
 type FS struct {
 	source Source
 	ctx    context.Context
@@ -4242,8 +4318,12 @@ type FS struct {
 	requests []Request
 }
 
-// New returns an FS that performs all Source calls using ctx.
+// New returns an FS that performs all Source calls using ctx. A nil ctx
+// defaults to context.Background().
 func New(ctx context.Context, source Source) *FS {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return &FS{source: source, ctx: ctx}
 }
 
@@ -4310,6 +4390,9 @@ type file struct {
 }
 
 func (f *file) Stat() (fs.FileInfo, error) {
+	if f.closed {
+		return nil, fs.ErrClosed
+	}
 	return fileInfo{name: path.Base(f.name), size: f.size}, nil
 }
 
@@ -4323,17 +4406,22 @@ func (f *file) ReadAt(p []byte, offset int64) (int, error) {
 	if offset >= f.size {
 		return 0, io.EOF
 	}
+	if len(p) == 0 {
+		return 0, nil
+	}
 	// Clip the range at EOF so the store never receives an out-of-bounds
 	// Range header, then return io.EOF on a short read as io.ReaderAt requires.
 	want := min(int64(len(p)), f.size-offset)
 	n, err := f.fsys.source.ReadRange(f.fsys.ctx, f.name, offset, p[:want])
-	f.fsys.log(Request{Kind: KindRange, Name: f.name, Offset: offset, Length: want})
 	if err != nil {
+		f.fsys.log(Request{Kind: KindRange, Name: f.name, Offset: offset, Length: int64(n), Failed: true})
 		return n, err
 	}
 	if int64(n) != want {
+		f.fsys.log(Request{Kind: KindRange, Name: f.name, Offset: offset, Length: int64(n), Failed: true})
 		return n, fmt.Errorf("rangefs: %s: short range read %d of %d bytes at %d", f.name, n, want, offset)
 	}
+	f.fsys.log(Request{Kind: KindRange, Name: f.name, Offset: offset, Length: want})
 	if want < int64(len(p)) {
 		return n, io.EOF
 	}
@@ -4353,6 +4441,9 @@ func (f *file) Read(p []byte) (int, error) {
 }
 
 func (f *file) Seek(offset int64, whence int) (int64, error) {
+	if f.closed {
+		return f.offset, fs.ErrClosed
+	}
 	var next int64
 	switch whence {
 	case io.SeekStart:
@@ -4389,7 +4480,7 @@ func (i fileInfo) IsDir() bool        { return false }
 func (i fileInfo) Sys() any           { return nil }
 ```
 
-**Walk-through (`rangefs.go`).** Defines the two-method `Source` interface (`Stat` and `ReadRange`). `FS.Open` and `FS.Stat` (implementing `fs.StatFS`, which `modernc.org/sqlite/vfs` calls for SQLite's `xAccess` checks) each perform one `Source.Stat` and log a `KindStat` request (recording `Found: false` when absent). Each open `file` implements `Read`, `ReadAt`, `Seek`, `Stat`, and `Close`. `ReadAt` clips the requested length at `f.size - offset` so the store never sees an out-of-bounds range header, invokes `Source.ReadRange` for those exact bytes, logs one `KindRange` request, and returns `io.EOF` when clipped (matching `io.ReaderAt`'s contract). `TakeRequests` and `Summarize` drive Experiment 7.4's request accounting.
+**Walk-through (`rangefs.go`).** Defines the two-method `Source` interface (`Stat` and `ReadRange`). `New(nil, source)` defaults to `context.Background()`. `FS.Open` and `FS.Stat` (implementing `fs.StatFS`, which `modernc.org/sqlite/vfs` calls for SQLite's `xAccess` checks) each perform one `Source.Stat` and log a `KindStat` request (recording `Found: false` when absent). Each open `file` implements `Read`, `ReadAt`, `Seek`, `Stat`, and `Close`, returning `fs.ErrClosed` on `ReadAt`, `Seek`, and `Stat` after `Close`. A zero-length `ReadAt` returns `0, nil` without issuing or logging a request; otherwise `ReadAt` clips the requested length at `f.size - offset` so the store never sees an out-of-bounds range header, invokes `Source.ReadRange` for those exact bytes, and returns `io.EOF` when clipped (matching `io.ReaderAt`'s contract). Failed or short `ReadRange` calls log `Request{Kind: KindRange, Failed: true, Length: int64(n)}` (`range NAME at OFF failed (N bytes received)`) so `Summarize` counts only bytes actually received. `TakeRequests` and `Summarize` drive Experiment 7.4's request accounting.
 
 #### `internal/rangefs/http.go`
 
@@ -4616,7 +4707,9 @@ func (s S3Source) Stat(ctx context.Context, name string) (int64, error) {
 }
 
 // ReadRange calls GetObject with an inclusive byte-range header for len(p)
-// bytes starting at offset.
+// bytes starting at offset. It verifies that Content-Range begins with
+// "bytes OFF-LAST/", rejecting S3 endpoints that ignore Range and return the
+// full object.
 func (s S3Source) ReadRange(ctx context.Context, name string, offset int64, p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
@@ -4630,17 +4723,26 @@ func (s S3Source) ReadRange(ctx context.Context, name string, offset int64, p []
 		return 0, err
 	}
 	defer out.Body.Close()
+	last := offset + int64(len(p)) - 1
+	wantPrefix := fmt.Sprintf("bytes %d-%d/", offset, last)
+	if out.ContentRange == nil || !strings.HasPrefix(*out.ContentRange, wantPrefix) {
+		got := "none"
+		if out.ContentRange != nil {
+			got = *out.ContentRange
+		}
+		return 0, fmt.Errorf("GetObject %s range %d+%d: Content-Range %q (want %q)", name, offset, len(p), got, wantPrefix+"*")
+	}
 	return io.ReadFull(out.Body, p)
 }
 ```
 
-**Walk-through (`s3.go`).** Implements `Source` against any S3-compatible store (`HeadObject` for `Stat`, mapping `NotFound`/`NoSuchKey` to `fs.ErrNotExist`, and `GetObject` with `Range: bytes=start-end` for `ReadRange`). `S3ConfigFromEnv` reads `COURSE_S3_ENDPOINT` (default `http://127.0.0.1:18333`), `COURSE_S3_REGION` (`us-east-1`), `COURSE_S3_ACCESS_KEY` (`course`), and `COURSE_S3_SECRET_KEY` (`course-secret`), matching `compose.yaml` and `docker/seaweedfs/s3.json`. `NewS3Client` enables path-style addressing and sets request/response checksum options to `WhenRequired` so plain ranged `GetObject` calls against SeaweedFS carry no unnecessary checksum work.
+**Walk-through (`s3.go`).** Implements `Source` against any S3-compatible store (`HeadObject` for `Stat`, mapping `NotFound`/`NoSuchKey` to `fs.ErrNotExist`, and `GetObject` with `Range: bytes=start-end` for `ReadRange`). Just as `HTTPSource.ReadRange` requires `206 Partial Content`, `S3Source.ReadRange` verifies that `Content-Range` starts with `"bytes OFF-LAST/"`, rejecting any endpoint that ignores `Range` and returns the full object from offset 0 (`edge_test.go`). `S3ConfigFromEnv` reads `COURSE_S3_ENDPOINT` (default `http://127.0.0.1:18333`), `COURSE_S3_REGION` (`us-east-1`), `COURSE_S3_ACCESS_KEY` (`course`), and `COURSE_S3_SECRET_KEY` (`course-secret`), matching `compose.yaml` and `docker/seaweedfs/s3.json`. `NewS3Client` enables path-style addressing and sets request/response checksum options to `WhenRequired` so plain ranged `GetObject` calls against SeaweedFS carry no unnecessary checksum work.
 
 ---
 
 ### 5.5 Experiment 7.4 — Read-only snapshot VFS over HTTP and S3 (`7.4-read-only-snapshot-vfs`)
 
-- **Claim:** A fully checkpointed 30-step WAL recipe snapshot (`1,105,920` bytes, `270` pages) can be queried remotely through `modernc.org/sqlite/vfs` + `internal/rangefs` over HTTP or S3/SeaweedFS with identical results to the local file, paying exactly one range request per page miss (no read-ahead) and zero requests on warm cache hits. Both `immutable=1` and a fully checkpointed file are mandatory for WAL-format snapshots: omitting `immutable=1` fails with `SQLITE_CANTOPEN` (14), and publishing an uncheckpointed database alongside its `-wal` silently serves stale pre-WAL data under `immutable=1`.
+- **Claim:** A fully checkpointed 30-step WAL recipe snapshot (`1,105,920` bytes, `270` pages) can be queried remotely through `modernc.org/sqlite/vfs` + `internal/rangefs` over HTTP or S3/SeaweedFS with identical results to the local file, paying exactly one range request per page miss (no read-ahead) and zero requests on repeat queries whose working set still fits in the connection's page cache (`immutable=1` keeps cached pages valid, not cached; shrinking `cache_size=4` forces re-fetches of evicted pages). Both `immutable=1` and a fully checkpointed, truly immutable object are mandatory for WAL-format snapshots: omitting `immutable=1` fails with `SQLITE_CANTOPEN` (14), publishing an uncheckpointed database alongside its `-wal` silently serves stale pre-WAL data under `immutable=1`, and overwriting an object key in place behind an open `immutable=1` connection produces `SQLITE_CORRUPT` (`11`).
 - **Evidence form:** `EXACT` (all lines except `INFO:` lines). The HTTP and `-s3` evidence files are identical apart from the `route` line (and the `INFO: S3 endpoint` line).
 - **Platform:** Portable (no `strace`). Default HTTP route runs everywhere with no services. The `-s3` route requires SeaweedFS (`docker compose up -d seaweedfs`, or run inside `docker compose run --rm lab`).
 
@@ -4759,8 +4861,7 @@ func (p *httpPublisher) describe() string {
 }
 
 type s3Publisher struct {
-	client   *s3.Client
-	endpoint string
+	client *s3.Client
 }
 
 func (p *s3Publisher) publish(ctx context.Context, name string, body []byte) error {
@@ -4802,7 +4903,7 @@ func main() {
 			fatal("S3 bucket", fmt.Errorf("%w (start the store with: docker compose up -d seaweedfs)", err))
 		}
 		fmt.Printf("INFO: S3 endpoint %s\n", cfg.Endpoint)
-		pub = &s3Publisher{client: client, endpoint: cfg.Endpoint}
+		pub = &s3Publisher{client: client}
 	} else {
 		p, err := newHTTPPublisher(filepath.Join(dir, "published"))
 		if err != nil {
@@ -4836,6 +4937,10 @@ func main() {
 	for _, q := range queries {
 		runQuery(ctx, q, local, vfsName, remote)
 	}
+
+	fmt.Println()
+	fmt.Printf("== immutable=1 keeps cached pages valid, not cached: the full scan again with PRAGMA cache_size=%d ==\n", smallCachePages)
+	smallCache(ctx, queries[len(queries)-1], vfsName, remote)
 
 	fmt.Println()
 	fmt.Println("== why immutable=1: the same WAL-format snapshot opened without it ==")
@@ -4965,6 +5070,9 @@ func localResult(ctx context.Context, path, query string) (int, string, string, 
 		}
 		plan = append(plan, detail)
 	}
+	if err := rows.Err(); err != nil {
+		fatal("plan", err)
+	}
 	return n, digest, first, plan
 }
 
@@ -5018,6 +5126,7 @@ func runQuery(ctx context.Context, q query, local, vfsName string, remote *range
 	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema").Scan(&tables); err != nil {
 		fatal("remote schema", err)
 	}
+	cachePages := mustCachePages(ctx, db)
 	openRequests := remote.TakeRequests()
 	rows, digest, first, err := render(ctx, db, q.sql)
 	if err != nil {
@@ -5043,8 +5152,52 @@ func runQuery(ctx context.Context, q query, local, vfsName string, remote *range
 	fmt.Printf("  first query on a new connection, total: %d requests, %d bytes\n", openStats.Requests()+queryStats.Requests(), openStats.BytesRead+queryStats.BytesRead)
 	_, oddOpen := classify(openRequests)
 	check(rows > 0 && rows == localRows && digest == localDigest, fmt.Sprintf("%s: the remote result equals the local file's (%d row(s), digest %s)", q.name, rows, digest))
-	check(len(odd) == 0 && len(oddOpen) == 0 && queryStats.StatRequests == 0, fmt.Sprintf("%s: every read is one range request for one whole %d-byte page (or the %d-byte header): one request per page miss, no read-ahead", q.name, pageSize, headerBytes))
-	check(repeatStats.Requests() == 0, fmt.Sprintf("%s: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid)", q.name))
+	check(len(odd) == 0 && len(oddOpen) == 0 && queryStats.StatRequests == 0 && queryStats.RangeRequests > 0, fmt.Sprintf("%s: every read is one range request for one whole %d-byte page (or the %d-byte header): one request per page miss, no read-ahead", q.name, pageSize, headerBytes))
+	pagesHeld := openStats.RangeRequests + queryStats.RangeRequests
+	check(repeatStats.Requests() == 0 && pagesHeld <= cachePages, fmt.Sprintf("%s: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid; the %d reads so far fit in the %d-page cache)", q.name, pagesHeld, cachePages))
+}
+
+// smallCachePages shrinks the page cache below the 18-page events scan to show
+// that immutable=1 skips change-counter invalidation but does not prevent cache
+// eviction (pager.c:5033-5056,5436; default cache is -2000 KiB, sqliteLimit.h:161).
+const smallCachePages = 4
+
+// mustCachePages returns the connection's PRAGMA cache_size expressed in pages.
+func mustCachePages(ctx context.Context, db *sql.DB) int {
+	var cacheSize int
+	if err := db.QueryRowContext(ctx, "PRAGMA cache_size").Scan(&cacheSize); err != nil {
+		fatal("cache_size", err)
+	}
+	if cacheSize < 0 {
+		return -cacheSize * 1024 / pageSize
+	}
+	return cacheSize
+}
+
+// smallCache repeats the full events scan with a 4-page cache on one immutable=1
+// connection, showing that evicted pages still incur remote range requests.
+func smallCache(ctx context.Context, q query, vfsName string, remote *rangefs.FS) {
+	db, err := openSingle(remoteDSN(vfsName, snapshotName, "immutable=1"))
+	if err != nil {
+		fatal("small-cache open", err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA cache_size=%d", smallCachePages)); err != nil {
+		fatal("small-cache pragma", err)
+	}
+	cachePages := mustCachePages(ctx, db)
+	_, firstDigest, _, err := render(ctx, db, q.sql)
+	if err != nil {
+		fatal("small-cache query", err)
+	}
+	remote.TakeRequests()
+	_, repeatDigest, _, err := render(ctx, db, q.sql)
+	if err != nil {
+		fatal("small-cache repeat", err)
+	}
+	repeatStats := rangefs.Summarize(remote.TakeRequests())
+	fmt.Printf("%s with a %d-page cache, repeated on the same connection: %s\n", q.name, cachePages, repeatStats)
+	check(firstDigest == repeatDigest && repeatStats.RangeRequests > cachePages, fmt.Sprintf("%s: when the query reads more pages than the cache holds, the repeat reads evicted pages again (%d range requests); only pages still in the cache are free", q.name, repeatStats.RangeRequests))
 }
 
 func errorLine(err error) string {
@@ -5252,7 +5405,7 @@ func staleRead(ctx context.Context, r recipe.Recipe, dir string, pub publisher, 
 	}
 	fresh, err, _ := tryOpen(ctx, vfsName, remote, liveName, "immutable=1")
 	fmt.Printf("after the writer closed (last connection: checkpoint, -wal deleted: %t) and the main file was republished: remote, immutable=1: %s\n", os.IsNotExist(walErr), fallback(fresh, err))
-	check(err == nil && fresh == truth, fmt.Sprintf("once the commit is checkpointed into the main file, the republished snapshot shows step %d", r.Steps))
+	check(err == nil && fresh == truth && os.IsNotExist(walErr), fmt.Sprintf("once the commit is checkpointed into the main file, the republished snapshot shows step %d", r.Steps))
 }
 ```
 
@@ -5294,7 +5447,7 @@ remote snapshot: 1 row(s), digest 564912d877435e1b, first row 372|7|fee|2642|gku
   first query on a new connection, total: 5 requests, 12388 bytes
 check ok: point lookup: the remote result equals the local file's (1 row(s), digest 564912d877435e1b)
 check ok: point lookup: every read is one range request for one whole 4096-byte page (or the 100-byte header): one request per page miss, no read-ahead
-check ok: point lookup: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid)
+check ok: point lookup: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid; the 4 reads so far fit in the 500-page cache)
 
 -- index range scan: SELECT id, amount FROM events WHERE account_id = 7 ORDER BY id
 plan: SEARCH events USING INDEX events_by_account (account_id=?)
@@ -5309,7 +5462,7 @@ remote snapshot: 29 row(s), digest d98fa27230232e1c, first row 4|2828
   first query on a new connection, total: 16 requests, 57444 bytes
 check ok: index range scan: the remote result equals the local file's (29 row(s), digest d98fa27230232e1c)
 check ok: index range scan: every read is one range request for one whole 4096-byte page (or the 100-byte header): one request per page miss, no read-ahead
-check ok: index range scan: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid)
+check ok: index range scan: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid; the 15 reads so far fit in the 500-page cache)
 
 -- full scan: SELECT count(*), sum(amount), sum(length(note)) FROM events
 plan: SCAN events
@@ -5324,7 +5477,11 @@ remote snapshot: 1 row(s), digest 6b2a4af3714ab7f4, first row 1177|-124383|41332
   first query on a new connection, total: 21 requests, 77924 bytes
 check ok: full scan: the remote result equals the local file's (1 row(s), digest 6b2a4af3714ab7f4)
 check ok: full scan: every read is one range request for one whole 4096-byte page (or the 100-byte header): one request per page miss, no read-ahead
-check ok: full scan: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid)
+check ok: full scan: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid; the 20 reads so far fit in the 500-page cache)
+
+== immutable=1 keeps cached pages valid, not cached: the full scan again with PRAGMA cache_size=4 ==
+full scan with a 4-page cache, repeated on the same connection: 17 requests (0 stat, 17 range), 69632 bytes
+check ok: full scan: when the query reads more pages than the cache holds, the repeat reads evicted pages again (17 range requests); only pages still in the cache are free
 
 == why immutable=1: the same WAL-format snapshot opened without it ==
 (no parameters): SQLite error code 14: unable to open database file (14); 5 requests (3 stat, 2 range), 4196 bytes
@@ -5414,7 +5571,7 @@ remote snapshot: 1 row(s), digest 564912d877435e1b, first row 372|7|fee|2642|gku
   first query on a new connection, total: 5 requests, 12388 bytes
 check ok: point lookup: the remote result equals the local file's (1 row(s), digest 564912d877435e1b)
 check ok: point lookup: every read is one range request for one whole 4096-byte page (or the 100-byte header): one request per page miss, no read-ahead
-check ok: point lookup: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid)
+check ok: point lookup: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid; the 4 reads so far fit in the 500-page cache)
 
 -- index range scan: SELECT id, amount FROM events WHERE account_id = 7 ORDER BY id
 plan: SEARCH events USING INDEX events_by_account (account_id=?)
@@ -5429,7 +5586,7 @@ remote snapshot: 29 row(s), digest d98fa27230232e1c, first row 4|2828
   first query on a new connection, total: 16 requests, 57444 bytes
 check ok: index range scan: the remote result equals the local file's (29 row(s), digest d98fa27230232e1c)
 check ok: index range scan: every read is one range request for one whole 4096-byte page (or the 100-byte header): one request per page miss, no read-ahead
-check ok: index range scan: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid)
+check ok: index range scan: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid; the 15 reads so far fit in the 500-page cache)
 
 -- full scan: SELECT count(*), sum(amount), sum(length(note)) FROM events
 plan: SCAN events
@@ -5444,7 +5601,11 @@ remote snapshot: 1 row(s), digest 6b2a4af3714ab7f4, first row 1177|-124383|41332
   first query on a new connection, total: 21 requests, 77924 bytes
 check ok: full scan: the remote result equals the local file's (1 row(s), digest 6b2a4af3714ab7f4)
 check ok: full scan: every read is one range request for one whole 4096-byte page (or the 100-byte header): one request per page miss, no read-ahead
-check ok: full scan: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid)
+check ok: full scan: repeating the query on the same connection makes no request (immutable=1: no change-counter check, the page cache stays valid; the 20 reads so far fit in the 500-page cache)
+
+== immutable=1 keeps cached pages valid, not cached: the full scan again with PRAGMA cache_size=4 ==
+full scan with a 4-page cache, repeated on the same connection: 17 requests (0 stat, 17 range), 69632 bytes
+check ok: full scan: when the query reads more pages than the cache holds, the repeat reads evicted pages again (17 range requests); only pages still in the cache are free
 
 == why immutable=1: the same WAL-format snapshot opened without it ==
 (no parameters): SQLite error code 14: unable to open database file (14); 5 requests (3 stat, 2 range), 4196 bytes
@@ -5520,11 +5681,12 @@ ALL CHECKS PASSED
 
   - Open + schema load is always exactly 3 requests: `stat snapshot.db (size 1105920)`, `range bytes 0-99 (100 bytes)` (header), and `range bytes 0-4095 (4096 bytes)` (page 1, `sqlite_schema`).
   - Every cold query reads only the B-tree pages its plan visits: page `4` is `events`'s root page, pages `28` and `88` are `events_by_account` index pages, and all 18 pages of `events` represent just 6.7% of the 270-page database (`documents` and its overflow pages are never fetched). Every read is a single 4,096-byte page request—one round trip per page miss, zero read-ahead, zero stats during the query.
-  - Repeating any query on the same connection makes **0 requests** because `immutable=1` skips locking and skips re-reading the file change counter, keeping the page cache valid across statements.
+  - Repeating any of these three queries on the same connection makes **0 requests** because `immutable=1` makes the pager act like a temp file (`src/pager.c:5033-5056`: no locking, pretend `EXCLUSIVE`), so the change-counter check that normally invalidates the cache (`src/pager.c:5436`) never runs, **and** the 4, 15, and 20 reads so far all fit comfortably inside SQLite's default `-2000` KiB (`500`-page) cache (`src/sqliteLimit.h:161`).
   - Every remote digest matches the local file (`564912d877435e1b`, `d98fa27230232e1c`, `6b2a4af3714ab7f4`). Comparing the two evidence files confirms HTTP and S3 produce identical requests, bytes, and digests.
-- **Lines 55–79 (why `immutable=1` is required).** Opening the WAL-format snapshot with no URI parameters or with `mode=ro` fails with `SQLite error code 14: unable to open database file (14)` after 5 requests (`stat snapshot.db`, 100-byte header, `stat snapshot.db-journal (absent)`, `stat snapshot.db-wal (absent)`, page 1). SQLite reads header bytes 18–19 = `2`, tries to enter WAL mode, and aborts because `modernc.org/sqlite/vfs` registers an `io_methods` version-1 table with no `xShm*` methods. Adding `immutable=1` succeeds in 8 requests (`1` stat, `7` range, `24,676` bytes), never probing for `-journal` or `-wal`, and matches the local file (`user_version=30 events=1177`).
-- **Lines 81–100 (flipping bytes 18–19 from `2` to `1`).** Publishing the exact same bytes with header bytes 18–19 rewritten to `1 1` (`snapshot-rollback.db`) lets SQLite open it with no URI parameters and read `user_version=30 events=1177`. That proves the WAL header flag—not the page content—is what demands shared memory. It also exposes the hidden cost of omitting `immutable=1`: the two statements take **16 requests** (`7` stat, `9` range, `24,708` bytes) instead of 8 because each read transaction probes `snapshot-rollback.db-journal` (3 times total) and `snapshot-rollback.db-wal` and re-reads the 16-byte change counter (`bytes 24-39`). Note also that rewriting bytes 18–19 alters the file's SHA-256 (breaking equality level E1), so production snapshot serving should keep the original bytes and pass `immutable=1`.
-- **Lines 102–113 (why a fully checkpointed file is required).** A child process builds `live.db` to step 29, commits step 30, and holds its connection open so step 30 stays in `live.db-wal` (`123,632` bytes, `30` frames). Running the writer in a child process avoids the POSIX lock hazard: the parent's `os.ReadFile` calls open and close `live.db` in a separate process without dropping the child's locks. A local SQLite read sees `user_version=30 events=1177`. The parent publishes both `live.db` (`1,060,864` bytes) and `live.db-wal` to the store. Querying `live.db` remotely with `immutable=1` returns **`user_version=29 events=1130`—a silent stale read with no error**—in 8 requests, 0 of which mention `live.db-wal`. Querying without `immutable=1` fails with code 14. Only after the child closes (checkpointing step 30 into `live.db` and unlinking `-wal`) and `live.db` is republished does the remote query return `user_version=30 events=1177`.
+- **Lines 55–57 (`PRAGMA cache_size=4`: `immutable=1` keeps cached pages valid, not cached).** Repeating the 18-page `events` full scan on one `immutable=1` connection after shrinking the page cache to `4` pages issues **17 range requests (`69,632` bytes)** on the repeat: `immutable=1` prevents change-counter invalidation, but it does not prevent LRU eviction when a query scans more pages than `cache_size` holds. Only pages still resident in the cache are free.
+- **Lines 59–83 (why `immutable=1` is required).** Opening the WAL-format snapshot with no URI parameters or with `mode=ro` fails with `SQLite error code 14: unable to open database file (14)` after 5 requests (`stat snapshot.db`, 100-byte header, `stat snapshot.db-journal (absent)`, `stat snapshot.db-wal (absent)`, page 1). SQLite reads header bytes 18–19 = `2`, tries to enter WAL mode, and aborts because `modernc.org/sqlite/vfs` registers an `io_methods` version-1 table with no `xShm*` methods. Adding `immutable=1` succeeds in 8 requests (`1` stat, `7` range, `24,676` bytes), never probing for `-journal` or `-wal`, and matches the local file (`user_version=30 events=1177`).
+- **Lines 85–104 (flipping bytes 18–19 from `2` to `1`).** Publishing the exact same bytes with header bytes 18–19 rewritten to `1 1` (`snapshot-rollback.db`) lets SQLite open it with no URI parameters and read `user_version=30 events=1177`. That proves the WAL header flag—not the page content—is what demands shared memory. It also exposes the hidden cost of omitting `immutable=1`: the two statements take **16 requests** (`7` stat, `9` range, `24,708` bytes) instead of 8 because each read transaction probes `snapshot-rollback.db-journal` (3 times total) and `snapshot-rollback.db-wal` and re-reads the 16-byte change counter (`bytes 24-39`). Note also that rewriting bytes 18–19 alters the file's SHA-256 (breaking equality level E1), so production snapshot serving should keep the original bytes and pass `immutable=1`.
+- **Lines 106–117 (why a fully checkpointed, truly immutable object is required).** A child process builds `live.db` to step 29, commits step 30, and holds its connection open so step 30 stays in `live.db-wal` (`123,632` bytes, `30` frames). Running the writer in a child process avoids the POSIX lock hazard: the parent's `os.ReadFile` calls open and close `live.db` in a separate process without dropping the child's locks. A local SQLite read sees `user_version=30 events=1177`. The parent publishes both `live.db` (`1,060,864` bytes) and `live.db-wal` to the store. Querying `live.db` remotely with `immutable=1` returns **`user_version=29 events=1130`—a silent stale read with no error**—in 8 requests, 0 of which mention `live.db-wal`. Querying without `immutable=1` fails with code 14. Only after the child closes (checkpointing step 30 into `live.db` and unlinking `-wal`), `live.db` is republished, and a **fresh connection** opens it does the remote query return `user_version=30 events=1177`. Never overwrite a served object in place while an `immutable=1` connection stays open: as `src/sqlite.h.in:3922-3929` warns, an open connection keeps cached pages (such as page 1) from the old snapshot while fetching uncached pages from the new file, failing with `SQLITE_CORRUPT` (`11`) and invalid page numbers (demonstrated by adversarial test `SNAP-04`). Publish each snapshot under a new immutable key—or replace a key only when no connection has it open—and open a new connection to read it.
 
 ---
 
@@ -5547,11 +5709,36 @@ Every rule below is grounded in the pinned `os_unix.c`/`os.c` spans and verified
 - **Misreading `vfstrace`'s `FULL` sync label (Section 3.4, Experiment 7.3 Part A).** `vfstrace.c:453` tests `flags & SQLITE_SYNC_FULL` (`0x03`), which matches `SQLITE_SYNC_NORMAL` (`0x02`). Reading `-vfstrace` output without checking `os_unix.c` leads to the false belief that SQLite issues `SQLITE_SYNC_FULL` (`F_FULLFSYNC` on macOS) under default `synchronous=FULL`. Experiment 7.3 proves SQLite passes `0x2 (NORMAL)` in all four default configurations.
 - **Silent WAL refusal or `SQLITE_CANTOPEN` on a version-1 VFS (Section 1, Experiment 7.4).** A VFS with `io_methods.iVersion = 1` silently rejects `PRAGMA journal_mode=wal` (returning `delete`) on creation and fails with error 14 when opening an existing WAL-format snapshot unless `immutable=1` is passed.
 - **Silent stale reads from an uncheckpointed snapshot (Experiment 7.4).** Publishing `live.db` and `live.db-wal` while a writer holds step 30 in `-wal` and querying with `immutable=1` returns step 29 (`user_version=29 events=1130`) with no error and zero requests for `-wal`.
+- **Cache eviction under `immutable=1` (Experiment 7.4).** `immutable=1` skips change-counter invalidation (`src/pager.c:5033-5056,5436`), but does not pin pages in memory. Repeating the 18-page `events` full scan with `PRAGMA cache_size=4` issues `17` range requests (`69,632` bytes); repeat queries cost `0` requests only while the working set fits in `cache_size`.
+- **Overwriting a served snapshot in place behind an open `immutable=1` connection (`src/sqlite.h.in:3922-3929`, `SNAP-04`).** Replacing step 29's object with step 30's bytes under an open `immutable=1` connection mixes cached step-29 pages (including page 1, `user_version=29`) with uncached step-30 pages and fails with `SQLITE_CORRUPT` (`11`, `database disk image is malformed`) and invalid page numbers in `PRAGMA integrity_check`.
 - **Silent ABI mismatch in a translated-library shim (Section 5.2).** Changing a parameter width (`int32` → `int64`) in a `govfs` slot compiled and passed runtime tests on `amd64` without crashing. Only AST comparison against `modernc.org/sqlite/lib` (`TestSignaturesMatchTranslatedSource`) caught it.
 
 ### What attacked this chapter
 
 <!-- adversarial-results -->
+
+Four adversarial programs (`34` attacks total, driven by [`run-all.sh`](../agent_work/ch07/adversarial/run-all.sh)) tested this chapter's claims against the pinned SQLite 3.53.4 build:
+
+- [`vfs-syscall-map`](../agent_work/ch07/adversarial/vfs-syscall-map/main.go) (`MAP-01`–`MAP-08`, including `MAP-03a`/`MAP-03b`) attacked Experiment 7.1's VFS-to-syscall claims: Go-vs-CLI syscall parity on 7.1's script, `SIGKILL` WAL recovery, real `xSync` flags vs `-vfstrace` labels with `fullfsync=OFF` and `ON`, `PRAGMA mmap_size` reads via `xFetch`, `xAccess(EXISTS)` on 0-byte vs 512-byte journals, `synchronous=EXTRA` directory syncs, a must-be-able-to-fail `xWrite` offset mutation, and 7.1's non-Linux `portable()` check against real `-vfstrace` output.
+- [`io-cost-falsify`](../agent_work/ch07/adversarial/io-cost-falsify/main.go) (`COST-01`–`COST-06`) attacked Experiment 7.2's I/O cost model: recomputing all 12 cells with the C `sqlite3` CLI under `strace`, `synchronous=OFF` across all 6 cells, 20-run determinism checks, `wal_autocheckpoint=0` vs `100`, rollback `delete/EXTRA` + `persist/NORMAL` + `truncate/FULL`, and a pinned reader blocking WAL checkpoints past `wal_autocheckpoint`.
+- [`govfs-adversarial`](../agent_work/ch07/adversarial/govfs-adversarial/main.go) (`GOVFS-01`–`GOVFS-09`) attacked `internal/govfs` and Experiment 7.3: a must-be-able-to-fail Go-vs-CLI mismatch check, harder workloads (10 KB overflow inserts, explicit `ROLLBACK`, `wal_checkpoint(TRUNCATE)`), exhaustive `xRead`/`xTruncate` and `synchronous=NORMAL` fault sweeps, `SQLITE_FULL` (13) / `SQLITE_IOERR_FSYNC` (1034) and same-connection retry, `SQLITE_FCNTL_VFSNAME` shim stack identity, `mmap_size`/temp-table/subjournal/v2/8-goroutine stress, a must-be-able-to-fail `TestSignaturesMatchTranslatedSource` ABI mutation, and `SetRecording(false)` + interoperability with `modernc.org/sqlite/vfs.New`.
+- [`snapshot-rangefs`](../agent_work/ch07/adversarial/snapshot-rangefs/main.go) (`SNAP-01`–`SNAP-10`) attacked `internal/rangefs` and Experiment 7.4: write-refusal tests, overflow-blob table scans and `integrity_check`, repeat-query caching under `PRAGMA cache_size=4`, in-place snapshot overwrites behind an open `immutable=1` connection, hostile HTTP and hostile S3 servers (200 OK ignoring `Range`, truncated 206, mid-query 500, missing `Content-Length`), `rangefs` edge cases (0-byte `ReadAt`, failed `ReadRange` byte accounting, `Seek`/`Stat` after `Close`, `New(nil, ...)`), 512 B and 16 KiB page sizes + truncated snapshots, HTTP-vs-SeaweedFS S3 request-for-request parity, and 8-connection concurrency.
+
+**Run 1** ([`results-run1.txt`](../agent_work/ch07/adversarial/results-run1.txt)) produced **26 HELD, 8 BROKEN**. Four broken attacks exposed real bugs that were fixed in code (alongside the review-1 fixes to `7.2`, `7.3`, `govfs` lock atomicity/C-memory frees/`xGetLastError`, and `7.1`'s widened byte-moving syscall check):
+
+- `MAP-08`: Experiment 7.1's non-Linux `portable()` check matched `"delete=1"` instead of `vfstrace.c:843`'s `"delFlag=1"`, which would have failed unconditionally on macOS. Extracted `closeLifecycle(calls)` matching `delFlag=1` in `c.Args`, with unit tests in `7.1/main_test.go`.
+- `GOVFS-06`: `govfs` forwarded `SQLITE_FCNTL_VFSNAME` unmodified, returning `"unix"` instead of `"<shim>/unix"` per `sqlite.h.in:1008-1018` and `vfstrace.c:711-716`. Added `prependVFSName` in `internal/govfs/methods.go` and `internal/govfs/vfsname_test.go`.
+- `SNAP-06`: `rangefs.S3Source.ReadRange` did not verify `Content-Range`, allowing a hostile S3 endpoint returning `200 OK` with the full object to serve offset-0 bytes silently. Added `Content-Range` prefix verification in `internal/rangefs/s3.go` and unit tests in `internal/rangefs/edge_test.go`.
+- `SNAP-07`: `rangefs` logged a bogus `bytes 0--1` request on zero-length `ReadAt`, counted requested bytes on failed/short `ReadRange`, allowed `Seek`/`Stat` after `Close`, and did not default `nil` contexts in `New`. All four were fixed in `internal/rangefs/rangefs.go` (`Request.Failed`, `fs.ErrClosed`, `context.Background()`) and covered by `internal/rangefs/edge_test.go`.
+
+Four broken attacks identified claim-scope boundaries that were narrowed or corrected in the chapter prose (and, for `SNAP-03`, demonstrated in Experiment 7.4):
+
+- `MAP-04` showed that with `PRAGMA mmap_size > 0`, data pages arrive via `xFetch` (`18` calls) and `unixRead` copies mapped ranges via `memcpy` with `0` `pread64` syscalls. Section 3.2 and Experiment 7.1 now explicitly scope the 1-to-1 `xRead` → `pread64` mapping to SQLite's default `mmap_size=0`.
+- `COST-05` refuted the assumption that `PERSIST` and `TRUNCATE` eliminate directory syncs on Unix: both eliminate `unlink`, but `pager_unlock` (`src/pager.c:1891-1895`) still closes `-journal` (Unix lacks `SQLITE_IOCAP_UNDELETABLE_WHEN_OPEN`), re-arming `UNIXFILE_DIRSYNC` on every commit, and journal finalization adds a journal sync (`persist/NORMAL`: `4` syncs/commit; `truncate/FULL`: `5` syncs/commit; `delete/EXTRA`: `5` syncs/commit with `2` dir syncs). Sections 3.3, 5.1, and 7 now state this exact Unix behavior.
+- `SNAP-03` showed that `immutable=1` prevents change-counter invalidation (`src/pager.c:5033-5056,5436`), not LRU cache eviction: repeating the 18-page `events` scan with `PRAGMA cache_size=4` issued `17` range requests (`69,632` bytes). Experiment 7.4 now checks that each query's reads fit in the 500-page default cache and adds a `cache_size=4` section demonstrating the `17`-request repeat directly.
+- `SNAP-04` demonstrated `src/sqlite.h.in:3922-3929`'s warning in practice: overwriting a served snapshot in place (step 29 → step 30) while an `immutable=1` connection stays open mixes cached page 1 (`user_version=29`) with step-30 pages and fails with `SQLITE_CORRUPT` (`11`) and invalid page numbers. Sections 5.5, 6.2, and 7 now require publishing each snapshot under a new immutable key and opening a fresh connection to read it.
+
+After the fixes and updating `MAP-04`, `MAP-08`, `COST-05`, `SNAP-03`, and `SNAP-04` to assert the repaired code and narrowed claims, the final run of [`run-all.sh`](../agent_work/ch07/adversarial/run-all.sh) passed **34 HELD, 0 BROKEN** ([`results.txt`](../agent_work/ch07/adversarial/results.txt)).
 
 ---
 
@@ -5561,9 +5748,9 @@ Every operational rule below is tied directly to the experiment that supports it
 
 1. **WAL mode cuts sync and write amplification by orders of magnitude on a shared disk (Experiments 7.1, 7.2, 7.3).** For 1,000 single-row commits, rollback `DELETE` mode costs `3,000` syncs and `17,038,688` bytes at `NORMAL` (`4,000` syncs at `FULL`), while WAL mode costs `3` syncs and `4,461,320` bytes at `NORMAL` (`1,003` syncs at `FULL`). On one machine holding thousands of databases, rollback mode turns small commits into a wall of `fsync` and directory-sync calls.
 2. **Batching writes is the largest I/O lever under rollback mode and WAL/`FULL` (Experiment 7.2).** Grouping 1,000 rows into 1 transaction instead of 1,000 cuts rollback `FULL` syncs by `1,000×` (`4,000` → `4`) and written bytes by `129×` (`17,038,688` → `131,612`). In WAL `FULL`, batching cuts syncs from `1,003` to `1` and written bytes from `4,461,320` to `123,600`.
-3. **Budget for transient sidecar files and directory syncs (Experiments 7.1, 7.2).** Rollback `DELETE` mode creates and unlinks `-journal` and opens/syncs the parent directory on every write transaction (`1,000` journal creates, directory opens, and unlinks per 1,000 commits in Experiment 7.2). WAL mode creates `-wal` (with one directory sync) and `-shm` once at first write and keeps both until the last connection closes. Directory watchers, inode quotas, and backup scanners must expect these sidecars.
+3. **Budget for transient sidecar files and directory syncs (Experiments 7.1, 7.2).** Rollback `DELETE` mode creates and unlinks `-journal` and opens/syncs the parent directory on every write transaction (`1,000` journal creates, directory opens, and unlinks per 1,000 commits in Experiment 7.2); switching rollback mode to `PERSIST` or `TRUNCATE` eliminates the `unlink` on Unix but still pays the directory sync on every commit (plus an extra journal sync). WAL mode creates `-wal` (with one directory sync) and `-shm` once at first write and keeps both until the last connection closes. Directory watchers, inode quotas, and backup scanners must expect these sidecars.
 4. **Closing the last WAL connection triggers a real checkpoint; do not open and close per request (Experiments 7.1, 7.2).** Closing the final WAL connection in Experiment 7.2 wrote `30` pages (`122,880` bytes) and issued `2` syncs (`db:1 wal:1`) before unlinking `-shm` and `-wal`, and the next writer must pay the WAL-creation directory sync all over again. A multi-database service should pool open connections (Chapter 8's bounded connection manager) rather than churning them per request.
-5. **Keep live WAL databases on local disk; serve immutable snapshots from object storage only after checkpointing (Experiments 7.1, 7.4).** Live WAL databases depend on POSIX byte-range locks (`fcntl` on `.db` and `-shm`) and shared `mmap` memory that S3 and network filesystems cannot safely provide across machines. For read-only analytics or point lookups against historical snapshots, serving a checkpointed at-rest file (Rebuild Ladder R5) through `modernc.org/sqlite/vfs` + `internal/rangefs` with `immutable=1` answers a point lookup in `5` range/stat requests (`12,388` bytes out of `1,105,920`) and `0` requests on warm cache hits—at the cost of one network round trip per page miss. The publisher must always checkpoint or close the last connection before uploading; uploading while commits sit in `-wal` produces silent stale reads under `immutable=1`.
+5. **Keep live WAL databases on local disk; serve immutable snapshots from object storage only after checkpointing, under immutable keys (Experiments 7.1, 7.4).** Live WAL databases depend on POSIX byte-range locks (`fcntl` on `.db` and `-shm`) and shared `mmap` memory that S3 and network filesystems cannot safely provide across machines. For read-only analytics or point lookups against historical snapshots, serving a checkpointed at-rest file (Rebuild Ladder R5) through `modernc.org/sqlite/vfs` + `internal/rangefs` with `immutable=1` answers a point lookup in `5` range/stat requests (`12,388` bytes out of `1,105,920`) and `0` requests on repeat queries whose working set fits in the connection's `cache_size`—at the cost of one network round trip per page miss and re-fetches whenever pages are evicted. The publisher must always checkpoint or close the last connection before uploading (uploading while commits sit in `-wal` produces silent stale reads under `immutable=1`) and publish each snapshot under a new immutable key (overwriting an object key in place behind an open `immutable=1` connection produces `SQLITE_CORRUPT`).
 6. **Build a custom VFS only for the three jobs local disk cannot do (Experiments 7.3, 7.4).** A platform has three clear reasons to install a custom VFS: (a) portable in-process VFS observability without `strace` (Experiment 7.3 Part A); (b) deterministic I/O fault injection with the process alive—verifying that the service treats every `SQLITE_IOERR` as a rolled-back commit (Experiment 7.3 Part B, `122/122` exact rollbacks); and (c) on-demand page-level reads of immutable snapshots in HTTP or S3 object storage (Experiment 7.4). For live read-write databases on local disk, the stock `unix` VFS plus WAL shipping (Chapter 9) avoids VFS maintenance risk.
 
 ---

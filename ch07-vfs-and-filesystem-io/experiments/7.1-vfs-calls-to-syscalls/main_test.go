@@ -19,6 +19,8 @@ func parsed(t *testing.T, lines ...string) []trace.VFSCall {
 	return calls
 }
 
+// TestCloseLifecycleMatchesRealVFSTraceLines feeds real sqlite3 -vfstrace lines
+// through trace.ParseVFSLine to ensure the non-Linux check matches delFlag=1.
 func TestCloseLifecycleMatchesRealVFSTraceLines(t *testing.T) {
 	calls := parsed(t,
 		`trace.xOpen(t.db-wal,flags=0x80006) -> SQLITE_OK`,
@@ -31,6 +33,8 @@ func TestCloseLifecycleMatchesRealVFSTraceLines(t *testing.T) {
 	}
 }
 
+// TestCloseLifecycleRejectsKeptShm verifies that xShmUnmap(...,delFlag=0) does
+// not satisfy the shm-deletion check.
 func TestCloseLifecycleRejectsKeptShm(t *testing.T) {
 	_, _, shmDelete := closeLifecycle(parsed(t, `trace.xShmUnmap(t.db,delFlag=0) -> SQLITE_OK`))
 	if shmDelete {

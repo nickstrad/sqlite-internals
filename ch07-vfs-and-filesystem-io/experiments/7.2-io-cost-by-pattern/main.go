@@ -293,6 +293,9 @@ type measurement struct {
 	sequence  []commitShape
 }
 
+// classifyWALCommits verifies every WAL commit fits the plain, checkpoint, or
+// post-checkpoint restart shape and that at least one checkpoint+restart pair
+// occurred (preventing vacuous passes if wal_autocheckpoint never triggered).
 func classifyWALCommits(sequences [][]commitShape, plain, restart, checkpoint string) (ok bool, checkpoints, restarts int) {
 	ok = true
 	for _, sequence := range sequences {

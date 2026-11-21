@@ -384,14 +384,20 @@ type outcome struct {
 	match       recipe.Match
 }
 
+// rolledBack reports whether a faulted trial returned primary SQLITE_IOERR,
+// closed cleanly, and left the database byte-identical to step faultStep-1.
 func (o outcome) rolledBack() bool {
 	return o.stepCode == int(govfs.CodeIOErr) && o.closeErr == "" && !o.rowPresent && o.integrity == "ok" && o.match.Step == faultStep-1 && o.match.Exact && o.userVersion == faultStep-1
 }
 
+// committed reports whether an unreached-fault control trial committed cleanly
+// and left the database byte-identical to step faultStep.
 func (o outcome) committed() bool {
 	return o.stepErr == "" && o.closeErr == "" && o.rowPresent && o.match.Step == faultStep && o.match.Exact
 }
 
+// trialHeld enforces that faults armed within 1..total actually fired and rolled
+// back, while the N=total+1 control did not fire and committed normally.
 func trialHeld(n, total int, fired bool, o outcome) bool {
 	if n <= total {
 		return fired && o.rolledBack()

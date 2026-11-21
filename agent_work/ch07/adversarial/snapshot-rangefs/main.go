@@ -370,14 +370,14 @@ func attackSNAP03(ctx context.Context, base, snap30Path string, snap30 []byte) {
 	}
 	repeatStats := rangefs.Summarize(remote.TakeRequests())
 
-	// 7.4's unqualified check text states: "repeating the query on the same connection makes no request
-	// (immutable=1: no change-counter check, the page cache stays valid)". Under cache_size=4, page
-	// cache eviction forces re-fetching pages even with immutable=1.
-	claimHeld := r1 == localRows && r2 == localRows && d1 == localDigest && d2 == localDigest && repeatStats.Requests() == 0
+	// Narrowed claim (and 7.4 smallCache check): immutable=1 keeps cached pages valid (no change-counter
+	// invalidation), not cached. Under cache_size=4 (< 18 pages), repeating the scan re-reads evicted pages
+	// (17 range requests, 0 stat) while returning the exact local digest.
+	claimHeld := r1 == localRows && r2 == localRows && d1 == localDigest && d2 == localDigest && repeatStats.RangeRequests == 17 && repeatStats.StatRequests == 0
 	emit("SNAP-03",
 		"repeat 18-page events full scan on same immutable=1 connection with PRAGMA cache_size=4",
-		"0 remote requests on repeat (7.4's repeat claim without a working-set-fits-in-cache caveat)",
-		fmt.Sprintf("digestMatch=%t first=(%s) repeat=(%s) (eviction forces re-reads despite immutable=1)",
+		"evicted pages are re-fetched on repeat (17 range requests, 0 stat) while digest matches local (immutable=1 keeps cached pages valid, not cached)",
+		fmt.Sprintf("digestMatch=%t first=(%s) repeat=(%s)",
 			d1 == localDigest && d2 == localDigest, firstStats, repeatStats),
 		claimHeld)
 }
@@ -442,16 +442,18 @@ func attackSNAP04(ctx context.Context, base string, snap29, snap30 []byte) {
 	_ = db30.QueryRowContext(ctx, "SELECT count(*) FROM documents").Scan(&trueDoc30)
 	_ = db30.Close()
 
-	// If overwriting an object in place behind immutable=1 stayed consistent at step 29, docErr==nil && docCount==trueDoc29 && ic=="ok".
-	// In reality, SQLite reads step-30 pages using step-29's cached root/header and pinned size -> torn or corrupt read!
-	stayedConsistent := docErr == nil && icErr == nil && ic == "ok" && docCount == trueDoc29 && uvAfter == 29
+	// Narrowed claim (sqlite.h.in:3922-3929): overwriting a served object in place behind an open
+	// immutable=1 connection breaks it (stale cached page 1 mixed with newer pages -> SQLITE_CORRUPT (11)
+	// and failed integrity_check); platforms must publish each snapshot under a new immutable key.
+	docCode, _ := sqlitex.PrimaryErrorCode(docErr)
+	corruptedAsExpected := uvBefore == 29 && uvAfter == 29 && docCode == 11 && icErr == nil && ic != "ok"
 	icFlat := strings.ReplaceAll(ic, "\n", "; ")
 	emit("SNAP-04",
 		"overwrite served object in place (step 29 -> step 30) while an immutable=1 connection stays open",
-		"connection stays consistent at step 29 (proving whether immutable=1 tolerates in-place object overwrites)",
+		"open immutable=1 connection keeps stale cached page 1 and fails with SQLITE_CORRUPT (11) / non-ok integrity_check (proving snapshots need new immutable keys)",
 		fmt.Sprintf("before(uv=%d ev=%d) after(uv=%d docs=%d docErr=%v ic=%q icErr=%v) truth(doc29=%d doc30=%d)",
 			uvBefore, evBefore, uvAfter, docCount, docErr, icFlat, icErr, trueDoc29, trueDoc30),
-		stayedConsistent)
+		corruptedAsExpected)
 }
 
 // SNAP-05: Hostile HTTP servers against rangefs.HTTPSource.

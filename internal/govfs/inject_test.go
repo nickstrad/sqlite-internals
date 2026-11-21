@@ -5,6 +5,9 @@ import (
 	"testing"
 )
 
+// TestInjectedCallIsCompleteAtDisarm verifies that an injected fault records
+// its full Call fields (method, offset, code, seq, Injected) in both Disarm's
+// report and the recorded call log.
 func TestInjectedCallIsCompleteAtDisarm(t *testing.T) {
 	v := &VFS{recording: true}
 	if err := v.Arm(Fault{Method: "xWrite", Nth: 2, Code: CodeIOErr}); err != nil {
@@ -30,6 +33,9 @@ func TestInjectedCallIsCompleteAtDisarm(t *testing.T) {
 	}
 }
 
+// TestInjectedCallWithoutRecording verifies that firing a fault while recording
+// is disabled populates FaultReport.Call without advancing v.seq or appending
+// to Calls().
 func TestInjectedCallWithoutRecording(t *testing.T) {
 	v := &VFS{}
 	if err := v.Arm(Fault{Method: "xSync", Nth: 1, Code: CodeIOErr}); err != nil {
@@ -44,6 +50,8 @@ func TestInjectedCallWithoutRecording(t *testing.T) {
 	}
 }
 
+// TestDisarmRacingInjectSeesWholeCall exercises concurrent injectFault and
+// Disarm under -race to confirm Disarm never observes a partially written Call.
 func TestDisarmRacingInjectSeesWholeCall(t *testing.T) {
 	for range 200 {
 		v := &VFS{recording: true}

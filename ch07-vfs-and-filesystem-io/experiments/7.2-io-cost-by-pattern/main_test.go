@@ -6,6 +6,8 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/trace"
 )
 
+// TestCountsSkipFailedSyscalls verifies that failed syscalls (such as ENOENT on
+// unlink/open) are ignored while successful syscalls are tallied normally.
 func TestCountsSkipFailedSyscalls(t *testing.T) {
 	c := newCounts()
 	c.add(trace.Syscall{Name: "unlink", Path: dbName + "-journal", Result: -1, Errno: "ENOENT"})
@@ -21,6 +23,8 @@ func TestCountsSkipFailedSyscalls(t *testing.T) {
 	}
 }
 
+// TestClassifyWALCommits verifies that WAL commit validation requires at least
+// one checkpoint followed by a matching restart and rejects unknown shapes.
 func TestClassifyWALCommits(t *testing.T) {
 	plain := commitShape{syncs: "wal:1"}
 	checkpoint := commitShape{syncs: "db:1 wal:2", dbWrites: true}

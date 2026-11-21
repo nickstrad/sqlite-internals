@@ -74,6 +74,8 @@ var unixFunction = map[string]string{
 // calls. fchown is omitted because unixOpen only calls it when running as root.
 var tracedSyscalls = append(append([]string(nil), trace.DefaultSyscalls...), "fstat", "newfstatat", "statx", "stat", "lstat", "access", "faccessat", "faccessat2")
 
+// byteMovingSyscalls lists every traced canonical syscall that transfers file
+// bytes, used to verify no database/journal/WAL/shm byte I/O escapes the VFS.
 var byteMovingSyscalls = []string{"pread64", "pwrite64", "read", "write", "writev"}
 
 var failures []string
@@ -169,6 +171,8 @@ func portable(ctx context.Context, cli sqlitex.CLI, request trace.CLITrace, dir 
 	check(walDelete && shmDelete, "at the last close the -wal is deleted (xDelete) and the -shm is unmapped with delFlag=1")
 }
 
+// closeLifecycle checks the VFS-only trace (used on non-Linux hosts) for WAL
+// open, WAL deletion, and shm unmap with delFlag=1 (vfstrace.c:843).
 func closeLifecycle(calls []trace.VFSCall) (walOpen, walDelete, shmDelete bool) {
 	for _, c := range calls {
 		switch {

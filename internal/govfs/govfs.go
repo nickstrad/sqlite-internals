@@ -129,6 +129,8 @@ func Register(name string, options Options) (*VFS, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Free C-allocated name and sqlite3_vfs memory on any failure path; this
+	// defer runs before tls.Close() in LIFO order.
 	var address uintptr
 	registered := false
 	defer func() {
@@ -296,6 +298,9 @@ func (v *VFS) setError(err error) {
 	v.mu.Unlock()
 }
 
+// injectFault checks whether c matches the armed fault and, if it is the Nth
+// match, completes the injected Call, appends it when recording is enabled, and
+// stores it in v.fired under one lock so Disarm never sees a half-filled Call.
 func (v *VFS) injectFault(c Call) (int32, bool) {
 	if v == nil {
 		return 0, false
@@ -402,6 +407,7 @@ func methodTableFor(v *VFS, real uintptr) (uintptr, error) {
 	registry.Lock()
 	defer registry.Unlock()
 	if existing, ok := registry.tables[key]; ok {
+		// Another goroutine populated the cache first; free our unused table.
 		sqlite3.Xsqlite3_free(tls, address)
 		return existing.address, nil
 	}
