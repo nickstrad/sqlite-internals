@@ -255,3 +255,32 @@ func TestFailedCaptureLeavesNoCapture(t *testing.T) {
 		t.Fatal("Rebuild accepted the directory of a failed capture")
 	}
 }
+
+func TestVerifyImageNamesChangedPages(t *testing.T) {
+	image := make([]byte, 3*512)
+	for i := range image {
+		image[i] = byte(i / 512)
+	}
+	m := equal.Manifest{PageSize: 512}
+	for p := 0; p < 3; p++ {
+		m.Entries = append(m.Entries, equal.ManifestEntry{Page: p + 1, Role: "x", SHA256: equal.SHA256Hex(image[p*512 : (p+1)*512])})
+	}
+	if differing, err := VerifyImage(m, image); err != nil || len(differing) != 0 {
+		t.Fatalf("intact: %v %v", differing, err)
+	}
+	image[512+100] ^= 1
+	image[2*512] ^= 1
+	if differing, err := VerifyImage(m, image); err != nil || len(differing) != 2 || differing[0] != 2 || differing[1] != 3 {
+		t.Fatalf("changed: %v %v", differing, err)
+	}
+	if _, err := VerifyImage(m, image[:1000]); err == nil {
+		t.Fatal("short image accepted")
+	}
+	if _, err := VerifyImage(equal.Manifest{}, image); err == nil {
+		t.Fatal("zero page size accepted")
+	}
+	m.Entries[1].Page = 7
+	if _, err := VerifyImage(m, image); err == nil {
+		t.Fatal("out-of-sequence manifest accepted")
+	}
+}

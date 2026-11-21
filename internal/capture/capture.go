@@ -355,3 +355,22 @@ func checkRebuilt(path string, m equal.Manifest) error {
 	}
 	return nil
 }
+
+func VerifyImage(m equal.Manifest, image []byte) ([]int, error) {
+	if m.PageSize <= 0 {
+		return nil, fmt.Errorf("manifest page size %d", m.PageSize)
+	}
+	if err := m.CheckSequence(); err != nil {
+		return nil, err
+	}
+	if len(image) != m.PageCount()*m.PageSize {
+		return nil, fmt.Errorf("image is %d bytes, the manifest lists %d pages of %d bytes", len(image), m.PageCount(), m.PageSize)
+	}
+	var differing []int
+	for i, entry := range m.Entries {
+		if equal.SHA256Hex(image[i*m.PageSize:(i+1)*m.PageSize]) != entry.SHA256 {
+			differing = append(differing, entry.Page)
+		}
+	}
+	return differing, nil
+}
