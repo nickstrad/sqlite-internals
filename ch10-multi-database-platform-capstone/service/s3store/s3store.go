@@ -86,6 +86,11 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 }
 
 func (s *Store) List(ctx context.Context, prefix string) ([]string, error) {
+	if prefix != "" {
+		if err := walship.ValidateKey(strings.TrimSuffix(prefix, "/")); err != nil {
+			return nil, err
+		}
+	}
 	pages := s3.NewListObjectsV2Paginator(s.Client, &s3.ListObjectsV2Input{Bucket: aws.String(s.Bucket), Prefix: aws.String(s.Prefix + prefix)})
 	var keys []string
 	for pages.HasMorePages() {

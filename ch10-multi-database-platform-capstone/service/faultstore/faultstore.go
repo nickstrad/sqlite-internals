@@ -121,7 +121,10 @@ func (s *Store) List(ctx context.Context, prefix string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if fault, ok := s.match(true, prefix); ok && fault == StaleList && len(keys) > 0 {
+	if len(keys) == 0 {
+		return keys, nil
+	}
+	if fault, ok := s.match(true, prefix); ok && fault == StaleList {
 		sort.Strings(keys)
 		keys = keys[:len(keys)-1]
 	}

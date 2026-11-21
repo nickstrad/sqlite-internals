@@ -41,6 +41,9 @@ func TestS3StoreSemantics(t *testing.T) {
 	if err != nil || strings.Join(keys, ",") != "a/k1" {
 		t.Fatalf("%v %v", keys, err)
 	}
+	if _, err := s.List(ctx, "../"); !errors.Is(err, walship.ErrInvalidKey) {
+		t.Fatalf("invalid prefix: %v", err)
+	}
 	if err := s.PutIfAbsent(ctx, "../x", nil); !errors.Is(err, walship.ErrInvalidKey) {
 		t.Fatalf("invalid key: %v", err)
 	}

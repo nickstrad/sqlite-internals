@@ -103,3 +103,21 @@ func TestParseRule(t *testing.T) {
 		}
 	}
 }
+
+func TestStaleListSkipsEmptyListings(t *testing.T) {
+	ctx := context.Background()
+	dir := base(t)
+	s := New(dir, Rule{Fault: StaleList, Match: "log/", Nth: 1})
+	if keys, err := s.List(ctx, "log/"); err != nil || len(keys) != 0 {
+		t.Fatalf("%v %v", keys, err)
+	}
+	if fired := s.Fired(); len(fired) != 0 {
+		t.Fatalf("fired on an empty listing: %v", fired)
+	}
+	if err := dir.PutIfAbsent(ctx, "log/1", nil); err != nil {
+		t.Fatal(err)
+	}
+	if keys, err := s.List(ctx, "log/"); err != nil || len(keys) != 0 || len(s.Fired()) != 1 {
+		t.Fatalf("%v %v %v", keys, err, s.Fired())
+	}
+}
