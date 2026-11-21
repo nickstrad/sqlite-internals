@@ -1,0 +1,5 @@
+#!/bin/bash
+# Resume chunk 10b once Neon answers again: part A from the review step. Then merge main into
+# the branch and run stageB.sh ch10b ... late (the chapter 10 text and comments).
+base=$(git -C /root/Software/sqlite-internals-work/ch10b merge-base HEAD main | cut -c1-7)
+exec "$(dirname "$0")/stageA.sh" ch10b "Chapter 10 — Multi-database platform capstone (second half: relocation and experiments 10.2–10.4)" "section 5, Chapter 10" "ch10-multi-database-platform-capstone/service/ (the files this chunk added or changed: 'git diff --stat $base..HEAD') ch10-multi-database-platform-capstone/experiments/10.2-acknowledged-writes-survive/ 10.3-interrupted-relocation/ 10.4-rebuild-the-fleet/ (exact directory names under experiments/). Experiments need the SeaweedFS service: 'docker compose up -d seaweedfs' from the worktree. 10.4 at its default size takes about 2 minutes; do not run the 2,000-database size in the attack suite. NOTE: agent_work/ch10b/adversarial/ already holds a partial suite from an interrupted run of yours: keep, check and complete it" "$base"
