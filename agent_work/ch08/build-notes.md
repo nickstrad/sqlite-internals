@@ -54,6 +54,14 @@ ch08` passes (each experiment run twice, identical to the evidence file).
    state, and the allocator overhead chunk 4 measured (correction 6 there: 4.3 KiB page
    allocations take 8 KiB slots). Not broken down further. The experiment states the margin as:
    growth ≥ sum of counters, and growth ≤ sum + 256 KiB per connection.
+   **The 256 KiB margin is specific to 8.2's workload (a 3-table recipe schema, one prepared
+   statement per connection) and is not a constant** (repair round): the adversarial attack
+   IDL-03a opened 50 WAL connections each with a 1,000-table schema (SCHEMA_USED 251601 bytes
+   per connection) and 5 prepared statements and measured 319–321 KiB per connection not reported
+   by the counters (growth 36.9 MiB vs counter sum 21.3 MiB), so the uncounted part grows with the
+   schema. A capacity plan must measure it for its own schema. It also has a fixed per-process
+   part that dominates at small n (`-n 5`: 280 KiB per connection, fails; `-n 10`: 212; `-n 20`:
+   186–194), so 8.2 now refuses `-n` below 20.
 5. **`PRAGMA shrink_memory` on one connection releases the page cache of every connection in the
    process with this driver.** 8.2 part C: after `shrink_memory` on connection 0 alone, all N
    connections' `CACHE_USED` fell from 52961 to 5089 bytes; running it on the other connections
@@ -91,11 +99,16 @@ recipe state (8.3 A).
 - `Descriptors()` → `[]Descriptor{FD, Target}` (Target from `readlink` on Linux, empty elsewhere;
   a descriptor closed between listing and readlink is skipped). `DescriptorsUnder(dir)` keeps those
   whose target is inside dir (returns `ErrTargetsUnsupported` off Linux). `RelativeTargets(dir, ds)`
-  → sorted names relative to dir.
+  → sorted names relative to dir. Both resolve dir first (`filepath.Abs`, then
+  `filepath.EvalSymlinks` when the directory exists), because `/proc/self/fd` targets are always
+  absolute and symlink-free: a relative dir (`"_work/8.2"`) and `"/"` work (repair round; before it,
+  both silently matched nothing).
 - `Memory{RSS, Anon, File, Shmem}` (bytes; −1 = not available), `HasBreakdown()`. `ReadMemory()`:
   Linux parses `/proc/self/status` (`VmRSS`, `RssAnon`, `RssFile`, `RssShmem`; `ParseStatus`
-  rejects a missing VmRSS, a duplicate field, a non-`kB` unit, negative or non-numeric sizes);
-  elsewhere runs `ps -o rss= -p <pid>` (`ParsePSRSS` accepts exactly one non-negative integer).
+  rejects a missing VmRSS, a duplicate field, a non-`kB` unit, negative or non-numeric sizes, and a
+  KiB value whose byte count does not fit in int64, i.e. above `math.MaxInt64/1024`);
+  elsewhere runs `ps -o rss= -p <pid>` (`ParsePSRSS` accepts exactly one non-negative integer, with
+  the same int64 bound).
   `MemorySource` names the source.
 - `FileLimit()` → soft and hard `RLIMIT_NOFILE` (`syscall.Getrlimit`, exists on linux and darwin).
 - Mergeable with chunk 4's helper: chunk 4 keeps `readProcessMemory` inside
@@ -104,7 +117,9 @@ recipe state (8.3 A).
   `procstat.ReadMemory()` without changing its output. I did not edit chunk 4's experiment.
 - Tests: open/close three files changes the count by exactly 3 and back; two counts in a row
   equal; `Descriptors` length = count; `DescriptorsUnder` ignores a sibling directory with the same
-  prefix (`dir-sibling`); parsers reject 8 malformed status texts and 6 malformed ps outputs;
+  prefix (`dir-sibling`); `DescriptorsUnder` with three relative spellings of one directory (after
+  `t.Chdir`) and with `"/"` finds the open probe file; parsers reject 10 malformed status texts
+  and 8 malformed ps outputs (including 2^53 and 2^54 KiB, which overflowed before the repair);
   `ReadMemory` > 0 and has the breakdown on Linux; `FileLimit` soft ≤ hard.
 
 ### Changed: `internal/sqlitex` (new file `placement.go`, additive)
@@ -133,20 +148,38 @@ API:
   error), OnEvict func(Eviction)})`. Capacity ≥ 1; PathFor and Open required.
 - `Acquire(ctx, id) (*Handle, error)`; `Handle{ID, Path, DB}`; `Handle.Release()` (a second
   Release does nothing). Acquiring an id that is open returns the same `*sqlitex.DB` (hit; moves it
-  to the front of the LRU list). Otherwise, if K are open, the least recently used entry with no
-  outstanding handle is evicted; if every open entry has a handle, Acquire waits for a Release
-  (or ctx). One mutex; opening, closing and hashing happen while holding it (simple and
+  to the front of the LRU list). Otherwise Acquire first checks ctx: an already-cancelled or
+  expired ctx returns `ctx.Err()` before anything is evicted or opened (repair round; before it, a
+  cancelled Acquire at capacity evicted a healthy idle database and then failed in Open). Then, if
+  K are open, the least recently used entry with no outstanding handle is evicted; if every open
+  entry has a handle, Acquire waits for a Release (or ctx). One mutex; opening, closing and hashing happen while holding it (simple and
   serialised; fine for the course, a known throughput limit).
-- Eviction (capacity, `Evict(id)`, or `Close()`): remove from the LRU, `db.Close()`, then
-  `CheckAtRest(path)`. At rest → the `Status` (sha256, size) is recorded for the id. Not at rest
-  or check error → any earlier record is dropped. `OnEvict` receives `Eviction{ID, Path, Cause
+- Eviction (capacity, `Evict(id)`, or `Close()`): remove from the LRU, `db.Close()`, then:
+  - if Close returned an error: no file check; `Status` is not at rest with the one problem
+    `close failed: <err>`;
+  - else if `db.Stats().OpenConnections > 0` (database/sql still has a connection out: an unclosed
+    `*sql.Rows`, `*sql.Tx` or `*sql.Conn`; `sql.DB.Close` closes only idle connections and returns
+    nil): no file check; not at rest with the one problem `N connection(s) still open in this
+    process: a statement, transaction or *sql.Conn was not closed, so database/sql closes the
+    connection only when it is returned`. Skipping the file check here matters: `CheckAtRest`
+    opens and closes the database file, and closing any descriptor drops every POSIX lock this
+    process holds on that file, including the still-open connection's (adversarial ATR-02: before
+    the repair, a rollback-mode eviction with rows open reported at rest AND let another process
+    write while the rows were still being read);
+  - else `CheckAtRest(path)`.
+  At rest → the `Status` (sha256, size) is recorded for the id. Not at rest or check error → any
+  earlier record is dropped (`EvictedNotAtRest` / `StatusFailures`). `OnEvict` receives `Eviction{ID, Path, Cause
   (capacity|explicit|shutdown), CloseErr, Status, StatusErr}` after the mutex is released, so a
   hook may call the manager.
 - Reopen check: when an id with a record is opened again, `CheckAtRest` runs first; if the file is
   not at rest or its sha256 or size differs from the record, Acquire returns
-  `*ChangedWhileClosedError{ID, Path, Recorded, Found}` and does not open it. `Forget(id)` drops a
-  record (for a deliberate external change, e.g. a restore). First opens (no record) are not
-  checked (`Stats.UnverifiedOpens`).
+  `*ChangedWhileClosedError{ID, Path, Recorded, Found}` (counted in `RefusedReopens`) and does not
+  open it; if the check itself fails with an I/O error, Acquire returns it and counts
+  `StatusFailures`. `Forget(id)` drops a record (for a deliberate external change, e.g. a restore).
+  First opens (no record) are not checked. Counting (repair round): `Misses`, and exactly one of
+  `VerifiedReopens` / `UnverifiedOpens`, are incremented only after `Open` succeeds, so
+  `Misses == VerifiedReopens + UnverifiedOpens` always holds; a failed Open counts only
+  `OpenFailures` (before the repair, the verified/unverified counter was bumped before Open ran).
 - `Evict(id)` → `ErrNotOpen` / `ErrInUse`. `Close()` → `ErrInUse` (listing ids) if any handle is
   outstanding, `ErrClosed` the second time; evicts everything otherwise and joins close/check
   errors. `Stats()` (Open, MaxOpen, Hits, Misses, Evictions, EvictedAtRest, EvictedNotAtRest,
@@ -156,23 +189,53 @@ API:
   in order: "database file missing"; "-wal holds N bytes: the database file alone may lack
   committed transactions" (a zero-byte `-wal` is fine); "hot -journal (N bytes) …" (own
   `hotJournal`, the same test as `capture`'s); "-shm exists (N
-  bytes): a connection is open or did not close cleanly". Only when there is no problem is the file
-  hashed (sha256 of the whole file). This is stricter than chunk 2's at-rest rule
-  (`capture.CheckAtRest`) by the `-shm` rule the brief asked for.
+  bytes): a connection is open or did not close cleanly". Only when there is none of these, the
+  database file is opened once and probed for locks held by other processes: `fcntl(F_GETLK)` asks
+  whether a write lock on SQLite's lock bytes (offset 0x40000000, length 512: PENDING, RESERVED
+  and the 510-byte SHARED range; os_unix.c) would conflict. A conflict adds the problem "another
+  process holds a SQLite lock on the database file: it has the database open" and the file is
+  not hashed. Otherwise the same descriptor is hashed (sha256 of the whole file). F_GETLK never
+  reports this process's own locks (POSIX locks belong to the process), so it sees other processes
+  only. `syscall.FcntlFlock` and `F_GETLK` exist on linux and darwin (darwin: cross-built only).
+  This is stricter than chunk 2's at-rest rule (`capture.CheckAtRest`) by the `-shm` rule the
+  brief asked for and by the lock probe (repair round).
 - Hazard (kept from §4.1): `CheckAtRest` opens and closes the database file. Closing any descriptor
   drops this process's POSIX locks on that file, so it must only run when this process has no
   other connection to the file. The manager runs it right after closing its only connection.
-- What the at-rest check cannot see: a connection in another process in **rollback** mode leaves
-  no side file while idle, so "no side files" does not prove nobody has it open. In WAL mode every
-  open connection keeps the `-shm`, so the `-shm` rule catches open connections.
+- What the at-rest check can and cannot see (corrected in the repair round; the earlier sentence
+  "in WAL mode every open connection keeps the -shm" was FALSE):
+  - A WAL connection with `PRAGMA locking_mode=EXCLUSIVE` that has run a statement keeps its
+    wal-index in heap memory and creates **no** `-shm` (adversarial ATR-01b: `shm_exists=false`;
+    test `TestCheckAtRestSeesALockHeldByAnotherProcess` asserts the absent -shm). The side-file
+    rules miss it; the lock probe catches it, because it holds a lock on the database file.
+  - A rollback-mode connection in another process inside a read transaction holds a SHARED lock:
+    the lock probe catches it (ATR-01b's rollback reader).
+  - Still invisible: a connection in another process that holds no lock at that moment — an
+    idle rollback-mode connection, or any connection that has opened the file but not yet run a
+    statement (adversarial ATR-01a case 3: at rest). "At rest" therefore means "complete now and
+    nobody is using it now", not "nobody has it open"; a platform must also own the file
+    (only the manager opens it).
+  - Connections in this same process: handled by the `OpenConnections` rule above for the
+    manager's own `*sqlitex.DB`; another `*sql.DB` in the same process holding the file is
+    invisible to the lock probe (F_GETLK ignores own-process locks) and is excluded by the
+    hazard rule above.
 - Tests (`connmgr_test.go`, all on real sqlitex databases): LRU order with K=2 over
   a,b,a,c,d,a evicts b, a, c; stats; records after Close; refuse reopen after an outside write
   (then `Forget` allows it); refuse reopen when a `-shm` appeared; eviction while another
   connection is open reports exactly the two problems (-wal, -shm) and drops the record; waiting
   when all K are in use (ctx deadline, then success after Release; double Release harmless);
   Evict/Close while in use; same id shares one connection; bad id and junk file fail Acquire
-  without leaking an entry; `CheckAtRest` cases (missing, plain, empty -wal, -wal with content,
-  -shm only, cold journal, hot journal). `go test -race -count=2` passes.
+  without leaking an entry and without touching Misses/UnverifiedOpens/VerifiedReopens;
+  `CheckAtRest` cases (missing, plain, empty -wal, -wal with content, -shm only, cold journal,
+  hot journal). Added in the repair round: `TestFailedReopenCountsOnlyAsOpenFailure` (a recorded
+  id whose Open fails: Misses 1, OpenFailures 1, VerifiedReopens 0; then a good reopen gives
+  VerifiedReopens 1 and Misses = Verified + Unverified); `TestAcquireWithCancelledContextEvictsNothing`;
+  `TestEvictionWithRowsStillOpenSkipsTheFileCheck` (rollback mode, rows open: not at rest with the
+  "1 connection(s) still open" problem, no sha256, no record, the rows still read their next row,
+  at rest after rows.Close); `TestCheckAtRestSeesALockHeldByAnotherProcess` (re-executes the test
+  binary as a helper process that opens the file with a plain driver connection, sets
+  `locking_mode=EXCLUSIVE` and reads: no -shm, CheckAtRest reports exactly the lock problem; at
+  rest after the helper exits). `go test -race -count=2` passes.
 
 ## Experiment 8.1 open-cost-and-where-settings-live
 
@@ -204,8 +267,11 @@ transaction, closed, at rest):
     contiguous because the tables were created in one transaction, each root page allocated
     between schema pages.
   - close: `0 event(s): none` (no reads or opens; the side files are unlinked, which is not traced).
-- Checks (each must hold for every N): open opens only the .db and reads only its 100-byte header;
-  first-statement pages = schema pages + root; page 1 read exactly twice, first before the -wal
+- Checks (each must hold for every N): open opens only the .db (by name) and reads only its
+  100-byte header (one read at offset 0, length 100, returning 100 bytes); first-statement reads
+  of the .db are all whole, page-aligned 4096-byte reads that returned 4096 bytes, and their
+  pages = schema pages + root (the whole-read and returned-length conditions were added in the
+  repair round; the output did not change); page 1 read exactly twice, first before the -wal
   open and again after it; no reads of -wal or -shm (the -wal is empty; the -shm is mmap'ed); -wal
   and -shm opened at the first statement. Then: SCHEMA_USED 0 after open for every N and strictly
   growing 1 < 100 < 1000.
@@ -225,18 +291,23 @@ Part B, settings:
   Result: the six file settings survive the copy; the six connection settings read their defaults
   (synchronous 2 = FULL, foreign_keys 0, cache_size −2000, busy_timeout 0, wal_autocheckpoint
   1000, secure_delete 0). `VACUUM INTO` keeps all file settings except journal_mode, which reads
-  `delete` (its output is a rollback-mode file; header bytes 18–19 = 1, seen in a probe).
+  `delete` (its output is a rollback-mode file; header bytes 18–19 = 1, read and checked by the
+  experiment since the repair round).
 - Checks: every set value differs from the default, and the observed home of every setting equals
   `sqlitex.SettingPlacements()`; VACUUM INTO keeps every file setting except journal_mode;
   `journal_mode=persist` on a new file reads `delete` after reopen; `default_cache_size=777` is in
   header bytes 48–51 of a copy and the copy's fresh connection has `cache_size 777`.
 - `settings-json: {...}`: one line of JSON with `placements` (the declared table) and `observed`
   (per setting: home, set_on_original, fresh_connection_default, read_on_copy,
-  read_on_vacuum_into). Machine-readable record for the capstone.
+  read_on_vacuum_into, placement = that setting's entry from `sqlitex.SettingPlacementFor`).
+  Machine-readable record for the capstone. (Before the repair round every `observed[].placement`
+  was an empty object; review finding 2 / attack OPN-05.)
 
 ## Experiment 8.2 idle-cost
 
-Run: `go run ./ch08-connection-and-database-lifecycle/experiments/8.2-idle-cost [-n 200] [-step 3]`.
+Run: `go run ./ch08-connection-and-database-lifecycle/experiments/8.2-idle-cost [-n 200] [-step 3]`
+(`-n` must be ≥ 20: below that the fixed per-process memory growth exceeds the 256 KiB/connection
+margin; see correction 4).
 Runtime ~1.7 s at n=200, ~10 s at n=1000. Evidence at the defaults.
 
 - Header lines: descriptor and memory sources (`/proc/self/fd`, `/proc/self/status` on Linux;
@@ -305,7 +376,9 @@ relays its lines.
   two steps on one connection (chunk 1 correction 1: in WAL mode the counter moves once per
   connection that writes page 1), accepted only when bytes 24–27 equal 92–95.
 - INFO: peak memory growth 22.8 MiB against a budget K × (2 × 256 KiB cache + 256 KiB uncounted)
-  + 32 MiB = 80 MiB (factor 2 = chunk 4's allocator finding; 256 KiB = 8.2's uncounted part); check
+  + 32 MiB = 80 MiB (the INFO line now prints the two per-connection terms in KiB:
+  `budget 64 x (2 x 256 KiB cache + 256 KiB) + 32.0 MiB = 80.0 MiB`; before the repair it printed
+  them as `0.2 MiB`) (factor 2 = chunk 4's allocator finding; 256 KiB = 8.2's uncounted part); check
   peak ≤ budget. INFO: warm read ~0.13–0.15 ms, cold (evict another, open, verify hash, read)
   ~4.4–5.4 ms (SHAPE, never checked; the cold cost includes the evicted connection's close with
   checkpoint and fsync at synchronous=FULL).
@@ -323,7 +396,11 @@ step 0, through a manager (K = 4) unless noted. Sizes are EXACT: one recipe step
   After the child closes (it is now the last connection): at rest, step 1 (exact bytes).
 - B2 rows left open: `h.DB.QueryContext` + one `Next`, handle released, evicted: not at rest
   (`sql.DB.Close` returns while a statement holds the connection; the SQLite connection stays
-  open). After `rows.Close()`: at rest, step 1.
+  open). Since the repair round the manager detects this itself and prints `eviction of db-0001:
+  not at rest: 1 connection(s) still open in this process: a statement, transaction or *sql.Conn
+  was not closed, so database/sql closes the connection only when it is returned`; it no longer
+  runs the file check here (before: `-wal holds 90672 bytes …; -shm exists (32768 bytes) …`).
+  After `rows.Close()`: at rest, step 1.
 - B3 killed writer (child `-role writer` applies step 1, prints ready, is SIGKILLed by
   `Process.Kill`): -wal 90672 bytes + -shm. A copy of the database file alone = step 0 (exact): the
   committed step 1 is only in the -wal. One clean open + close (recovery, checkpoint, delete): at
@@ -332,9 +409,11 @@ step 0, through a manager (K = 4) unless noted. Sizes are EXACT: one recipe step
   bytes and -shm → refused. A copy of the database file alone = step 1: the close DID checkpoint
   (wal.c 2533–2551: with bPersist the WAL is kept, truncated only if journal_size_limit ≥ 0, which
   it is not by default; `walIndexClose(pWal, isDelete=0)` keeps the -shm). The refusal is
-  conservative.
+  conservative. Checks: the eviction reports both `-wal holds` and `-shm exists` (the `-wal holds`
+  half was added to the check in the repair round).
 - B5 the file is renamed while its connection is open, then evicted: `not at rest: database file
-  missing`; `left at the old name: -wal 90672 bytes`; `moved.db: step 0 (exact bytes)` — the moved
+  missing`; `left at the old name: -wal 90672 bytes` (a new check since the repair round: `check ok:
+  B5: a -wal with content stays behind at the old name`); `moved.db: step 0 (exact bytes)` — the moved
   file passes every at-rest test but lacks step 1. Mechanism: `sqlite3PagerClose` passes no buffer
   to `sqlite3WalClose` when `databaseIsUnmoved` fails (pager.c 4232–4236, 4188–4205; `fileHasMoved`
   os_unix.c 1623–1632 compares the path's inode with the open descriptor's), so close skips the
@@ -452,7 +531,14 @@ Descriptors over a manager's life: exactly 3 × open connections at every sample
   or backups are still open; `sqlite3_close` (1363) passes 0, `sqlite3_close_v2` (1364) passes 1;
   `sqlite3LeaveMutexAndCloseZombie` (1375–1486) returns early while the connection is still in use
   and otherwise does the real teardown: closes every B-tree (→ pager → WAL close), frees schemas
-  and lookaside. modernc closes with `sqlite3_close_v2`; B2 is this zombie path seen from Go.
+  and lookaside. modernc's `conn.Close` calls `sqlite3_close_v2`. B2 is NOT this zombie path
+  (corrected in the repair round): `(*sql.DB).Close` closes only the idle connections in its pool
+  and never calls the driver's `Close` on a connection that a `*sql.Rows` has checked out
+  (database/sql `sql.go` `(*DB).Close`). When `rows.Close()` runs later, database/sql closes the
+  statement first and then, because the DB is closed, calls the driver's `Close` →
+  `sqlite3_close_v2` on a connection with no open statements, so the zombie path is not taken.
+  B2 shows the same hazard one layer up, in database/sql's pool: the SQLite connection stays open
+  until the rows are closed.
 - `main.c 772–878 setupLookaside`: allocates the connection's lookaside buffer (one block of
   sz × cnt bytes split into large and small slots); `global.c 218–224` sets the default 1200,40
   ("48KB of memory").
@@ -507,3 +593,15 @@ Descriptors over a manager's life: exactly 3 × open connections at every sample
   (B5).
 - The unbounded manager in 8.3 needed 2598 descriptors and 247 MiB for 866 small databases; the
   bounded one 192 descriptors and 22.8 MiB, at ~30× the per-read latency on a miss.
+
+## Repair round (2026-11-21) — what changed for the prose pass
+
+The sections above are already corrected in place; `agent_work/ch08/REPAIR-REPORT.md` has the
+full list. In short: connmgr counts opens only after success, refuses a cancelled ctx before
+evicting, skips the at-rest check when Close failed or a connection is still checked out, and
+probes SQLite's lock bytes with F_GETLK. Two earlier claims were FALSE and are gone: "every open
+WAL connection keeps the -shm" (an exclusive-mode WAL connection has none) and "B2 is the
+`sqlite3_close_v2` zombie path" (it is database/sql's pool deferral). The 8.2 margin is specific
+to 8.2's workload (IDL-03a: ~320 KiB/connection with 1,000-table schemas). K above the
+descriptor limit is a configuration error the manager does not repair on its own (MGR-03a); size
+K ≤ (soft limit − reserve) / 3 in WAL mode, as 8.3's preflight does.
