@@ -37,7 +37,7 @@ Every claim names the line of evidence or the test that shows it. C line numbers
    | 3 | `ShipFinal` | source | opens the database if needed (ships anything unshipped), evicts it: final cycle, close (SQLite checkpoints and deletes `-wal`/`-shm`), at-rest sha256 = shipped state; returns position P and sha256 H; the coordinator records P and H |
    | 4 | `Rebuild` | destination | lists the chain with an adapter at the new epoch (fenced if anything newer is there), restores the image at the chain end into `<id>.staged` |
    | 5 | `Verify` | coordinator | staged position = P and staged sha256 = H, else `ErrVerifyFailed` |
-   | 6 | `Activate` | destination | puts the fence snapshot (the staged image) at P+1 with the new epoch; on acceptance renames the image into place, writes `<id>.owner`, records the catalog |
+   | 6 | `Activate` | destination | puts the fence snapshot (the staged image) at P+1 with the new epoch; on acceptance renames the image into place, writes `<id>.owner`, records the catalog. A repeated `Activate` on a node that already holds the epoch (`Adopted: true`) re-records the catalog row (location, last_shipped = P+1, schema_version = the fence snapshot's user_version) when the store still ends at the fence, so an activation whose catalog update failed, or that crashed between `.owner` and the catalog, is repaired by `Resume`; if the node has shipped past the fence, the row is left alone |
    | 7 | `RetireSource` | source | evicts, deletes `<id>.db`, `.owner`, `.sealed`, `.atrest`, `.staged` |
 
 2. **The fence point is the drained state, not always the source's last commit position.** When the
@@ -211,12 +211,12 @@ Facts for the diagram:
 
 | # | Invariant (course doc) | Checkable property | Checked by |
 | --- | --- | --- | --- |
-| 1 | At most one authorized writer owns a database at a time | (a) In store order: once an epoch's object is accepted no older epoch's object is accepted; no two epochs accepted for overlapping positions; no accepted object overwritten. (b) At every relocation step boundary at most one node reports `writable` (owner, not sealed, not known fenced). | 10.1 (model: every interleaving to depth 16, 0 violations; mutants found; real processes agree). 10.3: `most writable nodes at any boundary 1` in all 31 cases; the `skip-fence` self-test finds 2. |
-| 2 | No acknowledged durable write is lost under the stated durability model | For every database: recovered user_version ≥ the last user_version acknowledged in its mode. Local-durable: after a process kill and restart on the same files. Store-durable: after a process kill, deleting every local file and rebuilding from the store. Relocation: every acknowledgement (either mode) is in the final lineage. Takeover: store-durable kept, local-durable may be lost. | 10.2 (8 fsync kill points, 4 random kills, 0 violations; the `ack-before-put` mutant is caught). 10.3 (final user_version = acknowledged count in 31 cases). 10.1 (takeover). |
+| 1 | At most one authorized writer owns a database at a time | (a) In store order: once an epoch's object is accepted no older epoch's object is accepted; no two epochs accepted for overlapping positions; no accepted object overwritten. (b) At every relocation step boundary at most one node reports `writable` (owner, not sealed, not known fenced). | 10.1 (model: every interleaving to depth 16, 0 violations; mutants found; real processes agree). 10.3: `most writable nodes at any boundary 1` in all 32 cases; the `skip-fence` self-test finds 2. |
+| 2 | No acknowledged durable write is lost under the stated durability model | For every database: recovered user_version ≥ the last user_version acknowledged in its mode. Local-durable: after a process kill and restart on the same files. Store-durable: after a process kill, deleting every local file and rebuilding from the store. Relocation: every acknowledgement (either mode) is in the final lineage. Takeover: store-durable kept, local-durable may be lost. | 10.2 (8 fsync kill points, 4 random kills, 0 violations; the `ack-before-put` mutant is caught). 10.3 (final user_version = acknowledged count in 32 cases). 10.1 (takeover). |
 | 3 | Every published snapshot is internally consistent | Every restore point in the store (every position of every database) rebuilds, and the rebuilt bytes are a recipe state (sha256 equal to the recipe's step file, exactly or apart from the change counter with bytes 24–27 = 92–95). | 10.4: concurrent checker passes during the write stream and a final pass (`3248 restore points, 0 fail to rebuild` at 500 databases). 10.3: every store-durable acknowledgement's slot restores to its user_version. |
 | 4 | A database can be reopened after process failure | After SIGKILL at any chosen fsync or random time: every database opens, `PRAGMA integrity_check` = ok, the file is a recipe state. | 10.2 (`reopened 4 of 4` on every kill line). 10.1 step 14 (reopen of a killed node's open database). 10.3 (killed source/destination restart and finish). |
 | 5 | File descriptors and memory remain bounded | After every command of every node process: descriptors above the process's startup baseline ≤ 3 × 3 × K + 32 and RSS growth ≤ 3K × (2 × cache + 256 KiB) + 32 MiB (8.3's per-connection figures, 3 connections per open database). | Every experiment: 10.1 (15 commands), 10.2 (316 replies), 10.3 (~1,670 replies), 10.4 (~2,770 replies, plus the in-process rebuild and the checker process). |
-| 6 | An interrupted migration cannot silently create two authoritative copies | For a crash or store fault at every step, after resume or rollback: the catalog owner, the newest slot's epoch and the relocation record agree; at most one node was writable at every boundary; the destination's image = the drained source state at the fence point (sha256); every acknowledged write is in the lineage and no refused write is (final user_version = acknowledged count); the owner's closed file = the store's last state. | 10.3 (31 fault cases, `31 of 31 fault cases hold every invariant`). |
+| 6 | An interrupted migration cannot silently create two authoritative copies | For a crash or store fault at every step, after resume or rollback: the catalog owner, the newest slot's epoch and the relocation record agree; at most one node was writable at every boundary; the destination's image = the drained source state at the fence point (sha256); every acknowledged write is in the lineage and no refused write is (final user_version = acknowledged count); the owner's closed file = the store's last state. | 10.3 (32 fault cases, `32 of 32 fault cases hold every invariant`). |
 
 ## Experiment 10.2 acknowledged-writes-survive (EXACT, Linux part + portable part)
 
@@ -276,9 +276,22 @@ parent hashes each closed file and matches it against the recipe's step files.
 - `check ok: <mode>: strace killed the node at each of the 4 fsync kill points` (result.Killed =
   SIGKILL for each) and `check ok: <mode>: after each kill at an fsync every database reopens
   (integrity ok, a recipe state) and holds at least every write acknowledged in this mode`.
-- Part B: `INFO:` lines for the unkilled interactive run's time and each random kill (delay, counts);
+- Part B: `INFO:` lines for the unkilled interactive run's write-loop time (`the write loop of an
+  unkilled interactive run of 12 writes took …`: measured from the first write command to the last
+  reply, excluding setup and the node's start and reap) and each random kill: `<mode>, random kill
+  K (draw D) after <delay>: …` (delay, counts). The delay is drawn in (0, write-loop time). A draw
+  whose kill came after the last reply (all 12 acknowledged) is still recovered and checked, then the
+  kill is redrawn, at most 5 draws per kill. New EXACT check per mode: `check ok: <mode>: each of the
+  2 random kills landed while writes were in flight (a kill after the last reply is recovered and
+  checked too, then redrawn, at most 5 draws per kill)`. In the repair runs (2 default, 1
+  `-portable`) all 12 random kills landed on draw 1 with 6–11 of 12 acknowledged. The violations
+  check now reads `<mode>: after every kill at a random time every database reopens …` (it covers
+  redraws too). Before the repair the delay was drawn over setup + writes (setup is 50–70 % of that),
+  and most kills landed after the last write (REVIEW-1 finding 3); with the window fixed but no
+  redraw, the `-portable` run still had 2 of 4 store-durable draws land after the last reply (seed 1
+  draws ~0.94 and ~0.96 of the window), which is why the redraw and its check exist.
   `check ok: <mode>: an interactive run that is not killed acknowledges all 12 writes`; `check ok:
-  <mode>: after each of 2 kills at a random time …`.
+  <mode>: after every kill at a random time …`.
 - Part C (self-test): node `a` started with `-ack-before-put`; `ok write db-0001 store-durable:
   acknowledged at epoch 1, user_version 1, stored through position 0` (position 0: nothing stored);
   the node is killed; store-durable recovery; `violation: db-0001 recovered step 0, acknowledged step
@@ -312,7 +325,7 @@ authoritative equals the drained source state at the fence point (sha256); every
 is in the one lineage and no refused write is.
 
 **Run:** `go run ./ch10-multi-database-platform-capstone/experiments/10.3-interrupted-relocation`.
-Runtime ~35 s (31 cases + the self-test). Flags: `-case N` runs only case N; `-mutant skip-fence`
+Runtime ~35 s (32 cases + the self-test). Flags: `-case N` runs only case N; `-mutant skip-fence`
 runs every case with a coordinator that neither seals the source nor puts the store fence (exits 1);
 `-bucket`, `-prefix` (`course-ch10b`, `exp-10-3`), `-capacity 2`. Scratch `_work/10.3/`.
 
@@ -326,7 +339,7 @@ restart any dead node (without faults), then a **fresh** coordinator (no memory 
 `Resume` or `Rollback` from the catalog's `relocations` row. One more boundary (status, two writes)
 after recovery. Then every node is closed and the store, catalog, files are checked.
 
-**Fault cases (31; the case number is the evidence's):**
+**Fault cases (32; the case number is the evidence's):**
 
 | Cases | Fault | Recovery |
 | --- | --- | --- |
@@ -336,6 +349,7 @@ after recovery. Then every node is closed and the store, catalog, files are chec
 | 20–21 | node a killed after step 2; node b killed after step 4 | roll back |
 | 22–29 | on the final segment (a's store, key `log/000000000004`) and on the fence (b's store, `log/000000000006`): `fail-before-put`, `fail-after-put`, `crash-before-put`, `crash-after-put` (the node process exits 3) | resume |
 | 30–31 | `fail-before-put` on the final segment; `crash-before-put` on the fence | roll back |
+| 32 | node b killed after step 4 and kept down through the recovery (restarted only afterwards) | roll back while b is down |
 
 **Resume and rollback rules (`relocate.Resume`, `relocate.Rollback`):** read the row; list the chain.
 Newest slot epoch > the relocation's epoch → someone else took over: finish as `superseded`, do
@@ -347,7 +361,16 @@ file, drain of a closed database reopens, ships nothing new and closes, stage re
 file, verify compares, activate puts the fence, retire deletes); rollback seals and drains the source
 (ships anything unshipped while its epoch is still the newest in the store), lets the source `claim`
 the database (catalog epoch + 1 owned by the source, fence at the end + 1, the image restored equals
-the drained file), discards the destination's staged file and finishes as `rolled-back`. A zombie
+the drained file), records the relocation `rolled-back` in the catalog, and only then asks the
+destination to discard its staged file. The discard is best effort: if the destination is down, the
+rollback still succeeds and returns the discard error in `Result.DiscardErr` (10.3 case 32 prints
+`recovery: the destination did not discard its staged copy: node process for "discard db-0001" is
+not running`). The leftover `<id>.staged` is harmless: the source's newer fence is already in the
+store, `Activate` of the old epoch is refused, and a later `Stage` rewrites the file. A rollback that
+stopped after the source's claim but before the catalog record (newest slot epoch > the relocation's
+epoch, and the catalog row names the source as owner at that epoch) is finished on retry as
+`rolled-back` (discarding at the destination again), not as `superseded`; a newer epoch owned by any
+other node is still `superseded`. A zombie
 destination still holding the relocation's epoch is fenced by the source's newer fence.
 
 **How to read every line** (`evidence/10.3-interrupted-relocation.txt`):
@@ -359,7 +382,9 @@ destination still holding the relocation's epoch is fenced by the source's newer
   - `run: the coordinator stopped` (injected coordinator crash) | `run: step S failed: the node
     refused` (a `refused …` reply, e.g. the injected store error) | `run: step S failed: the node did
     not answer` (the node process died) | `run: finished without interruption (done)` (case 18).
-  - `node X is down; restarted` for each dead node.
+  - `node X is down; restarted` for each dead node; case 32 prints `node b is down and stays down
+    during the recovery`, then after the recovery line `recovery: the destination did not discard its
+    staged copy: …` and `node b restarted after the recovery`.
   - `recovery: <rolled forward|rolled back|done>; relocation record: state <done|rolled-back>, step
     N; fence point: position P sha256 <12 hex>, fence at position P+1` — P and H are the drained state
     (for a rollback, the rollback's own drain); the fence is the destination's (resume) or the
@@ -379,14 +404,19 @@ destination still holding the relocation's epoch is fenced by the source's newer
     W ≤ 1; restore(P) and restore(fence) both hash to H; every store-durable acknowledgement's (epoch,
     position) is a slot of that epoch and restores to its user_version, the final state is a recipe
     state and U = A; the owner's closed file (connmgr's at-rest check) = restore of the last position.
-- `31 of 31 fault cases hold every invariant`.
+    A seventh part, only for case 32: the rollback finished (`rolled back`) and reported the
+    destination's discard failure.
+- `32 of 32 fault cases hold every invariant`.
 - Self-test: `== self-test: the same relocation without the seal and without the store fence ==`,
   `case 0: …`, its boundary lines (from step 6 on: `a owner at epoch 1, writable; b owner at epoch
   2, writable`), `the store does not hold one lineage: … epoch 2 starts at position 4 with a segment,
   not a fence snapshot`, then `check ok: self-test: without the fence the boundary check finds two
   writable nodes`.
 - `check ok: after every command of every node process the descriptors and memory stayed within the
-  standing bounds`; `INFO: N node replies carried a bounds check`.
+  standing bounds`; `check ok: no node reported a problem` (added in the repair round: any
+  `problem …` line from a node process now fails 10.3, as in 10.2 and 10.4); `INFO: N node replies
+  carried a bounds check`. A case whose recovery fails now also kills its node processes before the
+  next case starts.
 
 **The check can fail:** `-mutant skip-fence -case 1` → the case prints `after recovery: … a owner at
 epoch 1, writable; b owner at epoch 2, writable` and `the store does not hold one lineage: … epoch 2
@@ -436,7 +466,7 @@ checker pass over the whole store. (9) Close the checker.
 
 **How to read every line** (`evidence/10.4-rebuild-the-fleet.txt`):
 - pin line; `INFO: descriptor soft limit …; each writer's bound 320`; `INFO: store …`.
-- `fleet: 500 databases, 8 writer processes (each owns 63 and keeps at most 32 open), one checker
+- `fleet: 500 databases, 8 writer processes (each owns 62-63 and keeps at most 32 open), one checker
   process; store: bucket course-ch10b, prefix exp-10-4/` (63 = the largest share; 500/8 = 62.5).
 - `INFO: write stream took …`; `write stream: every database claimed and given recipe steps 1-4,
   each acknowledged store-durable`.
@@ -595,7 +625,7 @@ were re-checked (unchanged); 10b adds the last two. Copied: `wal.c` only (unchan
    restore point (3,248 at 500 databases) rebuilds to a recipe state.
 6. **How is a database moved between machines without two writers?** The seven-step relocation;
    the seal stops the cooperative source, the store fence stops any source; the destination writes
-   only after its fence is accepted. 10.3: 31 fault cases, never two writable nodes; without the seal
+   only after its fence is accepted. 10.3: 32 fault cases, never two writable nodes; without the seal
    and fence (self-test) two nodes are writable at once.
 7. **Which metadata belongs in a global control plane versus local SQLite files?** Control plane
    (catalog): owner, epoch, location, last shipped position, schema version, per-connection settings,
@@ -695,3 +725,36 @@ passed:
   stream 3 min 38 s, rollout 49 s, quiesce 6 s, rebuild 1 min 28 s (44 ms per database with 8
   workers), final pass 2 min 7 s; rebuild read 1.54 GB (769 KB per database), the store held 1.19 GB;
   total 9 min 12 s; the parent process's peak RSS 62 MiB (`/usr/bin/time -v`).
+
+## Repair round 1 (after REVIEW-1 and adversarial run 1)
+
+What changed, as facts for the chapter (details are folded into the sections above):
+
+- `relocate.Coordinator.Rollback`: order is now seal → drain → source `Claim` → catalog
+  `FinishRelocation(rolled-back)` → destination `Discard` (best effort). `Result` has a new field
+  `DiscardErr error` (nil when the discard worked). Before, a down destination made `Rollback` fail
+  after the source had already re-claimed: the catalog said `owner=a epoch=3`, the relocation row
+  stayed `running`, no new relocation could start, and a retry finished as `superseded` (REL-04).
+  Now: `rolled back`, row `rolled-back`, a new relocation can begin. Test
+  `TestRollbackWhileTheDestinationIsDown`; 10.3 case 32.
+- `Rollback` retry after a stop between the source's claim and the catalog record: the newest slot
+  epoch is above the relocation's and the catalog names the source as owner at that epoch → finished
+  as `rolled back` (and discards again), not `superseded`. Test
+  `TestRollbackFinishesARollbackThatStoppedAfterTheClaim`; a takeover by any other node is still
+  `superseded` (`TestRollbackStillReportsAThirdNodesTakeover`).
+- `node.Activate` repeated by the node that already holds the epoch: when the store still ends at
+  the fence (P+1), it re-records the catalog (location `<node>:<id>.db`, last_shipped P+1,
+  schema_version = the fence snapshot's user_version). Before, the row kept `location=""` and the
+  old last_shipped/schema_version forever if the first activation's catalog update failed or the
+  node died between writing `.owner` and the catalog (REL-05c: `loc="" lastShipped=3 schemaVer=2`
+  after a `done` relocation). If the node has shipped past the fence, the row is not touched (its
+  own writes recorded it). Tests `TestRepeatedActivateRepairsAnUnrecordedFence`,
+  `TestRepeatedActivateAfterLaterWritesKeepsTheCatalog`.
+- `node.Drain` returns an error (`node: drain <id>: the final ship left the state at rest but
+  reported: …`) when the final eviction reached at-rest but reported a problem (e.g. the `.atrest`
+  file or the catalog record failed); before, those problems were dropped and `Drain` returned
+  success. Test `TestDrainReportsAFailedAtRestRecord`.
+- 10.2 part B: random kill window and redraw (see the 10.2 section). 10.3: 32 cases, `no node
+  reported a problem` check, processes of a failed case are killed. 10.4: `each owns 62-63` (a
+  range only when the split is uneven; the 2,000-database line `each owns 250` is unchanged).
+- Runtimes in the repair runs: 10.4 2 min 16 s and 2 min 30 s (`/usr/bin/time`); 10.2 and 10.3 were not re-timed.
