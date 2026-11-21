@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"sort"
 )
 
@@ -286,4 +288,40 @@ func Prune(ctx context.Context, store Store, keepFrom int64) ([]string, error) {
 		}
 	}
 	return deleted, nil
+}
+
+func WriteDatabase(path string, image []byte) error {
+	for _, candidate := range []string{path, path + "-wal", path + "-shm", path + "-journal"} {
+		if _, err := os.Lstat(candidate); err == nil {
+			return fmt.Errorf("%w: %s", ErrExists, candidate)
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	_, writeErr := file.Write(image)
+	syncErr := file.Sync()
+	closeErr := file.Close()
+	return errors.Join(writeErr, syncErr, closeErr)
+}
+
+func CopyStore(ctx context.Context, from, to Store) (int, error) {
+	keys, err := from.List(ctx, "")
+	if err != nil {
+		return 0, err
+	}
+	sort.Strings(keys)
+	for i, key := range keys {
+		data, err := from.Get(ctx, key)
+		if err != nil {
+			return i, err
+		}
+		if err := to.PutIfAbsent(ctx, key, data); err != nil {
+			return i, err
+		}
+	}
+	return len(keys), nil
 }

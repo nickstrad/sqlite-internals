@@ -39,12 +39,12 @@ func VerifySegmentFrames(meta SegmentMeta, frames []byte) error {
 		}
 		stored := walfile.Checksum{binary.BigEndian.Uint32(frame[16:]), binary.BigEndian.Uint32(frame[20:])}
 		if next != stored {
-			return fmt.Errorf("%w: frame %d stores checksum %s, the chain gives %s", ErrChecksumChain, number, stored, next)
+			return fmt.Errorf("%w: frame %d stores a checksum the chain does not give", ErrChecksumChain, number)
 		}
 		chain = next
 	}
 	if chain != walfile.Checksum(meta.LastChecksum) {
-		return fmt.Errorf("%w: chain ends at %s, metadata says %s", ErrChecksumChain, chain, walfile.Checksum(meta.LastChecksum))
+		return fmt.Errorf("%w: the chain does not end at the checksum the metadata records", ErrChecksumChain)
 	}
 	return nil
 }

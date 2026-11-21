@@ -44,40 +44,78 @@ type Shipper struct {
 	broken          error
 }
 
+type WALChange int
+
+const (
+	WALUnchanged WALChange = iota
+	WALNewGeneration
+	WALDiscontinuity
+)
+
+func (c WALChange) String() string {
+	switch c {
+	case WALUnchanged:
+		return "same WAL generation"
+	case WALNewGeneration:
+		return "new WAL generation after the shipper's full checkpoint"
+	case WALDiscontinuity:
+		return "discontinuity"
+	}
+	return fmt.Sprintf("WALChange(%d)", int(c))
+}
+
 type CycleReport struct {
-	WALChange    string
+	Change       WALChange
+	Reason       string
 	Segment      *SegmentMeta
 	Snapshot     *SnapshotMeta
 	Checkpoint   sqlitex.CheckpointResult
 	FullBackfill bool
 }
 
-func (r CycleReport) Lines() []string {
-	var lines []string
-	if r.WALChange != "" {
-		lines = append(lines, "wal: "+r.WALChange)
+func (r CycleReport) Lines(name func(Generation) string) []string {
+	lines := []string{"wal: " + r.Change.String()}
+	if r.Reason != "" {
+		lines[0] += ": " + r.Reason
 	}
 	if r.Segment != nil {
-		lines = append(lines, DescribeSegment(*r.Segment))
+		lines = append(lines, DescribeSegment(*r.Segment, name))
 	} else {
-		lines = append(lines, "segment: none (no new commit)")
+		lines = append(lines, "segment: none")
 	}
 	lines = append(lines, fmt.Sprintf("checkpoint PASSIVE: %s; every shipped frame copied: %t", r.Checkpoint, r.FullBackfill))
 	if r.Snapshot != nil {
-		lines = append(lines, DescribeSnapshot(*r.Snapshot))
+		lines = append(lines, DescribeSnapshot(*r.Snapshot, name))
 	}
 	return lines
 }
 
-func DescribeSegment(m SegmentMeta) string {
-	return fmt.Sprintf("segment %s: positions %d-%d, frames %d-%d of WAL %s, user_version %d-%d, before %s after %s",
-		SegmentKey(m.FirstPosition), m.FirstPosition, m.LastPosition, m.FirstFrame, m.LastFrame, m.Generation,
+func DescribeSegment(m SegmentMeta, name func(Generation) string) string {
+	return fmt.Sprintf("segment %s: positions %d-%d, frames %d-%d of %s, user_version %d-%d, before %s after %s",
+		SegmentKey(m.FirstPosition), m.FirstPosition, m.LastPosition, m.FirstFrame, m.LastFrame, name(m.Generation),
 		m.Commits[0].UserVersion, m.Commits[len(m.Commits)-1].UserVersion, short(m.BeforeSHA256), short(m.AfterSHA256))
 }
 
-func DescribeSnapshot(m SnapshotMeta) string {
-	return fmt.Sprintf("snapshot %s (%s): position %d, %d pages, user_version %d, state %s, WAL frame %d of %s",
-		SnapshotKey(m.Position), m.Reason, m.Position, m.Pages, m.UserVersion, short(m.StateSHA256), m.WAL.Frame, m.WAL.Generation)
+func DescribeSnapshot(m SnapshotMeta, name func(Generation) string) string {
+	return fmt.Sprintf("snapshot %s (%s): position %d, %d pages, user_version %d, state %s, after frame %d of %s",
+		SnapshotKey(m.Position), m.Reason, m.Position, m.Pages, m.UserVersion, short(m.StateSHA256), m.WAL.Frame, name(m.WAL.Generation))
+}
+
+type GenerationNames struct {
+	seen map[Generation]int
+}
+
+func (g *GenerationNames) Name(gen Generation) string {
+	if gen.None() {
+		return "no WAL"
+	}
+	if g.seen == nil {
+		g.seen = map[Generation]int{}
+	}
+	if _, ok := g.seen[gen]; !ok {
+		g.seen[gen] = len(g.seen) + 1
+	}
+	return fmt.Sprintf("WAL generation #%d", g.seen[gen])
 }
 
 func Open(ctx context.Context, config Config) (*Shipper, error) {
@@ -255,8 +293,12 @@ func lastCommit(file *walfile.File) int {
 	return file.LastCommitFrame
 }
 
-func (s *Shipper) readPages(ctx context.Context) ([]byte, error) {
-	rows, err := s.control.QueryContext(ctx, "SELECT pgno, data FROM sqlite_dbpage('main') ORDER BY pgno")
+type RowsQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+func ReadPages(ctx context.Context, q RowsQuerier, pageSize int) ([]byte, error) {
+	rows, err := q.QueryContext(ctx, "SELECT pgno, data FROM sqlite_dbpage('main') ORDER BY pgno")
 	if err != nil {
 		return nil, err
 	}
@@ -269,8 +311,8 @@ func (s *Shipper) readPages(ctx context.Context) ([]byte, error) {
 		if err := rows.Scan(&pgno, &data); err != nil {
 			return nil, err
 		}
-		if pgno != expected || len(data) != s.pageSize {
-			return nil, fmt.Errorf("sqlite_dbpage returned page %d with %d bytes, want page %d with %d", pgno, len(data), expected, s.pageSize)
+		if pgno != expected || len(data) != pageSize {
+			return nil, fmt.Errorf("sqlite_dbpage returned page %d with %d bytes, want page %d with %d", pgno, len(data), expected, pageSize)
 		}
 		image = append(image, data...)
 		expected++
@@ -282,6 +324,10 @@ func (s *Shipper) readPages(ctx context.Context) ([]byte, error) {
 		return nil, errors.New("sqlite_dbpage returned no pages")
 	}
 	return image, nil
+}
+
+func (s *Shipper) readPages(ctx context.Context) ([]byte, error) {
+	return ReadPages(ctx, s.control, s.pageSize)
 }
 
 func (s *Shipper) snapshot(ctx context.Context, reason string, position int64, data []byte, file *walfile.File) (*SnapshotMeta, error) {
@@ -326,9 +372,9 @@ func (s *Shipper) Cycle(ctx context.Context) (CycleReport, error) {
 		if err != nil {
 			return err
 		}
-		start, change, discontinuity := s.classify(data, file)
-		report.WALChange = change
-		if discontinuity {
+		start, change, reason := s.classify(data, file)
+		report.Change, report.Reason = change, reason
+		if change == WALDiscontinuity {
 			meta, err := s.snapshot(ctx, ReasonDiscontinuity, s.position+1, data, file)
 			if err != nil {
 				return err
@@ -374,25 +420,24 @@ func (s *Shipper) Cycle(ctx context.Context) (CycleReport, error) {
 	return report, nil
 }
 
-func (s *Shipper) classify(data []byte, file *walfile.File) (WALPosition, string, bool) {
+func (s *Shipper) classify(data []byte, file *walfile.File) (WALPosition, WALChange, string) {
 	current := generationOf(data, file)
 	if current == s.wal.Generation {
 		if lastCommit(file) < s.wal.Frame {
-			return s.wal, fmt.Sprintf("discontinuity: the WAL holds %d committed frames, %d were already shipped", lastCommit(file), s.wal.Frame), true
+			return s.wal, WALDiscontinuity, fmt.Sprintf("the WAL holds %d committed frames, %d were already shipped", lastCommit(file), s.wal.Frame)
 		}
 		if s.wal.Frame > 0 && chainAt(file, s.wal.Frame) != s.wal.Checksum {
-			return s.wal, fmt.Sprintf("discontinuity: frame %d no longer carries the shipped checksum", s.wal.Frame), true
+			return s.wal, WALDiscontinuity, fmt.Sprintf("frame %d no longer carries the shipped checksum", s.wal.Frame)
 		}
-		return s.wal, "", false
+		return s.wal, WALUnchanged, ""
 	}
 	if !s.continuous {
-		return s.wal, fmt.Sprintf("discontinuity: WAL header changed from %s to %s while the shipper held no read mark", s.wal.Generation, current), true
+		return s.wal, WALDiscontinuity, "the WAL header changed while the shipper held no read mark"
 	}
 	if !s.wal.Generation.None() && !s.fullyBackfilled {
-		return s.wal, fmt.Sprintf("discontinuity: WAL header changed from %s to %s without a full checkpoint by the shipper", s.wal.Generation, current), true
+		return s.wal, WALDiscontinuity, "the WAL header changed although the shipper's last checkpoint did not copy every frame"
 	}
-	start := WALPosition{Generation: current, Frame: 0, Checksum: chainAt(file, 0)}
-	return start, fmt.Sprintf("new WAL generation %s after the shipper's full checkpoint", current), false
+	return WALPosition{Generation: current, Frame: 0, Checksum: chainAt(file, 0)}, WALNewGeneration, ""
 }
 
 func (s *Shipper) ship(ctx context.Context, data []byte, file *walfile.File) (*SegmentMeta, error) {

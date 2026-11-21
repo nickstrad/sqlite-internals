@@ -186,7 +186,7 @@ func TestNothingNewShipsNothing(t *testing.T) {
 	s := h.open(0, 2)
 	defer s.Close()
 	report := h.cycle(s)
-	if report.Segment != nil || report.Snapshot != nil || report.WALChange != "" {
+	if report.Segment != nil || report.Snapshot != nil || report.Change != WALUnchanged {
 		t.Fatalf("unexpected report %+v", report)
 	}
 	h.step(3)
@@ -228,7 +228,7 @@ func TestResumeInTheSameGenerationContinues(t *testing.T) {
 	h.step(4)
 	report := h.cycle(s)
 	if report.FullBackfill || report.Segment == nil || report.Segment.LastPosition != 4 {
-		t.Fatalf("with a reader at step 3: %v", report.Lines())
+		t.Fatalf("with a reader at step 3: %v", report.Lines((&GenerationNames{}).Name))
 	}
 	h.step(5)
 	if err := s.Close(); err != nil {
@@ -241,7 +241,7 @@ func TestResumeInTheSameGenerationContinues(t *testing.T) {
 	}
 	report = h.cycle(s)
 	if report.Snapshot != nil || report.Segment == nil || report.Segment.FirstPosition != 5 || report.Segment.LastPosition != 6 {
-		t.Fatalf("after resume: %v", report.Lines())
+		t.Fatalf("after resume: %v", report.Lines((&GenerationNames{}).Name))
 	}
 	if _, err := reader.ExecContext(h.ctx, "COMMIT"); err != nil {
 		t.Fatal(err)
@@ -258,7 +258,7 @@ func TestResumeAfterARestartTakesASnapshot(t *testing.T) {
 	s := h.open(0, 2)
 	h.step(3)
 	if report := h.cycle(s); !report.FullBackfill {
-		t.Fatalf("no full backfill: %v", report.Lines())
+		t.Fatalf("no full backfill: %v", report.Lines((&GenerationNames{}).Name))
 	}
 	h.step(4)
 	if err := s.Close(); err != nil {
@@ -269,10 +269,10 @@ func TestResumeAfterARestartTakesASnapshot(t *testing.T) {
 	defer s.Close()
 	report := h.cycle(s)
 	if report.Snapshot == nil || report.Snapshot.Reason != ReasonDiscontinuity || report.Snapshot.Position != 4 || report.Snapshot.UserVersion != 5 {
-		t.Fatalf("want a discontinuity snapshot at position 4 holding step 5: %v", report.Lines())
+		t.Fatalf("want a discontinuity snapshot at position 4 holding step 5: %v", report.Lines((&GenerationNames{}).Name))
 	}
-	if !strings.Contains(report.WALChange, "held no read mark") {
-		t.Fatalf("change %q", report.WALChange)
+	if report.Change != WALDiscontinuity || !strings.Contains(report.Reason, "held no read mark") {
+		t.Fatalf("change %s %q", report.Change, report.Reason)
 	}
 }
 
@@ -295,15 +295,15 @@ func TestOutsideCheckpointForcesSnapshot(t *testing.T) {
 	defer s.Close()
 	report := h.cycle(s)
 	if report.Snapshot == nil || report.Snapshot.Reason != ReasonDiscontinuity || report.Snapshot.Position != 4 || report.Snapshot.UserVersion != 6 {
-		t.Fatalf("want a discontinuity snapshot at position 4 holding step 6: %v", report.Lines())
+		t.Fatalf("want a discontinuity snapshot at position 4 holding step 6: %v", report.Lines((&GenerationNames{}).Name))
 	}
-	if !strings.Contains(report.WALChange, "discontinuity") {
-		t.Fatalf("change %q", report.WALChange)
+	if report.Change != WALDiscontinuity || !strings.Contains(report.Reason, "held no read mark") {
+		t.Fatalf("change %s %q", report.Change, report.Reason)
 	}
 	h.step(7)
 	report = h.cycle(s)
 	if report.Segment == nil || report.Segment.FirstPosition != 5 || report.Segment.Commits[0].UserVersion != 7 {
-		t.Fatalf("after the snapshot: %v", report.Lines())
+		t.Fatalf("after the snapshot: %v", report.Lines((&GenerationNames{}).Name))
 	}
 	catalog := h.catalog()
 	plan, err := catalog.Plan(5)

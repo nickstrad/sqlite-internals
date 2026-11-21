@@ -203,8 +203,8 @@ func checkBody(body []byte, wantBytes int64, wantSHA256 string) error {
 	if int64(len(body)) != wantBytes {
 		return fmt.Errorf("%w: body is %d bytes, metadata says %d", ErrMalformedObject, len(body), wantBytes)
 	}
-	if got := SHA256Hex(body); got != wantSHA256 {
-		return fmt.Errorf("%w: body sha256 %s, metadata says %s", ErrMalformedObject, short(got), short(wantSHA256))
+	if SHA256Hex(body) != wantSHA256 {
+		return fmt.Errorf("%w: body sha256 does not match its metadata", ErrMalformedObject)
 	}
 	return nil
 }
