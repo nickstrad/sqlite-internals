@@ -68,10 +68,11 @@ func parseSQLOptions(args []string) (SQLOptions, error) {
 }
 
 type sqlSession struct {
-	options SQLOptions
-	recipe  recipe.Recipe
-	db      *sqlitex.DB
-	conn    *sql.Conn
+	options    SQLOptions
+	recipe     recipe.Recipe
+	sqlOptions sqlitex.Options
+	db         *sqlitex.DB
+	conn       *sql.Conn
 }
 
 func SQLRole(ctx context.Context, args []string) (*Actor, error) {
@@ -99,21 +100,22 @@ func SQLRole(ctx context.Context, args []string) (*Actor, error) {
 		db.Close()
 		return nil, err
 	}
-	s := &sqlSession{options: options, recipe: r, db: db, conn: conn}
+	s := &sqlSession{options: options, recipe: r, sqlOptions: sqlOptions, db: db, conn: conn}
 	return &Actor{
 		Actions: map[string]Handler{
-			"exec":         s.exec,
-			"query":        s.query,
-			"begin":        s.begin,
-			"commit":       s.simple("COMMIT"),
-			"rollback":     s.simple("ROLLBACK"),
-			"timeout":      s.timeout,
-			"checkpoint":   s.checkpoint,
-			"recipe-exec":  s.recipeExec,
-			"recipe-step":  s.recipeStep,
-			"user-version": s.userVersion,
-			"stray-close":  s.strayClose,
-			"dbpage-write": s.dbpageWrite,
+			"exec":           s.exec,
+			"query":          s.query,
+			"begin":          s.begin,
+			"commit":         s.simple("COMMIT"),
+			"rollback":       s.simple("ROLLBACK"),
+			"timeout":        s.timeout,
+			"checkpoint":     s.checkpoint,
+			"recipe-exec":    s.recipeExec,
+			"recipe-step":    s.recipeStep,
+			"recipe-session": s.recipeSession,
+			"user-version":   s.userVersion,
+			"stray-close":    s.strayClose,
+			"dbpage-write":   s.dbpageWrite,
 		},
 		Close: s.close,
 	}, nil
@@ -248,6 +250,22 @@ func (s *sqlSession) recipeStep(ctx context.Context, args []string) (string, err
 		return "", errors.Join(err, rollbackErr)
 	}
 	return "", nil
+}
+
+func (s *sqlSession) recipeSession(ctx context.Context, args []string) (string, error) {
+	k, err := oneInt(args, "recipe step")
+	if err != nil {
+		return "", err
+	}
+	options := s.sqlOptions
+	options.SingleConnection = true
+	options.ImmediateTx = true
+	db, err := sqlitex.Open(ctx, s.options.Path, options)
+	if err != nil {
+		return "", err
+	}
+	applyErr := s.recipe.ApplyStep(ctx, db, k)
+	return "", errors.Join(applyErr, db.Close())
 }
 
 func (s *sqlSession) userVersion(ctx context.Context, args []string) (string, error) {
