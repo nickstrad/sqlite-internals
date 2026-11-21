@@ -1,16 +1,16 @@
 ---
-title: "sqlite-internals chunk 0: foundation findings (modernc driver, CLI tracing, strace, SeaweedFS, Go VFS)"
+title: "Chunk 0: foundation findings (modernc driver, CLI tracing, strace, SeaweedFS, Go VFS)"
 summary: "What building the course foundation established: CLI -vfstrace goes to stdout, fsync vs fdatasync differs by build, the 3.53.4 shell probe-opens databases, a writable Go VFS works on modernc without cgo, SeaweedFS S3 quirks."
-tags: [sqlite, go, modernc, strace, vfs, seaweedfs, sqlite-internals]
+tags: [sqlite, go, modernc, strace, vfs, seaweedfs, walfleet]
 updated: 2026-11-20
-verified: 2026-11-20 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sqlite v1.60.1; evidence in the sqlite-internals repo
+verified: 2026-11-20 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sqlite v1.60.1; evidence in the walfleet repo
 ---
 
-# sqlite-internals chunk 0: foundation findings (modernc driver, CLI tracing, strace, SeaweedFS, Go VFS)
+# Chunk 0: foundation findings (modernc driver, CLI tracing, strace, SeaweedFS, Go VFS)
 
 What building the course foundation established: CLI -vfstrace goes to stdout, fsync vs fdatasync differs by build, the 3.53.4 shell probe-opens databases, a writable Go VFS works on modernc without cgo, SeaweedFS S3 quirks.
 
-Source: the `sqlite-internals` course repo (github.com/nickstrad/walfleet), chunk `ch00`. Working notes: `agent_work/ch00/build-notes.md`; review and adversarial records in the same directory.
+Source: the `walfleet` repo (github.com/nickstrad/walfleet), chunk `ch00`. Working notes: `agent_work/ch00/build-notes.md`; review and adversarial records in the same directory.
 
 ## Corrections to the outline
 

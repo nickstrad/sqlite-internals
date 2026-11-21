@@ -1,16 +1,16 @@
 ---
-title: "sqlite-internals chapter 5: WAL restart, salts, read marks and checkpoint modes as measured at 3.53.4"
+title: "Chapter 5: WAL restart, salts, read marks and checkpoint modes as measured at 3.53.4"
 summary: "What a WAL shipper or replayer must know: only TRUNCATE touches salts at checkpoint, every mode restarts at the next write, the new salt depends on the writing connection, a read-lock-0 reader blocks all backfill, read marks outlive readers."
-tags: [sqlite, wal, checkpoint, sqlite-internals]
+tags: [sqlite, wal, checkpoint, walfleet]
 updated: 2026-11-21
-verified: 2026-11-21 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sqlite v1.60.1; evidence in the sqlite-internals repo
+verified: 2026-11-21 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sqlite v1.60.1; evidence in the walfleet repo
 ---
 
-# sqlite-internals chapter 5: WAL restart, salts, read marks and checkpoint modes as measured at 3.53.4
+# Chapter 5: WAL restart, salts, read marks and checkpoint modes as measured at 3.53.4
 
 What a WAL shipper or replayer must know: only TRUNCATE touches salts at checkpoint, every mode restarts at the next write, the new salt depends on the writing connection, a read-lock-0 reader blocks all backfill, read marks outlive readers.
 
-Source: the `sqlite-internals` course repo (github.com/nickstrad/walfleet), chunk `ch05`. Working notes: `agent_work/ch05/build-notes.md`; review and adversarial records in the same directory.
+Source: the `walfleet` repo (github.com/nickstrad/walfleet), chunk `ch05`. Working notes: `agent_work/ch05/build-notes.md`; review and adversarial records in the same directory.
 
 ## Corrections to the outline
 

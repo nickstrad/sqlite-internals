@@ -1,16 +1,16 @@
 ---
-title: "SQLite internals course: publishing the book as a GitHub Pages site"
-summary: "How the sqlite-internals book is rendered and checked by its own Go command and deployed by a Pages workflow"
-tags: [sqlite-internals,github-pages,static-site,goldmark]
+title: "Publishing the book as a GitHub Pages site"
+summary: "How SQLite Replication and Backup Strategies (repo walfleet) is rendered and checked by its own Go command and deployed by a Pages workflow"
+tags: [walfleet, github-pages, static-site, goldmark]
 updated: 2026-11-21
-verified: 2026-11-21 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sqlite v1.60.1; evidence in the sqlite-internals repo
+verified: 2026-11-21 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sqlite v1.60.1; evidence in the walfleet repo
 ---
 
-# SQLite internals course: publishing the book as a GitHub Pages site
+# Publishing the book as a GitHub Pages site
 
-How the sqlite-internals book is rendered and checked by its own Go command and deployed by a Pages workflow
+How *SQLite Replication and Backup Strategies* (repo `walfleet`) is rendered and checked by its own Go command and deployed by a Pages workflow
 
-Source: the `sqlite-internals` course repo (github.com/nickstrad/walfleet), chunk `pub`. Working notes: `agent_work/pub/build-notes.md`; review and adversarial records in the same directory.
+Source: the `walfleet` repo (github.com/nickstrad/walfleet), chunk `pub`. Working notes: `agent_work/pub/build-notes.md`; review and adversarial records in the same directory.
 
 
 ## How the book is published

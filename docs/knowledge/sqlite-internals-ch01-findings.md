@@ -1,16 +1,16 @@
 ---
-title: "sqlite-internals chapter 1: determinism rules and the Go-vs-C twin check, as measured"
+title: "Chapter 1: determinism rules and the Go-vs-C twin check, as measured"
 summary: "What makes a SQLite file reproducible to the byte on modernc v1.60.1 and where the Go driver's I/O differs from the C CLI: WAL change counter moves only when page 1 is written, secure_delete must be ON not FAST, ANALYZE differs by STAT4, rolled-back savepoints and cache_size=0 change bytes."
-tags: [sqlite, determinism, wal, modernc, sqlite-internals]
+tags: [sqlite, determinism, wal, modernc, walfleet]
 updated: 2026-11-20
-verified: 2026-11-20 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sqlite v1.60.1; evidence in the sqlite-internals repo
+verified: 2026-11-20 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sqlite v1.60.1; evidence in the walfleet repo
 ---
 
-# sqlite-internals chapter 1: determinism rules and the Go-vs-C twin check, as measured
+# Chapter 1: determinism rules and the Go-vs-C twin check, as measured
 
 What makes a SQLite file reproducible to the byte on modernc v1.60.1 and where the Go driver's I/O differs from the C CLI: WAL change counter moves only when page 1 is written, secure_delete must be ON not FAST, ANALYZE differs by STAT4, rolled-back savepoints and cache_size=0 change bytes.
 
-Source: the `sqlite-internals` course repo (github.com/nickstrad/walfleet), chunk `ch01`. Working notes: `agent_work/ch01/build-notes.md`; review and adversarial records in the same directory.
+Source: the `walfleet` repo (github.com/nickstrad/walfleet), chunk `ch01`. Working notes: `agent_work/ch01/build-notes.md`; review and adversarial records in the same directory.
 
 ## Corrections to the outline
 

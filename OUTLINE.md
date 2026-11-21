@@ -1,4 +1,4 @@
-# OUTLINE — SQLite Internals, experiment-driven build
+# OUTLINE — SQLite Replication and Backup Strategies, experiment-driven build
 
 Status: **revision 2, signed off by Nick on 2026-11-20 and in build (Phase 2).** Nick's sign-off
 came with rulings that amend this outline; they are listed in
@@ -89,7 +89,7 @@ The course does not compile its own SQLite library and has no C code of its own.
 ## 2. Repo layout
 
 ```
-sqlite-internals/
+walfleet/
   OUTLINE.md  OUTLINE-CHANGES.md  README.md  STATE.md
   go.mod  go.sum                                      one Go module; pins modernc.org/sqlite v1.60.1
   docs/

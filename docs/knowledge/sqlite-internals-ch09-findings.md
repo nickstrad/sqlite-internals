@@ -1,16 +1,16 @@
 ---
-title: "sqlite-internals chapter 9: capture methods, crash versus power loss, integrity_check limits and point-in-time rebuild, as measured at 3.53.4"
+title: "Chapter 9: capture methods, crash versus power loss, integrity_check limits and point-in-time rebuild, as measured at 3.53.4"
 summary: "Backup facts for a platform builder: backup remaining-count is not monotonic, VACUUM INTO of a WAL database yields a rollback-mode file, a killed process loses nothing at any synchronous level while a power cut at NORMAL loses commits since the last checkpoint, integrity_check misses changed unindexed values, WAL salts cannot count restarts."
-tags: [sqlite, backup, crash-recovery, integrity, wal-shipping, sqlite-internals]
+tags: [sqlite, backup, crash-recovery, integrity, wal-shipping, walfleet]
 updated: 2026-11-21
-verified: 2026-11-21 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sqlite v1.60.1; evidence in the sqlite-internals repo
+verified: 2026-11-21 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sqlite v1.60.1; evidence in the walfleet repo
 ---
 
-# sqlite-internals chapter 9: capture methods, crash versus power loss, integrity_check limits and point-in-time rebuild, as measured at 3.53.4
+# Chapter 9: capture methods, crash versus power loss, integrity_check limits and point-in-time rebuild, as measured at 3.53.4
 
 Backup facts for a platform builder: backup remaining-count is not monotonic, VACUUM INTO of a WAL database yields a rollback-mode file, a killed process loses nothing at any synchronous level while a power cut at NORMAL loses commits since the last checkpoint, integrity_check misses changed unindexed values, WAL salts cannot count restarts.
 
-Source: the `sqlite-internals` course repo (github.com/nickstrad/walfleet), chunk `ch09`. Working notes: `agent_work/ch09/build-notes.md`; review and adversarial records in the same directory.
+Source: the `walfleet` repo (github.com/nickstrad/walfleet), chunk `ch09`. Working notes: `agent_work/ch09/build-notes.md`; review and adversarial records in the same directory.
 
 ## Corrections to the outline
 

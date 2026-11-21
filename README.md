@@ -1,6 +1,8 @@
-# SQLite Internals
+# SQLite Replication and Backup Strategies
 
-An experiment-driven book on how SQLite `3.53.4` stores, locks, caches, commits, and recovers data, written for engineers building platforms that hold thousands of SQLite database files. Each of the ten chapters pairs annotated SQLite C source code with runnable Go experiments inlined directly in the text and checked against stored evidence files.
+*Deterministic Capture, WAL Shipping, and Fleet Recovery through SQLite Internals*
+
+An experiment-driven book on capturing, shipping, backing up, and deterministically rebuilding fleets of SQLite databases—grounded in how SQLite `3.53.4` stores, locks, caches, commits, and recovers data. Written for engineers building platforms that hold thousands of SQLite database files, each of the ten chapters pairs annotated SQLite C source code with runnable Go experiments inlined directly in the text and checked against stored evidence files.
 
 The published book is at [https://nickstrad.github.io/walfleet/](https://nickstrad.github.io/walfleet/). The GitHub Actions workflow [.github/workflows/pages.yml](.github/workflows/pages.yml) builds and verifies the static site on every push to `main` by running `go run ./cmd/course site`.
 

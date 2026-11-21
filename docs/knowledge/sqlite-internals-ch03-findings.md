@@ -1,16 +1,16 @@
 ---
-title: "sqlite-internals chapter 3: B-tree page changes, VACUUM INTO canonical form and logical hashes as measured at 3.53.4"
+title: "Chapter 3: B-tree page changes, VACUUM INTO canonical form and logical hashes as measured at 3.53.4"
 summary: "What a rebuild verifier must know: batching does not change WAL-mode bytes the way it does in rollback mode, VACUUM INTO is canonical only for the same schema creation order, WAL frames shipped can exceed pages changed, the file shrinks only with auto_vacuum, freed pages keep old bytes."
-tags: [sqlite, btree, vacuum, dbhash, sqlite-internals]
+tags: [sqlite, btree, vacuum, dbhash, walfleet]
 updated: 2026-11-21
-verified: 2026-11-21 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sqlite v1.60.1; evidence in the sqlite-internals repo
+verified: 2026-11-21 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sqlite v1.60.1; evidence in the walfleet repo
 ---
 
-# sqlite-internals chapter 3: B-tree page changes, VACUUM INTO canonical form and logical hashes as measured at 3.53.4
+# Chapter 3: B-tree page changes, VACUUM INTO canonical form and logical hashes as measured at 3.53.4
 
 What a rebuild verifier must know: batching does not change WAL-mode bytes the way it does in rollback mode, VACUUM INTO is canonical only for the same schema creation order, WAL frames shipped can exceed pages changed, the file shrinks only with auto_vacuum, freed pages keep old bytes.
 
-Source: the `sqlite-internals` course repo (github.com/nickstrad/walfleet), chunk `ch03`. Working notes: `agent_work/ch03/build-notes.md`; review and adversarial records in the same directory.
+Source: the `walfleet` repo (github.com/nickstrad/walfleet), chunk `ch03`. Working notes: `agent_work/ch03/build-notes.md`; review and adversarial records in the same directory.
 
 ## Corrections to the outline
 

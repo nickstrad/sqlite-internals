@@ -1,16 +1,16 @@
 ---
-title: "sqlite-internals capstone core (10a): single-writer fencing on an S3 store that cannot check epochs, as measured on SeaweedFS"
+title: "Chapter 10 capstone core (10a): single-writer fencing on an S3 store that cannot check epochs, as measured on SeaweedFS"
 summary: "Ownership facts for a multi-database SQLite platform: the store only enforces write-once positions so fencing needs a writer rule too, ownership is lost when the new owner's fence lands in the store, a takeover can lose local-durable acknowledgements but not store-durable ones, each open database costs 7 descriptors in the service."
-tags: [sqlite, capstone, fencing, s3, seaweedfs, sqlite-internals]
+tags: [sqlite, capstone, fencing, s3, seaweedfs, walfleet]
 updated: 2026-11-21
-verified: 2026-11-21 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sqlite v1.60.1; evidence in the sqlite-internals repo
+verified: 2026-11-21 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sqlite v1.60.1; evidence in the walfleet repo
 ---
 
-# sqlite-internals capstone core (10a): single-writer fencing on an S3 store that cannot check epochs, as measured on SeaweedFS
+# Chapter 10 capstone core (10a): single-writer fencing on an S3 store that cannot check epochs, as measured on SeaweedFS
 
 Ownership facts for a multi-database SQLite platform: the store only enforces write-once positions so fencing needs a writer rule too, ownership is lost when the new owner's fence lands in the store, a takeover can lose local-durable acknowledgements but not store-durable ones, each open database costs 7 descriptors in the service.
 
-Source: the `sqlite-internals` course repo (github.com/nickstrad/walfleet), chunk `ch10a`. Working notes: `agent_work/ch10a/build-notes.md`; review and adversarial records in the same directory.
+Source: the `walfleet` repo (github.com/nickstrad/walfleet), chunk `ch10a`. Working notes: `agent_work/ch10a/build-notes.md`; review and adversarial records in the same directory.
 
 ## Corrections to the outline
 

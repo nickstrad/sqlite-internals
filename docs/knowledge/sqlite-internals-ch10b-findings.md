@@ -1,16 +1,16 @@
 ---
-title: "SQLite internals course: chapter 10 capstone (relocation, experiments 10.2-10.4)"
+title: "Chapter 10 capstone (10b): relocation and experiments 10.2–10.4"
 summary: "Seven-step relocation with resume/rollback, acknowledged writes surviving kills, and a 500/2000-database fleet rebuild from SeaweedFS; see agent_work/ch10b/build-notes.md and the chapter"
-tags: [sqlite,sqlite-internals,capstone,relocation,seaweedfs]
+tags: [sqlite, walfleet, capstone, relocation, seaweedfs]
 updated: 2026-11-21
-verified: 2026-11-21 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sqlite v1.60.1; evidence in the sqlite-internals repo
+verified: 2026-11-21 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sqlite v1.60.1; evidence in the walfleet repo
 ---
 
-# SQLite internals course: chapter 10 capstone (relocation, experiments 10.2-10.4)
+# Chapter 10 capstone (10b): relocation and experiments 10.2–10.4
 
 Seven-step relocation with resume/rollback, acknowledged writes surviving kills, and a 500/2000-database fleet rebuild from SeaweedFS; see agent_work/ch10b/build-notes.md and the chapter
 
-Source: the `sqlite-internals` course repo (github.com/nickstrad/walfleet), chunk `ch10b`. Working notes: `agent_work/ch10b/build-notes.md`; review and adversarial records in the same directory.
+Source: the `walfleet` repo (github.com/nickstrad/walfleet), chunk `ch10b`. Working notes: `agent_work/ch10b/build-notes.md`; review and adversarial records in the same directory.
 
 ## Corrections to the outline
 

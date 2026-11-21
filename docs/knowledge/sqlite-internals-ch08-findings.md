@@ -1,16 +1,16 @@
 ---
-title: "sqlite-internals chapter 8: open cost, idle cost and when a closed WAL database is at rest, as measured at 3.53.4"
+title: "Chapter 8: open cost, idle cost and when a closed WAL database is at rest, as measured at 3.53.4"
 summary: "Lifecycle facts for a platform builder: 3 descriptors per idle WAL connection opened at the first statement, process memory is about 4x the db_status counters, shrink_memory releases every connection's cache in the modernc build, a closed WAL database is not a single file at rest in five cases, default_cache_size travels in the file."
-tags: [sqlite, connections, file-descriptors, memory, wal, sqlite-internals]
+tags: [sqlite, connections, file-descriptors, memory, wal, walfleet]
 updated: 2026-11-21
-verified: 2026-11-21 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sqlite v1.60.1; evidence in the sqlite-internals repo
+verified: 2026-11-21 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sqlite v1.60.1; evidence in the walfleet repo
 ---
 
-# sqlite-internals chapter 8: open cost, idle cost and when a closed WAL database is at rest, as measured at 3.53.4
+# Chapter 8: open cost, idle cost and when a closed WAL database is at rest, as measured at 3.53.4
 
 Lifecycle facts for a platform builder: 3 descriptors per idle WAL connection opened at the first statement, process memory is about 4x the db_status counters, shrink_memory releases every connection's cache in the modernc build, a closed WAL database is not a single file at rest in five cases, default_cache_size travels in the file.
 
-Source: the `sqlite-internals` course repo (github.com/nickstrad/walfleet), chunk `ch08`. Working notes: `agent_work/ch08/build-notes.md`; review and adversarial records in the same directory.
+Source: the `walfleet` repo (github.com/nickstrad/walfleet), chunk `ch08`. Working notes: `agent_work/ch08/build-notes.md`; review and adversarial records in the same directory.
 
 ## Corrections to the outline
 

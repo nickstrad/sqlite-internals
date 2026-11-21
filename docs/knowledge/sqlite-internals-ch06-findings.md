@@ -1,16 +1,16 @@
 ---
-title: "sqlite-internals chapter 6: POSIX lock loss, busy rules and live snapshots as measured at 3.53.4"
+title: "Chapter 6: POSIX lock loss, busy rules and live snapshots as measured at 3.53.4"
 summary: "Locking facts for a platform builder: closing any descriptor to a file drops the process's locks on it and a transaction is lost, a busy timeout only helps a transaction that has not read yet, locking_mode=EXCLUSIVE breaks the writer-never-blocks-readers rule, a reader holds back a WAL restart only when it holds a read mark."
-tags: [sqlite, locking, busy, wal, sqlite-internals]
+tags: [sqlite, locking, busy, wal, walfleet]
 updated: 2026-11-21
-verified: 2026-11-21 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sqlite v1.60.1; evidence in the sqlite-internals repo
+verified: 2026-11-21 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sqlite v1.60.1; evidence in the walfleet repo
 ---
 
-# sqlite-internals chapter 6: POSIX lock loss, busy rules and live snapshots as measured at 3.53.4
+# Chapter 6: POSIX lock loss, busy rules and live snapshots as measured at 3.53.4
 
 Locking facts for a platform builder: closing any descriptor to a file drops the process's locks on it and a transaction is lost, a busy timeout only helps a transaction that has not read yet, locking_mode=EXCLUSIVE breaks the writer-never-blocks-readers rule, a reader holds back a WAL restart only when it holds a read mark.
 
-Source: the `sqlite-internals` course repo (github.com/nickstrad/walfleet), chunk `ch06`. Working notes: `agent_work/ch06/build-notes.md`; review and adversarial records in the same directory.
+Source: the `walfleet` repo (github.com/nickstrad/walfleet), chunk `ch06`. Working notes: `agent_work/ch06/build-notes.md`; review and adversarial records in the same directory.
 
 ## Corrections to the outline
 

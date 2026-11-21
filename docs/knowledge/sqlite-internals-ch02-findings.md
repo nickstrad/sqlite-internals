@@ -1,16 +1,16 @@
 ---
-title: "sqlite-internals chapter 2: database header and page facts measured at 3.53.4"
+title: "Chapter 2: database header and page facts measured at 3.53.4"
 summary: "What a plain-Go reader of SQLite files must know: in WAL mode the header change counter is written only with page 1; at-rest means no -wal content and no hot journal; WITHOUT ROWID roots are index pages; SQLite accepts a partial last page."
-tags: [sqlite, file-format, wal, sqlite-internals]
+tags: [sqlite, file-format, wal, walfleet]
 updated: 2026-11-20
-verified: 2026-11-20 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sqlite v1.60.1; evidence in the sqlite-internals repo
+verified: 2026-11-20 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sqlite v1.60.1; evidence in the walfleet repo
 ---
 
-# sqlite-internals chapter 2: database header and page facts measured at 3.53.4
+# Chapter 2: database header and page facts measured at 3.53.4
 
 What a plain-Go reader of SQLite files must know: in WAL mode the header change counter is written only with page 1; at-rest means no -wal content and no hot journal; WITHOUT ROWID roots are index pages; SQLite accepts a partial last page.
 
-Source: the `sqlite-internals` course repo (github.com/nickstrad/walfleet), chunk `ch02`. Working notes: `agent_work/ch02/build-notes.md`; review and adversarial records in the same directory.
+Source: the `walfleet` repo (github.com/nickstrad/walfleet), chunk `ch02`. Working notes: `agent_work/ch02/build-notes.md`; review and adversarial records in the same directory.
 
 ## Corrections to the outline
 
