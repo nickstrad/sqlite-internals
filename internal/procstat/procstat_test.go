@@ -97,6 +97,45 @@ func TestDescriptorsUnder(t *testing.T) {
 	}
 }
 
+func TestDescriptorsUnderRelativeAndRootDirectories(t *testing.T) {
+	if !TargetsSupported {
+		t.Skip("descriptor targets are Linux-only")
+	}
+	base := t.TempDir()
+	t.Chdir(base)
+	if err := os.MkdirAll(filepath.Join("rel", "inner"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(filepath.Join("rel", "inner", "probe.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	for _, dir := range []string{"rel", "./rel/", filepath.Join("rel", "inner", "..")} {
+		under, err := DescriptorsUnder(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := RelativeTargets(dir, under)
+		if len(got) != 1 || got[0] != filepath.Join("inner", "probe.txt") {
+			t.Fatalf("DescriptorsUnder(%q): got %v, want [inner/probe.txt]", dir, got)
+		}
+	}
+	root, err := DescriptorsUnder("/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, d := range root {
+		if strings.HasSuffix(d.Target, filepath.Join("rel", "inner", "probe.txt")) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("DescriptorsUnder(\"/\") missed the open probe file: %v", root)
+	}
+}
+
 func TestReadMemory(t *testing.T) {
 	m, err := ReadMemory()
 	if err != nil {
@@ -136,6 +175,8 @@ func TestParseStatus(t *testing.T) {
 		"VmRSS:\n",
 		"VmRSS: 4 kB\nVmRSS: 5 kB\n",
 		"VmRSS: 4 kB\nRssAnon: four kB\n",
+		"VmRSS: 9007199254740992 kB\n",
+		"VmRSS: 4 kB\nRssAnon: 18014398509481984 kB\n",
 	} {
 		if _, err := ParseStatus(bad); err == nil {
 			t.Errorf("ParseStatus(%q) accepted malformed input", bad)
@@ -151,7 +192,7 @@ func TestParsePSRSS(t *testing.T) {
 	if m.RSS != 12345*1024 || m.HasBreakdown() {
 		t.Fatalf("got %+v", m)
 	}
-	for _, bad := range []string{"", "\n", "abc", "12 34", "-5", "1.5"} {
+	for _, bad := range []string{"", "\n", "abc", "12 34", "-5", "1.5", "9007199254740992", "18014398509481984"} {
 		if _, err := ParsePSRSS(bad); err == nil {
 			t.Errorf("ParsePSRSS(%q) accepted malformed input", bad)
 		}

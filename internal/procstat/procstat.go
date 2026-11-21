@@ -3,6 +3,7 @@ package procstat
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -86,11 +87,14 @@ func DescriptorsUnder(dir string) ([]Descriptor, error) {
 	if !TargetsSupported {
 		return nil, ErrTargetsUnsupported
 	}
+	prefix, err := directoryPrefix(dir)
+	if err != nil {
+		return nil, err
+	}
 	all, err := Descriptors()
 	if err != nil {
 		return nil, err
 	}
-	prefix := filepath.Clean(dir) + string(filepath.Separator)
 	var under []Descriptor
 	for _, d := range all {
 		if strings.HasPrefix(d.Target, prefix) {
@@ -100,8 +104,25 @@ func DescriptorsUnder(dir string) ([]Descriptor, error) {
 	return under, nil
 }
 
+func directoryPrefix(dir string) (string, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", fmt.Errorf("procstat: resolve %s: %w", dir, err)
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = resolved
+	}
+	if strings.HasSuffix(abs, string(filepath.Separator)) {
+		return abs, nil
+	}
+	return abs + string(filepath.Separator), nil
+}
+
 func RelativeTargets(dir string, descriptors []Descriptor) []string {
-	prefix := filepath.Clean(dir) + string(filepath.Separator)
+	prefix, err := directoryPrefix(dir)
+	if err != nil {
+		prefix = filepath.Clean(dir) + string(filepath.Separator)
+	}
 	targets := make([]string, 0, len(descriptors))
 	for _, d := range descriptors {
 		targets = append(targets, strings.TrimPrefix(d.Target, prefix))
@@ -125,9 +146,16 @@ func parseKiB(value string) (int64, error) {
 	if len(fields) == 0 || len(fields) > 2 || (len(fields) == 2 && fields[1] != "kB") {
 		return 0, fmt.Errorf("procstat: malformed size %q", value)
 	}
-	kib, err := strconv.ParseInt(fields[0], 10, 64)
+	return kibToBytes(fields[0])
+}
+
+func kibToBytes(text string) (int64, error) {
+	kib, err := strconv.ParseInt(text, 10, 64)
 	if err != nil || kib < 0 {
-		return 0, fmt.Errorf("procstat: malformed size %q", value)
+		return 0, fmt.Errorf("procstat: malformed size %q", text)
+	}
+	if kib > math.MaxInt64/1024 {
+		return 0, fmt.Errorf("procstat: size %s KiB does not fit in int64 bytes", text)
 	}
 	return kib * 1024, nil
 }
@@ -164,9 +192,9 @@ func ParsePSRSS(output string) (Memory, error) {
 	if text == "" || strings.ContainsAny(text, " \t\n") {
 		return Memory{}, fmt.Errorf("procstat: malformed ps rss output %q", output)
 	}
-	kib, err := strconv.ParseInt(text, 10, 64)
-	if err != nil || kib < 0 {
-		return Memory{}, fmt.Errorf("procstat: malformed ps rss output %q", output)
+	bytes, err := kibToBytes(text)
+	if err != nil {
+		return Memory{}, fmt.Errorf("procstat: ps rss output %q: %w", output, err)
 	}
-	return Memory{RSS: kib * 1024, Anon: -1, File: -1, Shmem: -1}, nil
+	return Memory{RSS: bytes, Anon: -1, File: -1, Shmem: -1}, nil
 }
