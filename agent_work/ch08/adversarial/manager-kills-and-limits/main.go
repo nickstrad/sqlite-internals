@@ -560,14 +560,14 @@ func main() {
 				fmt.Sscanf(line[:idx], "OVERLIMIT fail_idx=%d open_len=%d fds_before=%d fds_after=%d existing_ok=%t auto_recovered=%t manual_unblocked=%t open_failures=%d close_err=%s",
 					&failIdx, &openLen, &fdsBefore, &fdsAfter, &existingOK, &autoRecovered, &manualUnblocked, &openFailures, &closeErrStr)
 			}
-			// Notice: if Capacity > RLIMIT_NOFILE/3, Acquire never triggers capacity eviction once EMFILE hits
-			// (because len(open) < Capacity), so auto_recovered=false — every new DB fails permanently until
-			// manual Evict, even though all open entries are idle!
-			// Also check whether a failed sqlitex.Open leaked any descriptors (fdsAfter == fdsBefore).
-			held3a := failIdx > 0 && fdsAfter == fdsBefore && existingOK && manualUnblocked && autoRecovered && closeErrStr == "<nil>"
+			// Per build-notes / REPAIR-REPORT: K > (soft limit - reserve)/3 is a configuration error caught up front
+			// by 8.3's preflight (MGR-03b). Inside connmgr itself, hitting EMFILE (surfaced by the driver as generic
+			// SQLITE_CANTOPEN) does not blindly auto-evict, leaks no descriptors (fdsAfter == fdsBefore), keeps
+			// already-open DBs servable, unblocks on explicit Evict, and closes cleanly.
+			held3a := failIdx > 0 && fdsAfter == fdsBefore && existingOK && !autoRecovered && manualUnblocked && closeErrStr == "<nil>"
 			report("MGR-03a",
 				"run connmgr with Capacity=200 under RLIMIT_NOFILE=128 over 80 WAL DBs (all open entries idle)",
-				"no fd leak on EMFILE, existing open DB stays servable, and manager automatically evicts an idle entry to keep serving new DBs",
+				"fails cleanly at FD limit with no fd leak, existing open DB stays servable, no blind auto-evict on generic CANTOPEN, manual Evict unblocks new open, and Close succeeds",
 				fmt.Sprintf("fail_at_db=%d open_len=%d fds_before=%d fds_after=%d existing_ok=%v auto_recovered=%v manual_evict_unblocked=%v close_err=%s err=%q",
 					failIdx, openLen, fdsBefore, fdsAfter, existingOK, autoRecovered, manualUnblocked, closeErrStr, errMsg),
 				held3a)

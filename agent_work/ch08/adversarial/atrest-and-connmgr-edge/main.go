@@ -346,14 +346,15 @@ func main() {
 		}
 		chRB.stop()
 
-		// build-notes.md claims: "In WAL mode every open connection keeps the -shm, so the -shm rule catches open connections."
-		// Under PRAGMA locking_mode=EXCLUSIVE in WAL mode, SQLite keeps the wal-index in heap memory with NO -shm file!
+		// Post-repair CheckAtRest probes SQLite's lock region (0x40000000, 512 bytes) with fcntl(F_GETLK):
+		// it catches both an exclusive-mode WAL reader (despite shm_exists=false) and an active rollback-mode reader.
+		shmExists := !errors.Is(shmStatErr, os.ErrNotExist)
 		report("ATR-01b",
 			"call connmgr.CheckAtRest while another process holds an open WAL connection with PRAGMA locking_mode=EXCLUSIVE (and contrast rollback-mode reader)",
-			"build-notes claims every open WAL connection keeps -shm so CheckAtRest catches it (AtRest=false); rollback-mode reader is documented invisible",
+			"WAL exclusive-mode reader has no -shm yet CheckAtRest catches both it and the active rollback-mode reader via F_GETLK lock probe (AtRest=false for both)",
 			fmt.Sprintf("wal_exclusive_reader=(AtRest=%v,shm_exists=%v) rollback_reader=(AtRest=%v)",
-				stExcl.AtRest, !errors.Is(shmStatErr, os.ErrNotExist), stRB.AtRest),
-			!stExcl.AtRest)
+				stExcl.AtRest, shmExists, stRB.AtRest),
+			!stExcl.AtRest && !shmExists && !stRB.AtRest)
 	}
 
 	// ATR-02: Rollback-mode open *sql.Rows eviction hazard — false AtRest AND POSIX lock destruction!
