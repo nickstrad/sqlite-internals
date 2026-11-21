@@ -1,6 +1,7 @@
 package equal
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -13,6 +14,7 @@ import (
 	"math"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
@@ -21,7 +23,7 @@ import (
 
 const LogicalFormat = "sqlite-internals logical hash v1"
 
-var LogicalPragmas = []string{"page_size", "encoding", "auto_vacuum", "user_version", "application_id", "journal_mode"}
+var LogicalPragmas = []string{"page_size", "encoding", "auto_vacuum", "user_version", "application_id", "journal_mode", "default_cache_size"}
 
 type SchemaRow struct {
 	Type  string
@@ -83,7 +85,7 @@ func WalkLogical(ctx context.Context, q RowsQuerier, v LogicalVisitor) error {
 }
 
 func walkSchema(ctx context.Context, q RowsQuerier, v LogicalVisitor) error {
-	rows, err := q.QueryContext(ctx, "SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type, name")
+	rows, err := q.QueryContext(ctx, "SELECT type, name, tbl_name, sql FROM main.sqlite_schema ORDER BY type, name")
 	if err != nil {
 		return fmt.Errorf("read sqlite_schema: %w", err)
 	}
@@ -131,7 +133,7 @@ func logicalTables(ctx context.Context, q RowsQuerier) ([]TableInfo, error) {
 		}
 		tables[i].Columns = columns
 		if !tables[i].WithoutRowid {
-			alias, err := rowidAlias(tables[i].Name, columns)
+			alias, err := rowidAlias(ctx, q, tables[i].Name, columns)
 			if err != nil {
 				return nil, err
 			}
@@ -142,7 +144,7 @@ func logicalTables(ctx context.Context, q RowsQuerier) ([]TableInfo, error) {
 }
 
 func tableColumns(ctx context.Context, q RowsQuerier, table string) ([]string, error) {
-	rows, err := q.QueryContext(ctx, "SELECT name FROM pragma_table_info(?) ORDER BY cid", table)
+	rows, err := q.QueryContext(ctx, "SELECT name FROM pragma_table_info(?, 'main') ORDER BY cid", table)
 	if err != nil {
 		return nil, fmt.Errorf("columns of %q: %w", table, err)
 	}
@@ -164,7 +166,7 @@ func tableColumns(ctx context.Context, q RowsQuerier, table string) ([]string, e
 	return columns, nil
 }
 
-func rowidAlias(table string, columns []string) (string, error) {
+func rowidAlias(ctx context.Context, q RowsQuerier, table string, columns []string) (string, error) {
 	used := map[string]bool{}
 	for _, c := range columns {
 		used[strings.ToLower(c)] = true
@@ -174,11 +176,40 @@ func rowidAlias(table string, columns []string) (string, error) {
 			return alias, nil
 		}
 	}
+	ipk, err := integerPrimaryKeyColumn(ctx, q, table)
+	if err != nil {
+		return "", err
+	}
+	if ipk != "" {
+		return ipk, nil
+	}
 	return "", fmt.Errorf("table %q: columns named rowid, _rowid_ and oid hide the rowid", table)
 }
 
+func integerPrimaryKeyColumn(ctx context.Context, q RowsQuerier, table string) (string, error) {
+	keys, err := primaryKeyColumns(ctx, q, table)
+	if err != nil || len(keys) != 1 {
+		return "", err
+	}
+	var declared string
+	if err := q.QueryRowContext(ctx, "SELECT type FROM pragma_table_info(?, 'main') WHERE pk = 1", table).Scan(&declared); err != nil {
+		return "", fmt.Errorf("primary key of %q: %w", table, err)
+	}
+	if !strings.EqualFold(declared, "INTEGER") {
+		return "", nil
+	}
+	var pkIndexes int
+	if err := q.QueryRowContext(ctx, "SELECT count(*) FROM pragma_index_list(?, 'main') WHERE origin = 'pk'", table).Scan(&pkIndexes); err != nil {
+		return "", fmt.Errorf("indexes of %q: %w", table, err)
+	}
+	if pkIndexes > 0 {
+		return "", nil
+	}
+	return keys[0], nil
+}
+
 func primaryKeyColumns(ctx context.Context, q RowsQuerier, table string) ([]string, error) {
-	rows, err := q.QueryContext(ctx, "SELECT name FROM pragma_table_info(?) WHERE pk > 0 ORDER BY pk", table)
+	rows, err := q.QueryContext(ctx, "SELECT name FROM pragma_table_info(?, 'main') WHERE pk > 0 ORDER BY pk", table)
 	if err != nil {
 		return nil, err
 	}
@@ -214,7 +245,7 @@ func TableSelect(ctx context.Context, q RowsQuerier, t TableInfo) (string, error
 	for _, c := range t.Columns {
 		selected = append(selected, "+"+QuoteIdentifier(c))
 	}
-	return fmt.Sprintf("SELECT %s FROM %s ORDER BY %s", strings.Join(selected, ", "), QuoteIdentifier(t.Name), strings.Join(order, ", ")), nil
+	return fmt.Sprintf("SELECT %s FROM main.%s ORDER BY %s", strings.Join(selected, ", "), QuoteIdentifier(t.Name), strings.Join(order, ", ")), nil
 }
 
 func walkTable(ctx context.Context, q RowsQuerier, t TableInfo, v LogicalVisitor) error {
@@ -285,7 +316,7 @@ func StorageClassOf(value any) (string, error) {
 
 func pragmaValue(ctx context.Context, q RowsQuerier, name string) (string, error) {
 	var value any
-	if err := q.QueryRowContext(ctx, "PRAGMA "+name).Scan(&value); err != nil {
+	if err := q.QueryRowContext(ctx, "PRAGMA main."+name).Scan(&value); err != nil {
 		return "", fmt.Errorf("PRAGMA %s: %w", name, err)
 	}
 	text := fmt.Sprint(value)
@@ -384,7 +415,7 @@ func (e streamEncoder) bytes(tag byte, b []byte) {
 
 func (e streamEncoder) text(tag byte, s string) { e.bytes(tag, []byte(s)) }
 
-func (e streamEncoder) value(value any) {
+func (e streamEncoder) value(value any) error {
 	switch x := value.(type) {
 	case nil:
 		e.tag('N')
@@ -402,13 +433,18 @@ func (e streamEncoder) value(value any) {
 		e.text('T', x)
 	case []byte:
 		e.bytes('B', x)
+	default:
+		return fmt.Errorf("value of Go type %T has no SQLite storage class", value)
 	}
+	return nil
 }
 
-func EncodeValue(value any) []byte {
-	var b strings.Builder
-	streamEncoder{&b}.value(value)
-	return []byte(b.String())
+func EncodeValue(value any) ([]byte, error) {
+	var b bytes.Buffer
+	if err := (streamEncoder{&b}).value(value); err != nil {
+		return nil, err
+	}
+	return b.Bytes(), nil
 }
 
 func LogicalHash(ctx context.Context, conn *sql.Conn) (Logical, error) {
@@ -416,7 +452,11 @@ func LogicalHash(ctx context.Context, conn *sql.Conn) (Logical, error) {
 		return Logical{}, fmt.Errorf("begin read transaction: %w", err)
 	}
 	result, err := logicalHashInTx(ctx, conn)
-	if _, endErr := conn.ExecContext(ctx, "COMMIT"); endErr != nil && err == nil {
+	end := "COMMIT"
+	if err != nil {
+		end = "ROLLBACK"
+	}
+	if _, endErr := conn.ExecContext(context.WithoutCancel(ctx), end); endErr != nil && err == nil {
 		err = fmt.Errorf("end read transaction: %w", endErr)
 	}
 	return result, err
@@ -468,7 +508,9 @@ func logicalHashInTx(ctx context.Context, conn *sql.Conn) (Logical, error) {
 				e.tag('R')
 				e.length(len(values))
 				for _, value := range values {
-					e.value(value)
+					if err := e.value(value); err != nil {
+						return err
+					}
 				}
 			}
 			return nil
@@ -508,7 +550,7 @@ func logicalHashInTx(ctx context.Context, conn *sql.Conn) (Logical, error) {
 }
 
 func integrityCheck(ctx context.Context, q RowsQuerier) (string, error) {
-	rows, err := q.QueryContext(ctx, "PRAGMA integrity_check")
+	rows, err := q.QueryContext(ctx, "PRAGMA main.integrity_check")
 	if err != nil {
 		return "", fmt.Errorf("integrity_check: %w", err)
 	}
@@ -525,7 +567,7 @@ func integrityCheck(ctx context.Context, q RowsQuerier) (string, error) {
 }
 
 func foreignKeyCheck(ctx context.Context, q RowsQuerier) ([]string, error) {
-	rows, err := q.QueryContext(ctx, "PRAGMA foreign_key_check")
+	rows, err := q.QueryContext(ctx, "PRAGMA main.foreign_key_check")
 	if err != nil {
 		return nil, fmt.Errorf("foreign_key_check: %w", err)
 	}
@@ -551,6 +593,37 @@ func foreignKeyCheck(ctx context.Context, q RowsQuerier) ([]string, error) {
 var ErrNoDatabase = errors.New("database file does not exist")
 
 func OpenExisting(ctx context.Context, path string) (*sql.DB, error) {
+	return openExisting(ctx, path, "rw")
+}
+
+func openForReading(ctx context.Context, path string) (*sql.DB, error) {
+	busy, err := HasLiveSideFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if busy {
+		return openExisting(ctx, path, "ro")
+	}
+	return openExisting(ctx, path, "rw")
+}
+
+func HasLiveSideFile(path string) (bool, error) {
+	for _, suffix := range []string{"-wal", "-journal"} {
+		info, err := os.Stat(path + suffix)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		if info.Size() > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func openExisting(ctx context.Context, path, mode string) (*sql.DB, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -561,7 +634,7 @@ func OpenExisting(ctx context.Context, path string) (*sql.DB, error) {
 	if info.IsDir() {
 		return nil, fmt.Errorf("%s is a directory", path)
 	}
-	uri, err := sqlitex.FileURI(path, url.Values{"mode": {"rw"}})
+	uri, err := sqlitex.FileURI(path, url.Values{"mode": {mode}})
 	if err != nil {
 		return nil, err
 	}
@@ -578,7 +651,7 @@ func OpenExisting(ctx context.Context, path string) (*sql.DB, error) {
 }
 
 func LogicalHashFile(ctx context.Context, path string) (Logical, error) {
-	db, err := OpenExisting(ctx, path)
+	db, err := openForReading(ctx, path)
 	if err != nil {
 		return Logical{}, err
 	}
@@ -647,6 +720,11 @@ func CompareLogical(a, b Logical) LogicalResult {
 			r.Differences = append(r.Differences, fmt.Sprintf("pragma %s %s vs %s", p.Name, p.Value, other))
 		}
 	}
+	for _, p := range b.Pragmas {
+		if _, ok := a.Pragma(p.Name); !ok {
+			r.Differences = append(r.Differences, fmt.Sprintf("pragma %s  vs %s", p.Name, p.Value))
+		}
+	}
 	if a.SHA256 != b.SHA256 && len(r.Differences) == 0 {
 		r.Differences = append(r.Differences, "logical streams differ")
 	}
@@ -656,7 +734,7 @@ func CompareLogical(a, b Logical) LogicalResult {
 	if b.Integrity != "ok" {
 		r.Differences = append(r.Differences, "integrity_check of the second: "+b.Integrity)
 	}
-	if strings.Join(a.ForeignKeyCheck, "\n") != strings.Join(b.ForeignKeyCheck, "\n") {
+	if !slices.Equal(a.ForeignKeyCheck, b.ForeignKeyCheck) {
 		r.Differences = append(r.Differences, fmt.Sprintf("foreign_key_check changed (%d vs %d rows)", len(a.ForeignKeyCheck), len(b.ForeignKeyCheck)))
 	}
 	r.Equal = len(r.Differences) == 0

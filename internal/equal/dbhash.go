@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os/exec"
 	"strings"
 
@@ -22,7 +23,18 @@ func LocateDBHash() (string, error) {
 }
 
 func RunDBHash(ctx context.Context, tool, dbPath string) (string, error) {
-	cmd := exec.CommandContext(ctx, tool, dbPath)
+	target := dbPath
+	busy, err := HasLiveSideFile(dbPath)
+	if err != nil {
+		return "", err
+	}
+	if busy {
+		target, err = sqlitex.FileURI(dbPath, url.Values{"mode": {"ro"}})
+		if err != nil {
+			return "", err
+		}
+	}
+	cmd := exec.CommandContext(ctx, tool, target)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

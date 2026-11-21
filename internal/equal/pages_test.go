@@ -92,14 +92,14 @@ func TestChangedPages(t *testing.T) {
 	before := Manifest{PageSize: 512, Entries: []ManifestEntry{{1, "table-leaf", strings.Repeat("a", 64)}, {2, "table-leaf", strings.Repeat("b", 64)}, {3, "overflow", strings.Repeat("c", 64)}}}
 	after := Manifest{PageSize: 512, Entries: []ManifestEntry{{1, "table-leaf", strings.Repeat("a", 64)}, {2, "table-interior", strings.Repeat("d", 64)}, {3, "freelist-leaf", strings.Repeat("c", 64)}, {4, "table-leaf", strings.Repeat("e", 64)}}}
 	changes := ChangedPages(before, after)
-	if got := FormatPageChanges(changes); got != "[2(table-leaf->table-interior) 3(overflow->freelist-leaf) 4(new table-leaf)]" {
+	if got := FormatPageChanges(changes); got != "[2(table-leaf->table-interior) 4(new table-leaf)]" {
 		t.Fatal(got)
 	}
-	if !changes[2].Added() || changes[0].Added() || PageNumbers(changes)[1] != 3 {
+	if !changes[1].Added() || changes[0].Added() || PageNumbers(changes)[1] != 4 {
 		t.Fatal(changes)
 	}
 	back := ChangedPages(after, before)
-	if !back[2].Removed() || back[2].String() != "4(gone, was table-leaf)" {
+	if !back[1].Removed() || back[1].String() != "4(gone, was table-leaf)" {
 		t.Fatal(back)
 	}
 	if len(ChangedPages(before, before)) != 0 {

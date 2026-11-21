@@ -47,7 +47,7 @@ func ChangedPages(before, after Manifest) []PageChange {
 	for p := range pages {
 		ea, inA := a[p]
 		eb, inB := b[p]
-		if inA && inB && ea.SHA256 == eb.SHA256 && ea.Role == eb.Role {
+		if inA && inB && ea.SHA256 == eb.SHA256 {
 			continue
 		}
 		changes = append(changes, PageChange{Page: p, RoleBefore: ea.Role, RoleAfter: eb.Role})
