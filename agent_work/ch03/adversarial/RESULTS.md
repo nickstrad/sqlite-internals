@@ -19,3 +19,15 @@ Run 1 — 2026-11-21, on the Opus build, `run-all.sh`. Raw output: `results-run1
 | EQ-09 | cancel context mid-walk during LogicalHash(ctx, conn) and immediately issue BEGIN on the same conn | cleanup ends the read transaction even when ctx is canceled, so subsequent BEGIN succeeds | hitMidWalk=true, leakedTx=true (timeout=50us lhErr=read sqlite_schema: context deadline exceeded next_BEGIN=SQL logic error: cannot start a transaction within a transaction (1)) |
 | R2-02 | R2 dump + replay + VACUUM INTO on DB with tables created in non-alphabetical order (zebra before alpha) | replayed DB is E3-equal to original AND its VACUUM INTO matches original's VACUUM INTO at E1 | E3_equal=true, VACUUM_INTO_E1_equal=false(diffPages=3), VACUUM_INTO_E2_equal=false (dump sorted tables alphabetically, changing sqlite_schema rowid order) |
 | R2-03b | R2 dump + replay on (1) TEXT containing embedded NUL byte char(0), and (2) 1-col WITHOUT ROWID table "t?"("?" TEXT PRIMARY KEY) | both valid SQLite databases round-trip cleanly and match original at E3 | embedded_NUL:(ok=false replay_err=SQL logic error: unrecognized token: "'head" (1)); col_with_qmark:(ok=false replay_err=SQL logic error: no such table: t'val' (1)) |
+
+Run 2 — after the Opus repair round (4bb8179): 22 HELD, 8 BROKEN (`results-run2.txt`).
+The repair report (`../REPAIR-REPORT.md`) says for each run-1 finding whether it was fixed or answered. Still BROKEN in run 2:
+
+- SPL-01 — random insert orders (3 fixed seeds x 250 rows of 1000-byte blobs)
+- SPL-03 — append 25 overflowing rows (5000B and 10000B > maxLocal 4061B) into a WAL table
+- SPL-05 — sequential ascending appends into a WITHOUT ROWID table (30 x 400B rows)
+- DEL-02 — DELETE 150 of 200 rows under auto_vacuum=NONE, FULL, and INCREMENTAL
+- DEL-05 — INSERT + DELETE 40 secret rows with secure_delete=ON (wal_autocheckpoint=0); inspect -wal after DELETE, after PASSIVE checkpoint, after TRUNCATE, and 
+- DEL-06 — single transaction inserting 32 x 1000B rows (~8 pages) when freelist_count > 0
+- R2-02 — R2 dump + replay + VACUUM INTO on DB with tables created in non-alphabetical order (zebra before alpha)
+- R2-03b — R2 dump + replay on (1) TEXT containing embedded NUL byte char(0), and (2) 1-col WITHOUT ROWID table "t?"("?" TEXT PRIMARY KEY)
