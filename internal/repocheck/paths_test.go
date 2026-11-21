@@ -1,6 +1,7 @@
 package repocheck
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -102,20 +103,76 @@ func TestIsPublicReference(t *testing.T) {
 }
 
 func TestMarkdownLinksAndFences(t *testing.T) {
-	links := MarkdownLinks("a [x](one.md) `[y](two.md)` [z](<three four.md>) [w](f(1).md) [v](five.md \"t\")")
-	if strings.Join(links, ",") != "one.md,f(1).md,five.md,three four.md" {
-		t.Fatalf("links = %v", links)
+	source := "a [x](one.md) `[y](two.md)` [z](<three four.md>) [w](f(1).md) [v](five.md \"t\")\n" +
+		"```go\r\n[in](fence.md)\r\n```\r\n\r\n[after](crlf.md)\n\n" +
+		"Use `` ` `` and [swallowed](swallowed.md) and `ok`.\n\n" +
+		"``use `[not](inside-code.md)` here``\n\n" +
+		"```inline``` and [after-triple](triple.md)\n\n" +
+		"     ```\n[after-indent](indent.md)\n\n" +
+		"[s](single.md 'title') [p](paren.md (title)) [m](\nmulti.md\n)\n\n" +
+		"[ok]: <has space.md>\n"
+	var got []string
+	for _, link := range MarkdownLinks([]byte(source)) {
+		got = append(got, fmt.Sprintf("%d:%s", link.Line, link.Destination))
 	}
-	var fence fenceState
-	lines := []string{"text", "````md", "```", "still code", "````", "> ```", "> quoted", "> ```", "after"}
-	var code []bool
-	for _, line := range lines {
-		code = append(code, fence.inCode(line))
+	want := "1:one.md,1:three four.md,1:f(1).md,1:five.md,6:crlf.md,8:swallowed.md,12:triple.md,15:indent.md,17:single.md,17:paren.md,17:multi.md,21:has space.md"
+	if strings.Join(got, ",") != want {
+		t.Fatalf("links = %s\nwant    %s", strings.Join(got, ","), want)
 	}
-	want := []bool{false, true, true, true, true, true, true, true, false}
-	for i := range want {
-		if code[i] != want[i] {
-			t.Fatalf("line %d %q: inCode = %v", i, lines[i], code[i])
+}
+
+func TestIsPublicReferenceRejectsDotDot(t *testing.T) {
+	for _, link := range []string{
+		"https://github.com/nickstrad/sqlite-internals/../../evil/malware",
+		"https://github.com/sqlite/sqlite/../evil/repo",
+		"https://nickstrad.github.io/sqlite-internals/../other-site/",
+		"https://gitlab.com/cznic/../evil/project",
+	} {
+		if IsPublicReference(link) {
+			t.Errorf("IsPublicReference(%q) = true", link)
 		}
+	}
+}
+
+func TestMachinePathsWithoutTrailingSlash(t *testing.T) {
+	root := strings.TrimSuffix(ForbiddenPathFragment, "/")
+	line := "cd " + root + " or HOME=/" + "home/alice or DIR=/" + "Users/bob or /" + "users/carol/src/ but not " + root + "s, a" + root + " or /home/<name>/"
+	got := strings.Join(MachinePaths(line), ",")
+	want := root + ",/" + "home/alice,/" + "Users/bob,/" + "users/carol/"
+	if got != want {
+		t.Fatalf("MachinePaths = %s, want %s", got, want)
+	}
+}
+
+func TestSweepPathsSkipsUpstreamCopiesAndDeletedFiles(t *testing.T) {
+	home := "/" + "home" + "/" + "drh" + "/"
+	repo := newGitRepo(t)
+	repo.commit("Opus", "files", map[string]string{
+		"ch04-x/SOURCES.sha256": strings.Repeat("a", 64) + "  src/pager.c\n",
+		"ch04-x/pager.c":        "** " + home + "a.db-journal https://bugzilla.example/1\n",
+		"ch04-x/mine.c":         "** " + home + "b\n",
+		"ch04-x/ch04-x.md":      "[copy](pager.c) [gone](gone.md)\n",
+		"gone.md":               "# Gone\n",
+	})
+	if err := os.Remove(filepath.Join(repo.dir, "gone.md")); err != nil {
+		t.Fatal(err)
+	}
+	sweep, err := SweepPaths(repo.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, p := range sweep.Problems {
+		got = append(got, p.String())
+	}
+	want := []string{
+		"ch04-x/ch04-x.md:1: relative link gone.md does not resolve in the repository (ch04-x/gone.md)",
+		"ch04-x/mine.c:1: mentions a machine-local path " + home + ": ** " + home + "b",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("problems:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if strings.Join(sweep.UpstreamCopies, ",") != "ch04-x/pager.c" || len(sweep.External) != 0 {
+		t.Fatalf("upstream = %v external = %v", sweep.UpstreamCopies, sweep.External)
 	}
 }

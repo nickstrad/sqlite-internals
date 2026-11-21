@@ -10,6 +10,13 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/parser"
+	"github.com/yuin/goldmark/text"
+	"github.com/yuin/goldmark/util"
 )
 
 type ExternalLink struct {
@@ -24,18 +31,22 @@ type PathSweep struct {
 	Binary            []string
 	External          []ExternalLink
 	IgnoredButTracked []string
+	UpstreamCopies    []string
 }
 
-var machinePathPattern = regexp.MustCompile(`(?:^|[^A-Za-z0-9._~-])(` + ForbiddenPathFragment + `|/home/[A-Za-z0-9._-]+/|/Users/[A-Za-z0-9._-]+/)`)
+type MarkdownLink struct {
+	Destination string
+	Line        int
+}
+
+var machinePathPattern = regexp.MustCompile(`(?:^|[^A-Za-z0-9._~-])(` + strings.TrimSuffix(ForbiddenPathFragment, "/") + `|/home/[A-Za-z0-9._-]+|/[Uu]sers/[A-Za-z0-9._-]+)(/?)`)
 
 var (
-	urlPattern           = regexp.MustCompile(`https?://[^\s<>()\[\]"'` + "`" + `|\\]+`)
-	inlineLinkPattern    = regexp.MustCompile(`\]\(\s*<?([^()\s<>]+(?:\([^()\s]*\)[^()\s<>]*)*)>?(?:\s+"[^"]*")?\s*\)`)
-	angleLinkPattern     = regexp.MustCompile(`\]\(\s*<([^<>\n]+)>(?:\s+"[^"]*")?\s*\)`)
-	referenceLinkPattern = regexp.MustCompile(`^\s{0,3}\[[^\]]+\]:\s*<?(\S+?)>?(?:\s+.*)?$`)
-	inlineCodePattern    = regexp.MustCompile("(`+)[^`]*?(`+)")
-	urlSchemePattern     = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*:`)
+	urlPattern       = regexp.MustCompile(`https?://[^\s<>()\[\]"'` + "`" + `|\\]+`)
+	urlSchemePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*:`)
 )
+
+var linkParser = goldmark.New(goldmark.WithExtensions(extension.GFM)).Parser()
 
 type publicReference struct {
 	host       string
@@ -60,12 +71,17 @@ func IsPublicReference(raw string) bool {
 		return false
 	}
 	host := strings.ToLower(u.Hostname())
+	cleanPath := u.Path
+	if cleanPath != "" {
+		cleanPath = path.Clean(cleanPath)
+	}
 	for _, ref := range PublicReferences {
 		subdomain := ref.pathPrefix == "" && strings.HasSuffix(host, "."+ref.host)
 		if host != ref.host && !subdomain {
 			continue
 		}
-		if ref.pathPrefix == "" || u.Path == ref.pathPrefix || strings.HasPrefix(u.Path, strings.TrimSuffix(ref.pathPrefix, "/")+"/") {
+		prefix := strings.TrimSuffix(ref.pathPrefix, "/")
+		if prefix == "" || cleanPath == prefix || strings.HasPrefix(cleanPath, prefix+"/") {
 			return true
 		}
 	}
@@ -86,48 +102,60 @@ func trimURL(raw string) string {
 
 func MachinePaths(line string) []string {
 	var found []string
-	for _, m := range machinePathPattern.FindAllStringSubmatch(line, -1) {
-		found = append(found, m[1])
+	for _, loc := range machinePathPattern.FindAllStringSubmatchIndex(line, -1) {
+		name, slash := line[loc[2]:loc[3]], line[loc[4]:loc[5]]
+		if slash == "" {
+			if loc[5] < len(line) && isPathNameByte(line[loc[5]]) {
+				continue
+			}
+			name = strings.TrimRight(name, ".")
+		}
+		found = append(found, name+slash)
 	}
 	return found
 }
 
-func MarkdownLinks(line string) []string {
-	stripped := inlineCodePattern.ReplaceAllString(line, "")
-	var links []string
-	for _, m := range inlineLinkPattern.FindAllStringSubmatch(stripped, -1) {
-		links = append(links, m[1])
+func isPathNameByte(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-'
+}
+
+func lineAt(starts []int, offset int) int {
+	return sort.Search(len(starts), func(i int) bool { return starts[i] > offset })
+}
+
+func MarkdownLinks(source []byte) []MarkdownLink {
+	var starts []int
+	starts = append(starts, 0)
+	for i, c := range source {
+		if c == '\n' {
+			starts = append(starts, i+1)
+		}
 	}
-	for _, m := range angleLinkPattern.FindAllStringSubmatch(stripped, -1) {
-		links = append(links, m[1])
+	ctx := parser.NewContext()
+	root := linkParser.Parse(text.NewReader(source), parser.WithContext(ctx))
+	var links []MarkdownLink
+	ast.Walk(root, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
+		}
+		switch t := n.(type) {
+		case *ast.Link:
+			links = append(links, MarkdownLink{string(t.Destination), lineAt(starts, t.Pos())})
+		case *ast.Image:
+			links = append(links, MarkdownLink{string(t.Destination), lineAt(starts, t.Pos())})
+		}
+		return ast.WalkContinue, nil
+	})
+	for _, ref := range ctx.References() {
+		definition := regexp.MustCompile(`(?im)^ {0,3}\[` + regexp.QuoteMeta(string(ref.Label())) + `\]:`)
+		line := 1
+		if loc := definition.FindIndex(source); loc != nil {
+			line = lineAt(starts, loc[0])
+		}
+		links = append(links, MarkdownLink{string(ref.Destination()), line})
 	}
-	if m := referenceLinkPattern.FindStringSubmatch(stripped); m != nil {
-		links = append(links, m[1])
-	}
+	sort.SliceStable(links, func(i, j int) bool { return links[i].Line < links[j].Line })
 	return links
-}
-
-type fenceState struct {
-	marker string
-}
-
-func (f *fenceState) inCode(line string) bool {
-	trimmed := strings.TrimLeft(line, " \t>")
-	trimmed = strings.TrimLeft(trimmed, " ")
-	if f.marker != "" {
-		if strings.HasPrefix(trimmed, f.marker) && strings.Trim(trimmed, f.marker[:1]+" \t") == "" {
-			f.marker = ""
-		}
-		return true
-	}
-	for _, fence := range []string{"```", "~~~"} {
-		if strings.HasPrefix(trimmed, fence) {
-			run := len(trimmed) - len(strings.TrimLeft(trimmed, fence[:1]))
-			f.marker = strings.Repeat(fence[:1], run)
-			return true
-		}
-	}
-	return false
 }
 
 func ResolveRelativeLink(from, link string, files, dirs map[string]bool) (string, bool) {
@@ -139,6 +167,7 @@ func ResolveRelativeLink(from, link string, files, dirs map[string]bool) (string
 	if pathPart == "" {
 		return "", true
 	}
+	pathPart = string(util.UnescapePunctuations([]byte(pathPart)))
 	if strings.HasPrefix(pathPart, "/") {
 		return pathPart, false
 	}
@@ -152,17 +181,45 @@ func ResolveRelativeLink(from, link string, files, dirs map[string]bool) (string
 	return target, target == "." || files[target] || dirs[target]
 }
 
+func upstreamCopies(root string, files []string) map[string]bool {
+	copies := map[string]bool{}
+	for _, name := range files {
+		if path.Base(name) != "SOURCES.sha256" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
+		if err != nil {
+			continue
+		}
+		entries, _ := ParseSources(string(data))
+		for _, entry := range entries {
+			copies[path.Join(path.Dir(name), path.Base(entry.Path))] = true
+		}
+	}
+	return copies
+}
+
+type numberedProblem struct {
+	line    int
+	problem Problem
+}
+
 func SweepPaths(root string) (PathSweep, error) {
 	var sweep PathSweep
-	files, err := TrackedFiles(root)
+	tracked, err := TrackedFiles(root)
 	if err != nil {
 		return sweep, err
 	}
+	var files []string
 	fileSet := map[string]bool{}
 	dirSet := map[string]bool{}
-	for _, name := range files {
+	for _, name := range tracked {
+		if _, err := os.Lstat(filepath.Join(root, filepath.FromSlash(name))); err != nil {
+			continue
+		}
+		files = append(files, name)
 		fileSet[name] = true
-		for dir := path.Dir(name); dir != "."; dir = path.Dir(dir) {
+		for dir := path.Dir(name); dir != "." && dir != "/"; dir = path.Dir(dir) {
 			dirSet[dir] = true
 		}
 	}
@@ -173,15 +230,17 @@ func SweepPaths(root string) (PathSweep, error) {
 			}
 		}
 	}
+	copies := upstreamCopies(root, files)
 	external := map[string]*ExternalLink{}
 	for _, name := range files {
 		if hasPathPrefix(name, PathSweepExclude) {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
-		if os.IsNotExist(err) {
+		if copies[name] {
+			sweep.UpstreamCopies = append(sweep.UpstreamCopies, name)
 			continue
 		}
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
 		if err != nil {
 			return sweep, err
 		}
@@ -190,13 +249,13 @@ func SweepPaths(root string) (PathSweep, error) {
 			continue
 		}
 		sweep.Checked++
-		markdown := strings.HasSuffix(name, ".md")
 		reportExternal := !strings.HasSuffix(name, "_test.go")
-		var fence fenceState
+		var found []numberedProblem
 		for i, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSuffix(line, "\r")
 			where := fmt.Sprintf("%s:%d", name, i+1)
-			if found := MachinePaths(line); len(found) > 0 {
-				sweep.Problems = append(sweep.Problems, Problem{where, "mentions a machine-local path " + strings.Join(found, ", ") + ": " + strings.TrimSpace(line)})
+			if paths := MachinePaths(line); len(paths) > 0 {
+				found = append(found, numberedProblem{i + 1, Problem{where, "mentions a machine-local path " + strings.Join(paths, ", ") + ": " + strings.TrimSpace(line)}})
 			}
 			for _, raw := range urlPattern.FindAllString(line, -1) {
 				link := trimURL(raw)
@@ -209,14 +268,22 @@ func SweepPaths(root string) (PathSweep, error) {
 					external[link] = &ExternalLink{URL: link, Where: where, Count: 1}
 				}
 			}
-			if !markdown || fence.inCode(line) {
-				continue
-			}
-			for _, link := range MarkdownLinks(line) {
-				if target, ok := ResolveRelativeLink(name, link, fileSet, dirSet); !ok {
-					sweep.Problems = append(sweep.Problems, Problem{where, fmt.Sprintf("relative link %s does not resolve in the repository (%s)", link, target)})
+		}
+		if strings.HasSuffix(name, ".md") {
+			reported := map[string]bool{}
+			for _, link := range MarkdownLinks(data) {
+				target, ok := ResolveRelativeLink(name, link.Destination, fileSet, dirSet)
+				if ok || reported[link.Destination] {
+					continue
 				}
+				reported[link.Destination] = true
+				where := fmt.Sprintf("%s:%d", name, link.Line)
+				found = append(found, numberedProblem{link.Line, Problem{where, fmt.Sprintf("relative link %s does not resolve in the repository (%s)", link.Destination, target)}})
 			}
+		}
+		sort.SliceStable(found, func(i, j int) bool { return found[i].line < found[j].line })
+		for _, p := range found {
+			sweep.Problems = append(sweep.Problems, p.problem)
 		}
 	}
 	for _, entry := range external {

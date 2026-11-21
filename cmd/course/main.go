@@ -28,7 +28,8 @@ commands:
   check prose <base>..<head>           verify every comment and chapter line was written by the prose author
   check evidence [chNN] [-runs N]      run each experiment N times and compare with its evidence file
   check gofmt                          verify tracked Go files are gofmt-formatted
-  check paths                          verify no tracked file mentions a machine-local path
+  check paths                          verify no tracked file mentions a machine-local path or has an
+                                       unresolved relative markdown link; list external links
   check all [-runs N] [-skip-evidence] every check that needs no revisions
   site [-out DIR] [-base PATH] [-repo URL] [-branch NAME] [-check]
                                        render the book as a static site (or with -check, verify its links)
