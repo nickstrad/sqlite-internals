@@ -84,3 +84,11 @@ reverted because `connmgr.go` is inlined in chapter 8; `walship/shipper.go` is i
 - All nodes share one catalog file on one machine; no leases or automatic takeover.
 - The lab-container route and darwin were not run (darwin cross-built and cross-vetted only).
 - `faultstore`'s put faults are unit-tested but not used by 10.1 (they are for 10.2–10.4).
+
+## Pre-existing failure seen (not caused by this chunk)
+
+`go run ./cmd/course check all -skip-evidence` on this branch reports `inline -check` failures in
+ch02 (`internal/dbfile/record.go`, `internal/equal/equal.go`, `internal/capture/capture.go`) and
+ch06 (`internal/procs/sqlrole.go`). This branch changes none of those files (its diff against main
+5495d45 is new files only), so they come from main. With `$SQLITE_SRC` set, `check sources` and
+`check spans` pass for every chapter.
