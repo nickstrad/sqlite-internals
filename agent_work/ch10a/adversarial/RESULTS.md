@@ -14,3 +14,8 @@ Run 1 — 2026-11-21, on the Opus build, `run-all.sh`. Raw output: `results-run1
 | CAT-03b | node.Start with belief file containing 'epoch 0\n' (invalid ownership epoch) | node.Start rejects epoch 0 belief file with an error | startErr=<nil> ownedZero=true(epoch=0) |
 | CAT-04b | cleanly close node, tamper db-restart.db offline, restart node, then Write(StoreDurable) | restarted node detects offline tamper (ErrChangedWhileShut) rather than publishing tampered data to S3 | writeErr=recipe step 2 statement 0 (INSERT INTO accounts(id, name, balance) VALUES(?, ?, ?)): constraint failed: UNIQUE constraint failed: accounts.id (1555) ackPos=0 slots=3 tamperPublishedToS3=true |
 | CAT-05b | 180 in-place 256 KiB StoreDurable UPDATEs on 1 tiny open DB (K=1, limit 34 MiB) + bounds must-fail check | memory stays <= MemoryLimit (34 MiB) on 1 tiny DB and tight-limit control returns ErrExceeded | dbFileKiB=276 peakRSS=74MiB/34MiB memExceeded=6(err=bounds exceeded: 0 descriptors above the baseline (limit 41), memory growth 37945344 bytes (limit 35913728)) mustFailDetected=true |
+
+Run 2 — after the Opus repair round (cfceace): 26 HELD, 1 BROKEN (`results-run2.txt`).
+The repair report (`../REPAIR-REPORT.md`) says for each run-1 finding whether it was fixed or answered. Still BROKEN in run 2:
+
+- MOD-05b — probe model bound '5 local commits per node': A commits 4 writes (pos 2..5), B fences at 6 and tries its 1st write
