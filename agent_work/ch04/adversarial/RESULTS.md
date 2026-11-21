@@ -17,3 +17,17 @@ Run 1 — 2026-11-20, on the Opus build with Neon's comments, `run-all.sh`. Raw 
 | CAC-01c | run Experiment 4.2 with small negative -cache-size -50 (-n 16 -k 8 -rows 200) | Experiment 4.2 Part D bounded-pool check (<= K*full*1.01) holds for small cache_size | exit=1 failed=check FAILED: process memory grows linearly with open connections: growth per open connection at 16 is within -20%/+25% of that at 8 |
 | CAC-02a | PRAGMA shrink_memory invoked ONLY on idle connection 1 (0 cached pages) while 15 other connections hold 7712 pages | per SQLite PRAGMA docs (connection-scoped): other connections' caches stay intact (conn16=1004, sum=7712) | sumPages 7712->0 conn16 1004->0 (conn1 was 0); RSS growth 65.8 MiB->14.2 MiB |
 | CAC-04 | full-table scan with PRAGMA mmap_size=4x file size while all 500 leaf pages sit in uncheckpointed -wal | per unqualified 4.2 Part E: mmap covering the file keeps CACHE_USED near zero (<5% of unmapped) | unmapped=502p mappedWithUncheckpointedWAL=501p mappedAfterCheckpoint=2p partialHalfMmap=253p |
+
+Run 2 — after the Opus repair round (5319cce): 21 HELD, 10 BROKEN (`results-run2.txt`).
+The repair report (`../REPAIR-REPORT.md`) says for each run-1 finding whether it was fixed or answered. Still BROKEN in run 2:
+
+- JRN-04 — 55-page UPDATE with cache_size=10 (synchronous=FULL), killed BEFORE COMMIT to trigger pagerStress spill
+- RCM-03a — 25-row UPDATE with cache_size=6 (spilling via pagerStress) at synchronous=FULL and NORMAL
+- RCM-06 — shrinking auto_vacuum=FULL DELETE (no freelist) killed at db-page, journal-unlink, db-truncate, and step-returned
+- CAC-01a — tiny (0, 1, 2, 10, -1, -10) and huge (1000000, -1000000) PRAGMA cache_size on 1004-page WAL DB
+- CAC-01c — run Experiment 4.2 with small negative -cache-size -50 (-n 16 -k 8 -rows 200)
+- CAC-02a — PRAGMA shrink_memory invoked ONLY on idle connection 1 (0 cached pages) while 15 other connections hold 7712 pages
+- CAC-04 — full-table scan with PRAGMA mmap_size=4x file size while all 500 leaf pages sit in uncheckpointed -wal
+- SCL-03 — 1,000 distinct WAL files visited through K=16 LRU pool (cache_size=-256 KiB, 984 evictions)
+- SCL-05 — 1,000 open connections with PRAGMA mmap_size=835584 (2x file) on 1,000 distinct files vs 1 file
+- SCL-07 — second round-robin scan across 16 open WAL connections (cache_size=-2000, full=482p, nMax=483p)
