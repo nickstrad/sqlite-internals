@@ -45,6 +45,10 @@ Rulings applied (details: OUTLINE.md section 8):
     `locking_mode=EXCLUSIVE` breaks "the writer never blocks readers".
   - Chapter 7: WAL holds. Care points: a custom VFS must implement the shared-memory methods
     (io_methods version 2) or `journal_mode=wal` silently stays `delete`.
+  - Chapter 9: WAL holds; no experiment runs in rollback mode. WAL allows live capture
+    without stopping the writer (9.1) and segment shipping (9.4). Recorded conditions: at
+    `synchronous=NORMAL` a power cut loses the commits since the last checkpoint (FULL loses
+    none); `VACUUM INTO` of a WAL database yields a rollback-mode file.
   - Chapter 8: WAL holds, with measured costs and conditions: 3 descriptors per idle connection
     instead of 1, and a closed WAL database is NOT a single file at rest in five cases (another
     process has it open, a statement left open, a killed writer, persist-WAL, a rename while
@@ -96,23 +100,25 @@ Where each open chunk stands (worktrees `../sqlite-internals-work/<name>`, branc
 `chunk/<name>`; chain logs `sqlite-p2-<name>-chainA.log` / `-chainB.log` in the run directory;
 a finished part A leaves `sqlite-p2-<name>.stageA`, a finished part B `sqlite-p2-<name>-accept.txt`):
 
-| Chunk | State (2026-11-21 03:00 UTC) |
+| Chunk | State (2026-11-21 03:45 UTC) |
 | --- | --- |
 | 3 chapter 3 | done | Neon NITS → one Opus repair → PASS | 30 held / 0 broken after repair (run 1: 14 broken) | merged 4e1e290 |
 | 6 chapter 6 | done | Neon FAIL → one Opus repair → PASS | 49 held / 0 broken after repair (run 1: 6 broken) | merged e4af9e0 |
 | 8 chapter 8 | done | Neon FAIL → one Opus repair → PASS | 29 held / 0 broken after repair (run 1: 9 broken) | merged 3f54929 |
 | 9 chapter 9 | done | Neon FAIL → one Opus repair → NITS | 40 held / 0 broken after repair (run 1: 5 broken) | merged a64e85e |
-| 10a, 10b | 10a builds from main once 9 has landed; 10b after 10a's part A |
-| pub | part A: review FAIL, run 1 24 broken; Opus repair running; part B (Neon writes README as the book home + comments) and landing come last, after the self-contained sweep |
+| 10a | Opus build running (worktree ch10a, cut from main a64e85e+) |
+| 10b | builds after 10a's part A |
+| pub | review 1 FAIL → repair → review 2 FAIL (new blocker in `internal/site/check.go`) → arbitration by Muse Wonder Full: FAIL STANDS (`agent_work/pub/ARBITRATION.md` on the branch) → Opus repair round 2 scoped to the arbiter's checklist running, then Neon re-review 3 (`agent_work/orch/pub-round2.sh`, result in `sqlite-p2-pub.stageA2`); part B (Neon writes README as the book home + comments) and landing come last, after the self-contained sweep |
 | 1 closing rewrite | done (66fca8e, merged) |
 | 4 chapter 4 | done | Neon FAIL → one Opus repair → NITS | 32 held / 0 broken after repair (run 1: 12 broken) | merged f500664 |
 | 2 closing rewrite | done (dd5a9b4, merged) |
 
-Closing prose record (commit of each chapter's closing Neon pass): chapter 5 — 394203d (single late prose pass); chapter 7 — c645979 (closing rewrite); chapter 3 — e71fa8c (single late prose pass); chapter 4 — a9fff51 (closing rewrite); chapter 6 — d394e64 and chapter 8 — dfd1dfd (single late prose passes); chapter 3 — e71fa8c (single late prose pass); chapter 4 — a9fff51 (closing rewrite); chapter 6 — d394e64 and chapter 8 — dfd1dfd (single late prose passes); chapter 1 — 66fca8e and chapter 2 — dd5a9b4 (retroactive closing rewrites, merged on main).
+Closing prose record (commit of each chapter's closing Neon pass): chapter 5 — 394203d (single late prose pass); chapter 7 — c645979 (closing rewrite); chapter 3 — e71fa8c (single late prose pass); chapter 4 — a9fff51 (closing rewrite); chapter 6 — d394e64, chapter 8 — dfd1dfd and chapter 9 — b58a1a0 (single late prose passes); chapter 3 — e71fa8c (single late prose pass); chapter 4 — a9fff51 (closing rewrite); chapter 6 — d394e64, chapter 8 — dfd1dfd and chapter 9 — b58a1a0 (single late prose passes); chapter 1 — 66fca8e and chapter 2 — dd5a9b4 (retroactive closing rewrites, merged on main).
 
-Next steps, in order: land 9 when its chain finishes (each branch merges main before
-its part B); run part A for 6 and 8; closing rewrites for 1 and 2; build 10a and 10b; chain 9,
-10a, 10b; then pub, the self-contained sweep, and the done file.
+Next steps, in order: 10a build → part A (review, attacks, repair, re-review; 10a has no
+chapter text, so its part B is comments only and it lands on that); 10b build → part A → part B
+(chapter 10 text); then pub part B, the self-contained sweep, landing pub (this publishes the
+site), and the done file. Each branch merges main before its part B.
 
 Open decisions / blockers:
 - Neon spend: the direct Gemini route has $125 prepay (added 2026-11-20) under a $100 monthly

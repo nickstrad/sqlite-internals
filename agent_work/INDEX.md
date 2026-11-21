@@ -70,6 +70,13 @@ Per-chunk working scripts are indexed in `agent_work/chNN/INDEX.md`; adversarial
 | `verify/crossbuild.sh` | linux build+vet+test, darwin/arm64 and darwin/amd64 build+vet, gofmt | all (ruling 4) | Opus builder chunk 0, 2026-11-20 | Run at every chunk acceptance |
 | `probes/vfs-viability/` | Is a custom VFS possible on modernc v1.60.1 without cgo? | 7 | Opus builder chunk 0, 2026-11-20 | Yes: writable forwarding VFS in pure Go; read-only `fs.FS` VFS; see RESULT.md |
 | `probes/seaweedfs-s3/` | SeaweedFS 4.48 S3 semantics (conditional put, listing, read-after-write) and Go client choice | 10 | Opus builder chunk 0, 2026-11-20 | See RESULT.md; aws-sdk-go-v2 chosen |
+| `orch/lib.sh` | Shared helpers for the chain scripts: wait for a run with a deadline, re-dispatch a failed run once, run an adversarial suite and keep its raw output | all | Fable orchestrator, 2026-11-21 | Used by stageA.sh, stageB.sh and pub-round2.sh |
+| `orch/stageA.sh` | Chain part A under the late-prose ordering: Neon review + Neon adversarial → run 1 → one Opus repair → run 2 → Neon re-review and attack alignment → run 3 | 3, 4, 5, 6, 8, 9, 10a, 10b, pub | Fable orchestrator, 2026-11-21 | Each chunk's result line is in STATE.md's chunk table |
+| `orch/stageB.sh` | Chain part B: Neon's closing prose (`late` = the single prose pass, `closing` = closing rewrite of an existing chapter), commit under Neon's name, then the acceptance gate | all chapters | Fable orchestrator, 2026-11-21 | Every chapter's closing prose commit is listed in STATE.md |
+| `orch/status.sh` | One line per chunk: part A result, gate result, runs still alive | all | Fable orchestrator, 2026-11-21 | Orchestrator's view while chains run |
+| `orch/pub-round2.sh` | Publishing chunk after arbitration: Opus repair round 2 → adversarial run 4 → Neon re-review 3 → run 5 | pub | Fable orchestrator, 2026-11-21 | Review 3 NITS; 48 held / 0 broken |
+| `orch/accept.sh`, `finalize.sh`, `land.sh`, `repair.sh`, `rereview.sh`, `neon-trio.sh`, `post-neon.sh` | Acceptance gate; landing (merge, build and test the merged tree, knowledge entry, STATE row, push); the old-ordering chain steps used for chunks 0, 1, 2, 7 | all | Fable orchestrator, 2026-11-20/21 | land.sh refuses a merge whose tree does not build and test |
+| `neon/probe.sh` | Is any Neon route usable right now (needs OpenCode on PATH) | all | Fable orchestrator, 2026-11-20 | Direct route available since 2026-11-20 23:30 UTC |
 
 ## Per-chunk working files
 

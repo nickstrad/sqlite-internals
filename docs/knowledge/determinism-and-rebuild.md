@@ -474,7 +474,7 @@ No acknowledged commit was ever lost, **including with `synchronous=OFF`**. Comm
   parameter command). That estimate is **UNVERIFIED**.
 - `test_vfs.c` (1697 lines) and `test_devsym.c` are also Tcl-bound test VFSes.
 
-**Feasible on this VM:**
+**Feasible on the test machine (Linux amd64):**
 
 - **(1) A VFS shim that buffers writes until `xSync`,** then on a simulated "power cut" discards
   or tears unsynced writes and exits. Courses can write this in C via cgo, or in pure Go with a

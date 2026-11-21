@@ -2433,6 +2433,41 @@ func DecodeText(raw []byte, encoding uint32) (string, error) {
 	}
 	return "", fmt.Errorf("unknown text encoding %d", encoding)
 }
+
+// RecordColumn returns the byte offset, byte length, and serial type of 0-based
+// column within an SQLite binary record payload without decoding the values.
+// Callers use it to locate exact column bytes inside a leaf cell (for example,
+// to flip one payload byte in Experiment 9.3).
+func RecordColumn(payload []byte, column int) (start, length int, serialType uint64, err error) {
+	headerSize, n, err := Varint(payload)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("record header size: %w", err)
+	}
+	if headerSize < uint64(n) || headerSize > uint64(len(payload)) {
+		return 0, 0, 0, fmt.Errorf("record header size %d is outside %d..%d", headerSize, n, len(payload))
+	}
+	header := payload[n:headerSize]
+	start = int(headerSize)
+	for i := 0; len(header) > 0; i++ {
+		t, used, err := Varint(header)
+		if err != nil {
+			return 0, 0, 0, fmt.Errorf("record column %d serial type: %w", i, err)
+		}
+		header = header[used:]
+		size, err := SerialTypeLength(t)
+		if err != nil {
+			return 0, 0, 0, fmt.Errorf("record column %d: %w", i, err)
+		}
+		if i == column {
+			if start+size > len(payload) {
+				return 0, 0, 0, fmt.Errorf("record column %d ends at %d, past the %d-byte payload", i, start+size, len(payload))
+			}
+			return start, size, t, nil
+		}
+		start += size
+	}
+	return 0, 0, 0, fmt.Errorf("record has no column %d", column)
+}
 ```
 
 `record.go` decodes SQLite binary records (`DecodeRecord`, `DecodeValue`), mapping every serial type per `sqlite3VdbeSerialGet` ([`src/vdbeaux.c:4123-4214`](https://github.com/sqlite/sqlite/blob/version-3.53.4/src/vdbeaux.c#L4123-L4214)). It sign-extends big-endian 1-, 2-, 3-, 4-, 6-, and 8-byte integers, converts IEEE `NaN` floats to `NULL`, rejects reserved serial types `10` and `11`, and decodes UTF-8, UTF-16le, and UTF-16be strings (`DecodeText`).
@@ -2989,6 +3024,10 @@ type Level int
 const (
 	// E1Bytes checks exact byte-for-byte equality via SHA-256 and locates the first differing page.
 	E1Bytes Level = 1
+	// E2Pages compares every page while ignoring a declared list of volatile header byte ranges.
+	E2Pages Level = 2
+	// E3Logical hashes schema, rows (with explicit rowids and storage classes), and persistent pragmas.
+	E3Logical Level = 3
 )
 
 // String returns the human-readable label for equality level l.
@@ -2996,12 +3035,17 @@ func (l Level) String() string {
 	switch l {
 	case E1Bytes:
 		return "E1 bytes"
+	case E2Pages:
+		return "E2 pages"
+	case E3Logical:
+		return "E3 logical"
 	}
 	return fmt.Sprintf("E%d", int(l))
 }
 
 // Result summarizes the outcome of comparing two database images or files at a
-// given Level, including both SHA-256 digests, sizes, and differing-page counts.
+// given Level, including both SHA-256 digests, sizes, differing-page counts,
+// and (for E2Pages) any ignored header byte ranges and differing offsets within them.
 type Result struct {
 	Level              Level
 	Equal              bool
@@ -3012,10 +3056,15 @@ type Result struct {
 	PageSize           int
 	FirstDifferingPage int
 	DifferingPages     int
+	Ignored            []ByteRange
+	IgnoredDiffering   []int
 }
 
 // String formats r as a single-line equality verdict for experiment output.
 func (r Result) String() string {
+	if r.Equal && len(r.IgnoredDiffering) > 0 {
+		return fmt.Sprintf("%s: equal ignoring header bytes %s (bytes differ only at %s)", r.Level, FormatRanges(r.Ignored), formatOffsets(r.IgnoredDiffering))
+	}
 	if r.Equal {
 		return fmt.Sprintf("%s: equal (sha256 %s)", r.Level, r.SHA256A)
 	}
@@ -3689,6 +3738,29 @@ func checkRebuilt(path string, m equal.Manifest) error {
 		return &PageError{Page: diff.FirstDifferingPage, Problem: "the manifest disagrees with the rebuilt file's census: " + diff.Reason}
 	}
 	return nil
+}
+
+// VerifyImage hashes every page of a raw database image against manifest m and
+// returns the 1-based page numbers whose SHA-256 differs. Unlike BuildManifest,
+// it performs no B-tree or header parsing, so it can identify damaged pages in
+// a structurally corrupt file without failing the census first.
+func VerifyImage(m equal.Manifest, image []byte) ([]int, error) {
+	if m.PageSize <= 0 {
+		return nil, fmt.Errorf("manifest page size %d", m.PageSize)
+	}
+	if err := m.CheckSequence(); err != nil {
+		return nil, err
+	}
+	if len(image) != m.PageCount()*m.PageSize {
+		return nil, fmt.Errorf("image is %d bytes, the manifest lists %d pages of %d bytes", len(image), m.PageCount(), m.PageSize)
+	}
+	var differing []int
+	for i, entry := range m.Entries {
+		if equal.SHA256Hex(image[i*m.PageSize:(i+1)*m.PageSize]) != entry.SHA256 {
+			differing = append(differing, entry.Page)
+		}
+	}
+	return differing, nil
 }
 ```
 

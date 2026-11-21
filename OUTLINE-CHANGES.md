@@ -157,6 +157,5 @@ New:
 - 16\. No custom VFS is built. Does the platform plan include one?
 - 17\. Comments in Astra's working scripts stay Astra's; Neon writes chapter text and experiment-code comments.
 
-Operational, unchanged: the Claude sign-in on this VM ends between 2026-11-25 and 2026-11-28.
-New: Neon's OpenRouter budget ($44.26 left on 2026-11-20, resets 2026-12-01) should be measured
-against one prose pass before Phase 2 wave 2.
+New: the cost of one Neon prose pass should be measured against the API budget before Phase 2
+wave 2.
