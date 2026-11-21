@@ -11,6 +11,8 @@ import (
 
 const ProcLocksPath = "/proc/locks"
 
+const NoInodeField = "<none>:0"
+
 var ErrProcLocksFormat = errors.New("procs: malformed /proc/locks line")
 
 type ProcLock struct {
@@ -90,19 +92,19 @@ func ParseProcLockLine(line string) (ProcLock, error) {
 		return bad(fmt.Sprintf("want 7 fields after the id, got %d", len(rest)))
 	}
 	switch rest[0] {
-	case "POSIX", "OFDLCK", "FLOCK", "ACCESS", "LEASE", "DELEG":
+	case "POSIX", "OFDLCK", "FLOCK", "ACCESS", "LEASE", "DELEG", "UNKNOWN":
 		lock.Class = rest[0]
 	default:
 		return bad("class")
 	}
 	switch rest[1] {
-	case "ADVISORY", "MANDATORY", "ACTIVE", "BREAKING", "BREAKER", "*NOINODE*":
+	case "ADVISORY", "MANDATORY", "ACTIVE", "BREAKING", "BREAKER", "*NOINODE*", "MSNFS", "UNKNOWN":
 		lock.Mode = rest[1]
 	default:
 		return bad("mode")
 	}
 	switch rest[2] {
-	case "READ", "WRITE", "UNLCK", "RW":
+	case "READ", "WRITE", "UNLCK", "RW", "NONE":
 		lock.Type = rest[2]
 	default:
 		return bad("type")
@@ -112,6 +114,9 @@ func ParseProcLockLine(line string) (ProcLock, error) {
 		return bad("pid")
 	}
 	lock.Pid = pid
+	if rest[4] == NoInodeField {
+		return parseLockRange(lock, rest[5], rest[6], bad)
+	}
 	device := strings.Split(rest[4], ":")
 	if len(device) != 3 {
 		return bad("device and inode")
@@ -129,21 +134,25 @@ func ParseProcLockLine(line string) (ProcLock, error) {
 		return bad("inode")
 	}
 	lock.DevMajor, lock.DevMinor, lock.Inode = uint32(major), uint32(minor), inode
-	start, err := strconv.ParseInt(rest[5], 10, 64)
+	return parseLockRange(lock, rest[5], rest[6], bad)
+}
+
+func parseLockRange(lock ProcLock, startField, endField string, bad func(string) (ProcLock, error)) (ProcLock, error) {
+	start, err := strconv.ParseInt(startField, 10, 64)
 	if err != nil || start < 0 {
 		return bad("start")
 	}
 	lock.Start = start
-	if rest[6] == "EOF" {
+	if endField == "EOF" {
 		lock.ToEOF = true
 		lock.End = math.MaxInt64
-	} else {
-		end, err := strconv.ParseInt(rest[6], 10, 64)
-		if err != nil || end < start {
-			return bad("end")
-		}
-		lock.End = end
+		return lock, nil
 	}
+	end, err := strconv.ParseInt(endField, 10, 64)
+	if err != nil || end < start {
+		return bad("end")
+	}
+	lock.End = end
 	return lock, nil
 }
 

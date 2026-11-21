@@ -440,8 +440,8 @@ func (s copierSession) copyRange(ctx context.Context, args []string) (string, er
 	if start > end {
 		start = end
 	}
-	buffer := make([]byte, end-start)
-	if _, err := in.ReadAt(buffer, start); err != nil && !errors.Is(err, io.EOF) {
+	buffer, err := readRange(in, start, end)
+	if err != nil {
 		return "", err
 	}
 	out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE, 0o644)
@@ -455,5 +455,14 @@ func (s copierSession) copyRange(ctx context.Context, args []string) (string, er
 	if err := out.Close(); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("bytes %d-%d", start, end), nil
+	return fmt.Sprintf("bytes %d-%d", start, start+int64(len(buffer))), nil
+}
+
+func readRange(in io.ReaderAt, start, end int64) ([]byte, error) {
+	buffer := make([]byte, end-start)
+	n, err := in.ReadAt(buffer, start)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	return buffer[:n], nil
 }

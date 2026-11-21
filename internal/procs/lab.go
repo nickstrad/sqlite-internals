@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 )
+
+const StillWaitingWindow = 250 * time.Millisecond
 
 type Lab struct {
 	Out      io.Writer
@@ -74,12 +77,12 @@ func (l *Lab) Begin(child *Child, action string, args ...string) *Call {
 }
 
 func (l *Lab) StillWaiting(call *Call) bool {
-	answered, err := call.Answered()
+	answered, err := call.AnsweredWithin(StillWaitingWindow)
 	if err != nil {
 		l.Fatal("poll", err)
 	}
 	request := call.Request()
-	state := "no answer yet"
+	state := fmt.Sprintf("no answer after %v", StillWaitingWindow)
 	if answered {
 		state = "already answered"
 	}
@@ -108,7 +111,29 @@ func (l *Lab) PidName(pid int) string {
 	return "another process"
 }
 
-func (l *Lab) Locks(label, path string, ranges []LockRange) []RangeState {
+type LockView struct {
+	Ranges     []RangeState
+	Proc       []ProcLock
+	ProcListed bool
+}
+
+func (v LockView) ProcHolders(name string) map[int]string {
+	holders := map[int]string{}
+	for _, s := range v.Ranges {
+		if s.Range.Name != name {
+			continue
+		}
+		last := s.Range.Start + s.Range.Length - 1
+		for _, lock := range v.Proc {
+			if lock.Start <= s.Range.Start && (lock.ToEOF || lock.End >= last) {
+				holders[lock.Pid] = lock.Type
+			}
+		}
+	}
+	return holders
+}
+
+func (l *Lab) Locks(label, path string, ranges []LockRange) LockView {
 	states, err := ProbeRanges(path, ranges)
 	if err != nil {
 		l.Fatal("probe locks", err)
@@ -117,13 +142,15 @@ func (l *Lab) Locks(label, path string, ranges []LockRange) []RangeState {
 	for _, line := range FormatRangeStates(states, l.PidName) {
 		fmt.Fprintf(l.Out, "    %s\n", line)
 	}
+	view := LockView{Ranges: states}
 	if ProcLocksSupported {
-		l.procLocks(label, path, ranges)
+		view.Proc = l.procLocks(label, path, ranges)
+		view.ProcListed = true
 	}
-	return states
+	return view
 }
 
-func (l *Lab) procLocks(label, path string, ranges []LockRange) {
+func (l *Lab) procLocks(label, path string, ranges []LockRange) []ProcLock {
 	inode, err := FileInode(path)
 	if err != nil {
 		l.Fatal("inode", err)
@@ -138,15 +165,17 @@ func (l *Lab) procLocks(label, path string, ranges []LockRange) {
 		names[child.Pid] = child.Name
 		pids[child.Pid] = true
 	}
-	lines := DescribeProcLocks(FilterProcLocks(all, inode, pids), names, ranges)
+	mine := FilterProcLocks(all, inode, pids)
+	lines := DescribeProcLocks(mine, names, ranges)
 	if len(lines) == 0 {
 		fmt.Fprintf(l.Out, "  %s locks in %s: none\n", label, ProcLocksPath)
-		return
+		return mine
 	}
 	fmt.Fprintf(l.Out, "  %s locks in %s:\n", label, ProcLocksPath)
 	for _, line := range lines {
 		fmt.Fprintf(l.Out, "    %s\n", line)
 	}
+	return mine
 }
 
 func StateOf(states []RangeState, name string) (LockHolder, bool) {

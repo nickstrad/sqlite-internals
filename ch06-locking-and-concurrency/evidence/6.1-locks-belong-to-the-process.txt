@@ -2,7 +2,7 @@ sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aac
 INFO: work dir _work/6.1, GOOS linux
 
 == A. rollback mode (journal_mode=delete): the write lock is a byte-range lock on the database file
-INFO: holder pid 1954533, contender pid 1954540
+INFO: holder pid 2214257, contender pid 2214263
 step  1  holder     begin immediate                      -> SQLITE_OK
 step  2  holder     exec INSERT INTO lab VALUES (1, 'holder') -> SQLITE_OK
   database file locks (fcntl F_GETLK from the parent):
@@ -13,6 +13,8 @@ step  2  holder     exec INSERT INTO lab VALUES (1, 'holder') -> SQLITE_OK
     holder     POSIX READ  1073741826-1073742335 SHARED
     holder     POSIX WRITE 1073741825            RESERVED
 check ok: the holder's open write transaction is a write lock on the RESERVED byte and a read lock on the SHARED range of the database file
+check ok: /proc/locks: the RESERVED byte is write-locked by the holder alone
+check ok: /proc/locks: the SHARED range is read-locked by the holder alone; the contender, with no transaction, holds nothing
 step  3  contender  begin immediate                      -> SQLITE_BUSY (5)
 check ok: a second process is refused the write lock: BEGIN IMMEDIATE returns SQLITE_BUSY (5)
 step  4  holder     stray-close db                       -> SQLITE_OK
@@ -22,6 +24,7 @@ step  4  holder     stray-close db                       -> SQLITE_OK
     SHARED             bytes 1073741826-1073742335 unlocked
   database file locks in /proc/locks: none
 check ok: after the holder opened and closed the database file with os.Open, none of its locks remain
+check ok: /proc/locks: neither process holds any lock on the database file
 step  5  holder     query SELECT count(*) FROM lab       -> SQLITE_OK 1
 check ok: the holder still sees its uncommitted row: as far as SQLite knows, its write transaction is intact
 step  6  contender  begin immediate                      -> SQLITE_OK
@@ -35,6 +38,7 @@ step  7  contender  exec INSERT INTO lab VALUES (2, 'contender') -> SQLITE_OK
     contender  POSIX READ  1073741826-1073742335 SHARED
     contender  POSIX WRITE 1073741825            RESERVED
 check ok: the RESERVED byte is now write-locked by the second process
+check ok: /proc/locks: the SHARED range is read-locked by the second process only; the holder, mid-transaction, holds no lock at all
 step  8  contender  commit                               -> SQLITE_OK
 check ok: the second process commits: its COMMIT returns SQLITE_OK
 step  9  holder     commit                               -> SQLITE_IOERR_DELETE_NOENT (5898)
@@ -43,7 +47,7 @@ after both processes closed: integrity_check ok; 1 row(s): holder
 check ok: the file passes integrity_check but holds only the holder's row: the commit that returned SQLITE_OK is lost
 
 == B. WAL mode: the write lock is a byte-range lock on the -shm file
-INFO: holder pid 1954551, contender pid 1954557
+INFO: holder pid 2214291, contender pid 2214298
 step 10  holder     begin immediate                      -> SQLITE_OK
 step 11  holder     exec INSERT INTO lab VALUES (1, 'holder') -> SQLITE_OK
   -shm locks (fcntl F_GETLK from the parent):
@@ -69,7 +73,10 @@ step 11  holder     exec INSERT INTO lab VALUES (1, 'holder') -> SQLITE_OK
     contender  POSIX READ  1073741826-1073742335 SHARED
     holder     POSIX READ  1073741826-1073742335 SHARED
 check ok: the holder's write transaction is a write lock on -shm byte 120 (WAL_WRITE_LOCK), next to its read lock on byte 123 (WAL_READ_LOCK(0))
-check ok: on the database file both processes hold only the SHARED read lock: WAL mode does not use RESERVED for writers
+check ok: on the database file the SHARED range is read-locked and PENDING and RESERVED are free: WAL mode does not use RESERVED for writers
+check ok: /proc/locks: -shm byte 120 is write-locked by the holder alone
+check ok: /proc/locks: both processes read-lock the DMS byte 128 of -shm
+check ok: /proc/locks: both processes read-lock the SHARED range of the database file
 step 12  contender  begin immediate                      -> SQLITE_BUSY (5)
 check ok: a second process is refused: BEGIN IMMEDIATE returns SQLITE_BUSY (5)
 step 13  holder     stray-close db                       -> SQLITE_OK
@@ -95,6 +102,8 @@ step 13  holder     stray-close db                       -> SQLITE_OK
   database file locks in /proc/locks:
     contender  POSIX READ  1073741826-1073742335 SHARED
 check ok: a stray close of the database file leaves the -shm write lock in place
+check ok: /proc/locks: on the database file only the contender's SHARED read lock is left
+check ok: /proc/locks: -shm byte 120 is still write-locked by the holder
 step 14  contender  begin immediate                      -> SQLITE_BUSY (5)
 check ok: so the second process is still refused
 step 15  holder     stray-close -shm                     -> SQLITE_OK
@@ -111,6 +120,8 @@ step 15  holder     stray-close -shm                     -> SQLITE_OK
   -shm locks in /proc/locks:
     contender  POSIX READ  128                   DMS
 check ok: a stray close of the -shm file releases the holder's -shm locks
+check ok: /proc/locks: the holder has no -shm lock left; only the contender's DMS read lock remains
+check ok: /proc/locks: that DMS read lock is the only lock on -shm
 step 16  holder     query SELECT count(*) FROM lab       -> SQLITE_OK 1
 check ok: the holder still sees its uncommitted row
 step 17  contender  begin immediate                      -> SQLITE_OK

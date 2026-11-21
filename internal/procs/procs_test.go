@@ -607,3 +607,167 @@ func TestSQLOptionsRoundTrip(t *testing.T) {
 		t.Error("extra argument accepted")
 	}
 }
+
+func TestAnsweredWithinWaitsWithoutKilling(t *testing.T) {
+	child, err := StartChild("window", "echo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer child.Kill()
+	slow, err := child.Start(1, "sleep", "1s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answered, err := slow.AnsweredWithin(100 * time.Millisecond); answered || err != nil {
+		t.Fatalf("blocked action: answered %v err %v", answered, err)
+	}
+	if result, err := slow.Wait(); err != nil || result.Value != "slept" {
+		t.Fatalf("after the window the child must still answer: %+v %v", result, err)
+	}
+	fast, err := child.Start(2, "echo", "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answered, err := fast.AnsweredWithin(5 * time.Second); !answered || err != nil {
+		t.Fatalf("immediate action: answered %v err %v", answered, err)
+	}
+	if result, err := fast.Wait(); err != nil || result.Value != "x" {
+		t.Fatalf("%+v %v", result, err)
+	}
+	if err := child.Stop(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLabStillWaitingCanFail(t *testing.T) {
+	var out bytes.Buffer
+	lab := NewLab(&out)
+	child := lab.Spawn("w", "echo")
+	immediate := lab.Begin(child, "echo", "now")
+	if lab.StillWaiting(immediate) {
+		t.Fatalf("an action that answers at once was reported as waiting: %q", out.String())
+	}
+	lab.Finish(immediate)
+	blocked := lab.Begin(child, "sleep", "1s")
+	if !lab.StillWaiting(blocked) {
+		t.Fatalf("a blocked action was reported as answered: %q", out.String())
+	}
+	lab.Finish(blocked)
+	lab.StopChildren()
+	if !strings.Contains(out.String(), ".. already answered") || !strings.Contains(out.String(), ".. no answer after 250ms") {
+		t.Fatalf("transcript %q", out.String())
+	}
+}
+
+func TestStillWaitingSeesImmediateBusy(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "lab.db")
+	ctx := context.Background()
+	if err := CreateDatabase(ctx, db, sqlitex.JournalWAL, "CREATE TABLE lab(who TEXT)"); err != nil {
+		t.Fatal(err)
+	}
+	lab := NewLab(io.Discard)
+	options := SQLOptions{Path: db, JournalMode: sqlitex.JournalWAL}
+	holder, waiter := lab.SpawnSQL("holder", options), lab.SpawnSQL("waiter", options)
+	lab.Must(holder, "begin", "immediate")
+	call := lab.Begin(waiter, "begin", "immediate")
+	if lab.StillWaiting(call) {
+		t.Fatal("busy_timeout 0: BEGIN IMMEDIATE returns SQLITE_BUSY at once, StillWaiting must say so")
+	}
+	if result := lab.Finish(call); result.Code != sqlitex.CodeBusy {
+		t.Fatalf("waiter: %s", result.Outcome())
+	}
+	lab.Must(holder, "commit")
+	lab.StopChildren()
+}
+
+func TestStopKillsChildWhenExitAnswerIsWrong(t *testing.T) {
+	child, err := StartChild("liar", "echo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer child.Kill()
+	if _, err := child.Do(1, "lie"); !errors.Is(err, ErrStepMismatch) {
+		t.Fatalf("lie: %v", err)
+	}
+	if err := child.Stop(); !errors.Is(err, ErrStepMismatch) {
+		t.Fatalf("Stop = %v", err)
+	}
+	select {
+	case <-child.exited:
+	default:
+		t.Fatal("Stop returned an error but left the child running")
+	}
+	if err := child.Stop(); err != nil {
+		t.Fatalf("second Stop = %v", err)
+	}
+}
+
+func TestParseProcLocksHostVariants(t *testing.T) {
+	lines := map[string]ProcLock{
+		"10: FLOCK  ADVISORY  WRITE 4321 <none>:0 0 EOF":      {ID: 10, Class: "FLOCK", Mode: "ADVISORY", Type: "WRITE", Pid: 4321, ToEOF: true, End: 1<<63 - 1},
+		"11: FLOCK  MSNFS     WRITE 4322 08:01:1234 0 EOF":    {ID: 11, Class: "FLOCK", Mode: "MSNFS", Type: "WRITE", Pid: 4322, DevMajor: 8, DevMinor: 1, Inode: 1234, ToEOF: true, End: 1<<63 - 1},
+		"12: UNKNOWN UNKNOWN  READ  4323 08:01:1235 5 9":      {ID: 12, Class: "UNKNOWN", Mode: "UNKNOWN", Type: "READ", Pid: 4323, DevMajor: 8, DevMinor: 1, Inode: 1235, Start: 5, End: 9},
+		"13: FLOCK  MSNFS     NONE  4324 08:01:1236 0 EOF":    {ID: 13, Class: "FLOCK", Mode: "MSNFS", Type: "NONE", Pid: 4324, DevMajor: 8, DevMinor: 1, Inode: 1236, ToEOF: true, End: 1<<63 - 1},
+		"14: -> POSIX  *NOINODE* WRITE 4325 <none>:0 120 120": {ID: 14, Blocked: true, Class: "POSIX", Mode: "*NOINODE*", Type: "WRITE", Pid: 4325, Start: 120, End: 120},
+	}
+	for line, want := range lines {
+		got, err := ParseProcLockLine(line)
+		if err != nil || got != want {
+			t.Errorf("%q: got %+v err %v, want %+v", line, got, err, want)
+		}
+	}
+	for _, line := range []string{
+		"15: FLOCK  ADVISORY  WRITE 4321 <none>:1 0 EOF",
+		"16: FLOCK  ADVISORY  WRITE 4321 <none>:0 9 3",
+		"17: FLOCK  ADVISORY  WRITE 4321 <none>:0 x EOF",
+	} {
+		if _, err := ParseProcLockLine(line); !errors.Is(err, ErrProcLocksFormat) {
+			t.Errorf("%q: err %v", line, err)
+		}
+	}
+}
+
+func TestReadRangeKeepsOnlyBytesRead(t *testing.T) {
+	got, err := readRange(strings.NewReader("0123"), 2, 10)
+	if err != nil || string(got) != "23" {
+		t.Fatalf("short read: %q %v", got, err)
+	}
+	got, err = readRange(strings.NewReader("0123"), 6, 10)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("past the end: %q %v", got, err)
+	}
+	got, err = readRange(strings.NewReader("0123456789"), 2, 5)
+	if err != nil || string(got) != "234" {
+		t.Fatalf("full read: %q %v", got, err)
+	}
+}
+
+func TestLockViewProcHolders(t *testing.T) {
+	ranges := ShmLockRanges()
+	states := make([]RangeState, len(ranges))
+	for i, r := range ranges {
+		states[i] = RangeState{Range: r}
+	}
+	view := LockView{Ranges: states, ProcListed: true, Proc: []ProcLock{
+		{Pid: 1, Type: "WRITE", Start: 120, End: 121},
+		{Pid: 2, Type: "READ", Start: 128, End: 128},
+		{Pid: 1, Type: "READ", Start: 123, End: 123},
+		{Pid: 3, Type: "READ", Start: 100, ToEOF: true, End: 1<<63 - 1},
+	}}
+	if got := view.ProcHolders("WAL_WRITE_LOCK"); len(got) != 2 || got[1] != "WRITE" || got[3] != "READ" {
+		t.Errorf("WAL_WRITE_LOCK holders %v", got)
+	}
+	if got := view.ProcHolders("WAL_CKPT_LOCK"); len(got) != 2 || got[1] != "WRITE" {
+		t.Errorf("merged range holders %v", got)
+	}
+	if got := view.ProcHolders("DMS"); len(got) != 2 || got[2] != "READ" {
+		t.Errorf("DMS holders %v", got)
+	}
+	if got := view.ProcHolders("WAL_READ_LOCK(1)"); len(got) != 1 || got[3] != "READ" {
+		t.Errorf("READ(1) holders %v", got)
+	}
+	if got := view.ProcHolders("no such range"); len(got) != 0 {
+		t.Errorf("unknown range %v", got)
+	}
+}

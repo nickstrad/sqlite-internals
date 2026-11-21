@@ -34,6 +34,8 @@ type Child struct {
 	requests *os.File
 	replies  chan Result
 	exited   chan struct{}
+	killed   chan struct{}
+	killOnce sync.Once
 	output   *tailBuffer
 
 	mu          sync.Mutex
@@ -92,6 +94,7 @@ func StartCommand(name, role, executable string, args ...string) (*Child, error)
 		requests: requestWrite,
 		replies:  make(chan Result, 1),
 		exited:   make(chan struct{}),
+		killed:   make(chan struct{}),
 		output:   output,
 	}
 	go child.readReplies(replyRead)
@@ -133,7 +136,11 @@ func (c *Child) readReplies(r io.ReadCloser) {
 			c.mu.Unlock()
 			return
 		}
-		c.replies <- result
+		select {
+		case c.replies <- result:
+		case <-c.killed:
+			return
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		c.mu.Lock()
@@ -240,21 +247,42 @@ func (call *Call) Answered() (bool, error) {
 	}
 	select {
 	case result, ok := <-call.child.replies:
-		if !ok {
-			err := call.child.deathError(call.request)
-			call.finish(Result{}, err)
-			return true, err
-		}
-		if result.Step != call.request.Step || result.Action != call.request.Action {
-			err := fmt.Errorf("%w: child %s answered step %d %q to step %d %q", ErrStepMismatch, call.child.Name, result.Step, result.Action, call.request.Step, call.request.Action)
-			call.finish(Result{}, err)
-			return true, err
-		}
-		call.finish(result, nil)
-		return true, nil
+		return call.accept(result, ok)
 	default:
 		return false, nil
 	}
+}
+
+func (call *Call) AnsweredWithin(d time.Duration) (bool, error) {
+	if d <= 0 {
+		return call.Answered()
+	}
+	if call.done {
+		return true, call.err
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case result, ok := <-call.child.replies:
+		return call.accept(result, ok)
+	case <-timer.C:
+		return false, nil
+	}
+}
+
+func (call *Call) accept(result Result, ok bool) (bool, error) {
+	if !ok {
+		err := call.child.deathError(call.request)
+		call.finish(Result{}, err)
+		return true, err
+	}
+	if result.Step != call.request.Step || result.Action != call.request.Action {
+		err := fmt.Errorf("%w: child %s answered step %d %q to step %d %q", ErrStepMismatch, call.child.Name, result.Step, result.Action, call.request.Step, call.request.Action)
+		call.finish(Result{}, err)
+		return true, err
+	}
+	call.finish(result, nil)
+	return true, nil
 }
 
 func (call *Call) finish(result Result, err error) {
@@ -297,6 +325,7 @@ func (c *Child) Stop() error {
 	c.stopped = true
 	c.mu.Unlock()
 	if err != nil {
+		c.Kill()
 		return err
 	}
 	select {
@@ -321,6 +350,7 @@ func (c *Child) Kill() {
 	c.mu.Lock()
 	c.stopped = true
 	c.mu.Unlock()
+	c.killOnce.Do(func() { close(c.killed) })
 	if c.cmd.Process != nil {
 		c.cmd.Process.Kill()
 	}

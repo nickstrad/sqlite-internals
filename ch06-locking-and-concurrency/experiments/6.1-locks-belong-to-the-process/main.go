@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,18 +18,37 @@ const packagePath = "ch06-locking-and-concurrency/experiments/6.1-locks-belong-t
 const rowsQuery = "SELECT count(*) || ' row(s): ' || coalesce(group_concat(who, ','), '') FROM (SELECT who FROM lab ORDER BY id)"
 
 func prepare(ctx context.Context, lab *procs.Lab, dir, journal string) (string, *procs.Child, *procs.Child) {
-	db := filepath.Join(dir, journal, "lab.db")
+	return prepareIn(ctx, lab, filepath.Join(dir, journal), procs.SQLOptions{JournalMode: journal})
+}
+
+func prepareIn(ctx context.Context, lab *procs.Lab, partDir string, options procs.SQLOptions) (string, *procs.Child, *procs.Child) {
+	journal := options.JournalMode
+	db := filepath.Join(partDir, "lab.db")
 	if err := os.MkdirAll(filepath.Dir(db), 0o755); err != nil {
 		lab.Fatal("mkdir", err)
 	}
 	if err := procs.CreateDatabase(ctx, db, journal, "CREATE TABLE lab(id INTEGER PRIMARY KEY, who TEXT NOT NULL)"); err != nil {
 		lab.Fatal("create", err)
 	}
-	options := procs.SQLOptions{Path: db, JournalMode: journal}
+	options.Path = db
 	holder := lab.SpawnSQL("holder", options)
 	contender := lab.SpawnSQL("contender", options)
 	fmt.Printf("INFO: holder pid %d, contender pid %d\n", holder.Pid, contender.Pid)
 	return db, holder, contender
+}
+
+func kernelHolders(lab *procs.Lab, view procs.LockView, rangeName string, want map[int]string, claim string) {
+	if !view.ProcListed {
+		return
+	}
+	lab.Check(maps.Equal(view.ProcHolders(rangeName), want), claim)
+}
+
+func kernelNone(lab *procs.Lab, view procs.LockView, claim string) {
+	if !view.ProcListed {
+		return
+	}
+	lab.Check(len(view.Proc) == 0, claim)
 }
 
 func finalRows(ctx context.Context, lab *procs.Lab, db, journal string) procs.Inspection {
@@ -49,20 +69,24 @@ func rollbackMode(ctx context.Context, lab *procs.Lab, dir string) {
 	lab.Must(holder, "begin", "immediate")
 	lab.Must(holder, "exec", "INSERT INTO lab VALUES (1, 'holder')")
 	before := lab.Locks("database file", db, ranges)
-	lab.Check(procs.WriteLockedBy(before, "RESERVED", holder.Pid) && procs.ReadLocked(before, "SHARED") && procs.Unlocked(before, "PENDING"),
+	lab.Check(procs.WriteLockedBy(before.Ranges, "RESERVED", holder.Pid) && procs.ReadLocked(before.Ranges, "SHARED") && procs.Unlocked(before.Ranges, "PENDING"),
 		"the holder's open write transaction is a write lock on the RESERVED byte and a read lock on the SHARED range of the database file")
+	kernelHolders(lab, before, "RESERVED", map[int]string{holder.Pid: "WRITE"}, "/proc/locks: the RESERVED byte is write-locked by the holder alone")
+	kernelHolders(lab, before, "SHARED", map[int]string{holder.Pid: "READ"}, "/proc/locks: the SHARED range is read-locked by the holder alone; the contender, with no transaction, holds nothing")
 	refused := lab.Do(contender, "begin", "immediate")
 	lab.Check(refused.Code == sqlitex.CodeBusy, "a second process is refused the write lock: BEGIN IMMEDIATE returns SQLITE_BUSY (5)")
 	lab.Must(holder, "stray-close", "db")
 	after := lab.Locks("database file", db, ranges)
-	lab.Check(procs.Unlocked(after), "after the holder opened and closed the database file with os.Open, none of its locks remain")
+	lab.Check(procs.Unlocked(after.Ranges), "after the holder opened and closed the database file with os.Open, none of its locks remain")
+	kernelNone(lab, after, "/proc/locks: neither process holds any lock on the database file")
 	inside := lab.Do(holder, "query", "SELECT count(*) FROM lab")
 	lab.Check(inside.OK() && inside.Value == "1", "the holder still sees its uncommitted row: as far as SQLite knows, its write transaction is intact")
 	admitted := lab.Do(contender, "begin", "immediate")
 	lab.Check(admitted.OK(), "the second process is now admitted: BEGIN IMMEDIATE returns SQLITE_OK while the holder's transaction is still open")
 	lab.Must(contender, "exec", "INSERT INTO lab VALUES (2, 'contender')")
 	during := lab.Locks("database file", db, ranges)
-	lab.Check(procs.WriteLockedBy(during, "RESERVED", contender.Pid), "the RESERVED byte is now write-locked by the second process")
+	lab.Check(procs.WriteLockedBy(during.Ranges, "RESERVED", contender.Pid), "the RESERVED byte is now write-locked by the second process")
+	kernelHolders(lab, during, "SHARED", map[int]string{contender.Pid: "READ"}, "/proc/locks: the SHARED range is read-locked by the second process only; the holder, mid-transaction, holds no lock at all")
 	contenderCommit := lab.Do(contender, "commit")
 	lab.Check(contenderCommit.OK(), "the second process commits: its COMMIT returns SQLITE_OK")
 	holderCommit := lab.Do(holder, "commit")
@@ -83,21 +107,30 @@ func walMode(ctx context.Context, lab *procs.Lab, dir string) {
 	lab.Must(holder, "exec", "INSERT INTO lab VALUES (1, 'holder')")
 	before := lab.Locks("-shm", shm, shmRanges)
 	dbBefore := lab.Locks("database file", db, dbRanges)
-	lab.Check(procs.WriteLockedBy(before, "WAL_WRITE_LOCK", holder.Pid) && procs.ReadLocked(before, "WAL_READ_LOCK(0)") && procs.ReadLocked(before, "DMS"),
+	lab.Check(procs.WriteLockedBy(before.Ranges, "WAL_WRITE_LOCK", holder.Pid) && procs.ReadLocked(before.Ranges, "WAL_READ_LOCK(0)") && procs.ReadLocked(before.Ranges, "DMS"),
 		"the holder's write transaction is a write lock on -shm byte 120 (WAL_WRITE_LOCK), next to its read lock on byte 123 (WAL_READ_LOCK(0))")
-	lab.Check(procs.ReadLocked(dbBefore, "SHARED") && procs.Unlocked(dbBefore, "PENDING", "RESERVED"),
-		"on the database file both processes hold only the SHARED read lock: WAL mode does not use RESERVED for writers")
+	lab.Check(procs.ReadLocked(dbBefore.Ranges, "SHARED") && procs.Unlocked(dbBefore.Ranges, "PENDING", "RESERVED"),
+		"on the database file the SHARED range is read-locked and PENDING and RESERVED are free: WAL mode does not use RESERVED for writers")
+	kernelHolders(lab, before, "WAL_WRITE_LOCK", map[int]string{holder.Pid: "WRITE"}, "/proc/locks: -shm byte 120 is write-locked by the holder alone")
+	kernelHolders(lab, before, "DMS", map[int]string{holder.Pid: "READ", contender.Pid: "READ"}, "/proc/locks: both processes read-lock the DMS byte 128 of -shm")
+	kernelHolders(lab, dbBefore, "SHARED", map[int]string{holder.Pid: "READ", contender.Pid: "READ"}, "/proc/locks: both processes read-lock the SHARED range of the database file")
 	refused := lab.Do(contender, "begin", "immediate")
 	lab.Check(refused.Code == sqlitex.CodeBusy, "a second process is refused: BEGIN IMMEDIATE returns SQLITE_BUSY (5)")
 	lab.Must(holder, "stray-close", "db")
 	afterDB := lab.Locks("-shm", shm, shmRanges)
-	lab.Locks("database file", db, dbRanges)
-	lab.Check(procs.WriteLockedBy(afterDB, "WAL_WRITE_LOCK", holder.Pid), "a stray close of the database file leaves the -shm write lock in place")
+	dbAfter := lab.Locks("database file", db, dbRanges)
+	lab.Check(procs.WriteLockedBy(afterDB.Ranges, "WAL_WRITE_LOCK", holder.Pid), "a stray close of the database file leaves the -shm write lock in place")
+	kernelHolders(lab, dbAfter, "SHARED", map[int]string{contender.Pid: "READ"}, "/proc/locks: on the database file only the contender's SHARED read lock is left")
+	kernelHolders(lab, afterDB, "WAL_WRITE_LOCK", map[int]string{holder.Pid: "WRITE"}, "/proc/locks: -shm byte 120 is still write-locked by the holder")
 	stillRefused := lab.Do(contender, "begin", "immediate")
 	lab.Check(stillRefused.Code == sqlitex.CodeBusy, "so the second process is still refused")
 	lab.Must(holder, "stray-close", "-shm")
 	afterShm := lab.Locks("-shm", shm, shmRanges)
-	lab.Check(procs.Unlocked(afterShm, "WAL_WRITE_LOCK", "WAL_READ_LOCK(0)"), "a stray close of the -shm file releases the holder's -shm locks")
+	lab.Check(procs.Unlocked(afterShm.Ranges, "WAL_WRITE_LOCK", "WAL_READ_LOCK(0)"), "a stray close of the -shm file releases the holder's -shm locks")
+	kernelHolders(lab, afterShm, "DMS", map[int]string{contender.Pid: "READ"}, "/proc/locks: the holder has no -shm lock left; only the contender's DMS read lock remains")
+	if afterShm.ProcListed {
+		lab.Check(len(afterShm.Proc) == 1, "/proc/locks: that DMS read lock is the only lock on -shm")
+	}
 	inside := lab.Do(holder, "query", "SELECT count(*) FROM lab")
 	lab.Check(inside.OK() && inside.Value == "1", "the holder still sees its uncommitted row")
 	admitted := lab.Do(contender, "begin", "immediate")

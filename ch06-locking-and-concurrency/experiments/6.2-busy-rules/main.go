@@ -172,10 +172,12 @@ func recipeUnderContention(ctx context.Context, lab *procs.Lab, dir string) {
 		holder, waiter := writers[0], writers[1]
 		lab.Must(holder, "begin", "immediate")
 		lab.Must(holder, "recipe-exec", strconv.Itoa(k))
-		call := lab.Begin(waiter, "recipe-step", strconv.Itoa(k+1))
+		call := lab.Begin(waiter, "begin", "immediate")
 		allWaited = lab.StillWaiting(call) && allWaited
 		allCommitted = lab.Do(holder, "commit").OK() && allCommitted
 		allCommitted = lab.Finish(call).OK() && allCommitted
+		allCommitted = lab.Do(waiter, "recipe-exec", strconv.Itoa(k+1)).OK() && allCommitted
+		allCommitted = lab.Do(waiter, "commit").OK() && allCommitted
 		writers[0], writers[1] = writers[1], writers[0]
 	}
 	last := lab.Must(writers[0], "user-version")
