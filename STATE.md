@@ -7,7 +7,7 @@ deterministically, well enough to build platforms holding thousands of SQLite fi
 can be remade as needed; state capture and deterministic rebuild is the through-line.
 Plan: OUTLINE.md (revision 2). What changed from revision 1: OUTLINE-CHANGES.md.
 
-Status: **Phase 2 (build) IN PROGRESS** since 2026-11-20. Chunk 0, chapters 1–9 and the capstone
+Status: **Phase 2 (build) IN PROGRESS** since 2026-11-20. Neon answered again at 08:00 UTC on 2026-11-21 and the 10b chain was resumed (the note below describes the stop at 07:27; the spending cap may bind again). Chunk 0, chapters 1–9 and the capstone
 service core (10a) have landed. **BLOCKED on Neon since 2026-11-21 07:27 UTC**: the direct Gemini
 route answers "Your project is temporarily rate-limited to prevent exceeding its monthly
 spending cap" and OpenRouter is empty until 2026-12-01 (see blockers). Everything left needs
