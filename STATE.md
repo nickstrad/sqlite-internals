@@ -40,8 +40,15 @@ Rulings applied (details: OUTLINE.md section 8):
     part of the database while any connection is open, never ship `-shm`, watch WAL size,
     detect WAL generations by salt change. Exception from the source (not tested): no WAL on
     network filesystems (shared memory needed).
+  - Chapter 6: WAL holds and the evidence favours it for concurrency; rollback mode appears
+    only as the contrast (6.1 A, 6.2 D, 6.3 B). Caveat recorded in the chapter:
+    `locking_mode=EXCLUSIVE` breaks "the writer never blocks readers".
   - Chapter 7: WAL holds. Care points: a custom VFS must implement the shared-memory methods
     (io_methods version 2) or `journal_mode=wal` silently stays `delete`.
+  - Chapter 8: WAL holds, with measured costs and conditions: 3 descriptors per idle connection
+    instead of 1, and a closed WAL database is NOT a single file at rest in five cases (another
+    process has it open, a statement left open, a killed writer, persist-WAL, a rename while
+    open) — the chapter's `CheckAtRest` is the rule before any copy.
 - VFS viability verdict: **VIABLE** (probe `agent_work/probes/vfs-viability/RESULT.md`, chunk 0): a
   writable Go forwarding VFS registers with modernc in pure Go; read-only `fs.FS` VFS also works.
   Chapter 7 gains experiments 7.3 (Go VFS shim: call counts + fault injection) and 7.4
@@ -89,21 +96,22 @@ Where each open chunk stands (worktrees `../sqlite-internals-work/<name>`, branc
 `chunk/<name>`; chain logs `sqlite-p2-<name>-chainA.log` / `-chainB.log` in the run directory;
 a finished part A leaves `sqlite-p2-<name>.stageA`, a finished part B `sqlite-p2-<name>-accept.txt`):
 
-| Chunk | State (2026-11-21 02:40 UTC) |
+| Chunk | State (2026-11-21 03:00 UTC) |
 | --- | --- |
 | 3 chapter 3 | done | Neon NITS → one Opus repair → PASS | 30 held / 0 broken after repair (run 1: 14 broken) | merged 4e1e290 |
 | 6 chapter 6 | done | Neon FAIL → one Opus repair → PASS | 49 held / 0 broken after repair (run 1: 6 broken) | merged e4af9e0 |
 | 8 chapter 8 | done | Neon FAIL → one Opus repair → PASS | 29 held / 0 broken after repair (run 1: 9 broken) | merged 3f54929 |
 | 9 | part A: review FAIL, run 1 5 broken; Opus repair running |
-| 10a, 10b | 10a builds from main once 8 and 9 have landed; 10b after 10a's part A |
-| pub | branch has main merged (go.mod conflict resolved); part A (Neon review + adversarial on the site generator and repo sweep) running; part B (Neon writes README as the book home + comments) and landing come last, after the self-contained sweep |
+| 10a, 10b | 10a builds from main once 9 has landed; 10b after 10a's part A |
+| fix-equal | small Opus fix on branch `chunk/fix-equal`: `equal.LogicalHash` can leave its read transaction open when a late interrupt hits the closing ROLLBACK (test `TestLogicalHashEndsItsTransactionWhenTheContextEnds` failed once under load during the chapter 8 landing); then a Neon comment + review pass |
+| pub | part A: review FAIL, run 1 24 broken; Opus repair running; part B (Neon writes README as the book home + comments) and landing come last, after the self-contained sweep |
 | 1 closing rewrite | done (66fca8e, merged) |
 | 4 chapter 4 | done | Neon FAIL → one Opus repair → NITS | 32 held / 0 broken after repair (run 1: 12 broken) | merged f500664 |
 | 2 closing rewrite | done (dd5a9b4, merged) |
 
-Closing prose record (commit of each chapter's closing Neon pass): chapter 5 — 394203d (single late prose pass); chapter 7 — c645979 (closing rewrite); chapter 3 — e71fa8c (single late prose pass); chapter 4 — a9fff51 (closing rewrite); chapter 3 — e71fa8c (single late prose pass); chapter 4 — a9fff51 (closing rewrite); chapter 1 — 66fca8e and chapter 2 — dd5a9b4 (retroactive closing rewrites, merged on main).
+Closing prose record (commit of each chapter's closing Neon pass): chapter 5 — 394203d (single late prose pass); chapter 7 — c645979 (closing rewrite); chapter 3 — e71fa8c (single late prose pass); chapter 4 — a9fff51 (closing rewrite); chapter 6 — d394e64 and chapter 8 — dfd1dfd (single late prose passes); chapter 3 — e71fa8c (single late prose pass); chapter 4 — a9fff51 (closing rewrite); chapter 6 — d394e64 and chapter 8 — dfd1dfd (single late prose passes); chapter 1 — 66fca8e and chapter 2 — dd5a9b4 (retroactive closing rewrites, merged on main).
 
-Next steps, in order: land 6, 8, 9 as their chains finish (each branch merges main before
+Next steps, in order: land 9 when its chain finishes (each branch merges main before
 its part B); run part A for 6 and 8; closing rewrites for 1 and 2; build 10a and 10b; chain 9,
 10a, 10b; then pub, the self-contained sweep, and the done file.
 
