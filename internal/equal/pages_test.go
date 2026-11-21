@@ -9,6 +9,7 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
 )
 
+// TestComparePagesIgnoresOnlyTheDeclaredHeaderBytes verifies E2 ignore boundaries, page-2 sensitivity, and argument validation.
 func TestComparePagesIgnoresOnlyTheDeclaredHeaderBytes(t *testing.T) {
 	a := image('a', 'b', 'c')
 	b := append([]byte(nil), a...)
@@ -52,6 +53,7 @@ func TestComparePagesIgnoresOnlyTheDeclaredHeaderBytes(t *testing.T) {
 	}
 }
 
+// TestBackupCopyIsEqualAtE2NotE1 verifies that a sqlite3_backup copy differs at E1 and matches at E2.
 func TestBackupCopyIsEqualAtE2NotE1(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
@@ -88,6 +90,7 @@ func TestBackupCopyIsEqualAtE2NotE1(t *testing.T) {
 	}
 }
 
+// TestChangedPages verifies added, removed, and byte-changed pages while skipping role-only changes.
 func TestChangedPages(t *testing.T) {
 	before := Manifest{PageSize: 512, Entries: []ManifestEntry{{1, "table-leaf", strings.Repeat("a", 64)}, {2, "table-leaf", strings.Repeat("b", 64)}, {3, "overflow", strings.Repeat("c", 64)}}}
 	after := Manifest{PageSize: 512, Entries: []ManifestEntry{{1, "table-leaf", strings.Repeat("a", 64)}, {2, "table-interior", strings.Repeat("d", 64)}, {3, "freelist-leaf", strings.Repeat("c", 64)}, {4, "table-leaf", strings.Repeat("e", 64)}}}

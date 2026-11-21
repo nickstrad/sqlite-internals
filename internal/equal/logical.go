@@ -21,10 +21,17 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
 )
 
+// LogicalFormat is written at the start of the E3Logical SHA-256 stream so
+// future format revisions cannot collide with v1 digests.
 const LogicalFormat = "sqlite-internals logical hash v1"
 
+// LogicalPragmas lists the seven persistent file-level PRAGMA values hashed by
+// E3Logical in fixed order. It includes default_cache_size (header bytes 48-51)
+// because sqlite3RunVacuum (vacuum.c:143-427) copies it to the canonical file.
 var LogicalPragmas = []string{"page_size", "encoding", "auto_vacuum", "user_version", "application_id", "journal_mode", "default_cache_size"}
 
+// SchemaRow represents one logical entry from main.sqlite_schema (omitting the
+// physical rootpage column).
 type SchemaRow struct {
 	Type  string
 	Name  string
@@ -32,6 +39,7 @@ type SchemaRow struct {
 	SQL   sql.NullString
 }
 
+// TableInfo describes a user or shadow table in main walked by WalkLogical.
 type TableInfo struct {
 	Name         string
 	Kind         string
@@ -40,6 +48,8 @@ type TableInfo struct {
 	Columns      []string
 }
 
+// LogicalVisitor receives callbacks in deterministic order during WalkLogical.
+// Any callback field may be nil.
 type LogicalVisitor struct {
 	Schema    func(SchemaRow) error
 	TableDone func(TableInfo, int) error
@@ -48,15 +58,23 @@ type LogicalVisitor struct {
 	Pragma    func(name, value string) error
 }
 
+// QuoteIdentifier returns name as a double-quoted SQLite identifier with
+// internal double quotes doubled.
 func QuoteIdentifier(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
+// RowsQuerier is the query subset of *sql.DB, *sql.Conn, and *sql.Tx required
+// by WalkLogical and TableSelect.
 type RowsQuerier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
+// WalkLogical visits the main database's schema rows, every table and shadow
+// table's rows in explicit key order, and every persistent pragma in
+// LogicalPragmas. Callers on a single-connection pool must not run nested
+// queries on that same pool inside callbacks.
 func WalkLogical(ctx context.Context, q RowsQuerier, v LogicalVisitor) error {
 	if err := walkSchema(ctx, q, v); err != nil {
 		return err
@@ -85,6 +103,8 @@ func WalkLogical(ctx context.Context, q RowsQuerier, v LogicalVisitor) error {
 }
 
 func walkSchema(ctx context.Context, q RowsQuerier, v LogicalVisitor) error {
+	// Qualify main.sqlite_schema explicitly so a caller's TEMP objects never shadow main.
+	// Omit rootpage because page numbers are physical layout, not logical content.
 	rows, err := q.QueryContext(ctx, "SELECT type, name, tbl_name, sql FROM main.sqlite_schema ORDER BY type, name")
 	if err != nil {
 		return fmt.Errorf("read sqlite_schema: %w", err)
@@ -105,6 +125,9 @@ func walkSchema(ctx context.Context, q RowsQuerier, v LogicalVisitor) error {
 }
 
 func logicalTables(ctx context.Context, q RowsQuerier) ([]TableInfo, error) {
+	// Include both ordinary tables and shadow tables (such as FTS5 backing tables),
+	// as well as sqlite_sequence and sqlite_stat* when present; exclude sqlite_schema
+	// because walkSchema already handles it.
 	rows, err := q.QueryContext(ctx, "SELECT name, type, wr FROM pragma_table_list WHERE schema = 'main' AND type IN ('table', 'shadow') AND name NOT IN ('sqlite_schema', 'sqlite_master') ORDER BY name")
 	if err != nil {
 		return nil, fmt.Errorf("list tables: %w", err)
@@ -176,6 +199,8 @@ func rowidAlias(ctx context.Context, q RowsQuerier, table string, columns []stri
 			return alias, nil
 		}
 	}
+	// If columns claim all three built-in aliases, the rowid is still accessible
+	// when one column is a true INTEGER PRIMARY KEY alias.
 	ipk, err := integerPrimaryKeyColumn(ctx, q, table)
 	if err != nil {
 		return "", err
@@ -195,9 +220,12 @@ func integerPrimaryKeyColumn(ctx context.Context, q RowsQuerier, table string) (
 	if err := q.QueryRowContext(ctx, "SELECT type FROM pragma_table_info(?, 'main') WHERE pk = 1", table).Scan(&declared); err != nil {
 		return "", fmt.Errorf("primary key of %q: %w", table, err)
 	}
+	// Only an exact INTEGER declaration (not INT) can alias the rowid.
 	if !strings.EqualFold(declared, "INTEGER") {
 		return "", nil
 	}
+	// INTEGER PRIMARY KEY DESC creates a separate autoindex (origin = 'pk') and
+	// does NOT alias the rowid; reject tables that have a pk-origin index.
 	var pkIndexes int
 	if err := q.QueryRowContext(ctx, "SELECT count(*) FROM pragma_index_list(?, 'main') WHERE origin = 'pk'", table).Scan(&pkIndexes); err != nil {
 		return "", fmt.Errorf("indexes of %q: %w", table, err)
@@ -225,6 +253,9 @@ func primaryKeyColumns(ctx context.Context, q RowsQuerier, table string) ([]stri
 	return names, rows.Err()
 }
 
+// TableSelect builds the deterministic SELECT statement used to read table t
+// from main in explicit key order (by rowid for rowid tables, or by primary key
+// columns for WITHOUT ROWID tables).
 func TableSelect(ctx context.Context, q RowsQuerier, t TableInfo) (string, error) {
 	var selected, order []string
 	if t.WithoutRowid {
@@ -242,6 +273,9 @@ func TableSelect(ctx context.Context, q RowsQuerier, t TableInfo) (string, error
 		selected = append(selected, QuoteIdentifier(t.RowidColumn))
 		order = append(order, QuoteIdentifier(t.RowidColumn))
 	}
+	// Prefix every column with unary '+' to strip its declared column type:
+	// modernc.org/sqlite otherwise converts TEXT in DATE/DATETIME/TIMESTAMP
+	// columns to time.Time, losing the underlying SQLite storage class.
 	for _, c := range t.Columns {
 		selected = append(selected, "+"+QuoteIdentifier(c))
 	}
@@ -298,6 +332,8 @@ func walkTable(ctx context.Context, q RowsQuerier, t TableInfo, v LogicalVisitor
 	return nil
 }
 
+// StorageClassOf maps a scanned Go value to its SQLite storage class name
+// ("null", "integer", "real", "text", or "blob") and rejects any other Go type.
 func StorageClassOf(value any) (string, error) {
 	switch value.(type) {
 	case nil:
@@ -325,6 +361,8 @@ func pragmaValue(ctx context.Context, q RowsQuerier, name string) (string, error
 	}
 	switch name {
 	case "journal_mode":
+		// Only the WAL vs rollback distinction persists in header bytes 18-19;
+		// rollback submodes (delete, truncate, persist) are per-connection.
 		if strings.EqualFold(text, "wal") {
 			return "wal", nil
 		}
@@ -342,17 +380,23 @@ func pragmaValue(ctx context.Context, q RowsQuerier, name string) (string, error
 	return text, nil
 }
 
+// LogicalTableDigest holds the row count and per-table SHA-256 computed during
+// LogicalHash so CompareLogical can name the exact table that differed.
 type LogicalTableDigest struct {
 	Name   string
 	Rows   int
 	SHA256 string
 }
 
+// LogicalPragma holds one persistent file-level pragma name and normalized value.
 type LogicalPragma struct {
 	Name  string
 	Value string
 }
 
+// Logical holds the full E3 logical fingerprint of a database, including its
+// overall SHA-256, schema and per-table digests, persistent pragmas, and the
+// results of PRAGMA main.integrity_check and PRAGMA main.foreign_key_check.
 type Logical struct {
 	SHA256          string
 	SchemaSHA256    string
@@ -363,6 +407,7 @@ type Logical struct {
 	ForeignKeyCheck []string
 }
 
+// TableByName looks up a table's digest in l by name.
 func (l Logical) TableByName(name string) (LogicalTableDigest, bool) {
 	for _, t := range l.Tables {
 		if t.Name == name {
@@ -372,6 +417,7 @@ func (l Logical) TableByName(name string) (LogicalTableDigest, bool) {
 	return LogicalTableDigest{}, false
 }
 
+// Pragma looks up a persistent pragma value recorded in l by name.
 func (l Logical) Pragma(name string) (string, bool) {
 	for _, p := range l.Pragmas {
 		if p.Name == name {
@@ -381,6 +427,7 @@ func (l Logical) Pragma(name string) (string, bool) {
 	return "", false
 }
 
+// Summary formats l as a single human-readable line for experiment output.
 func (l Logical) Summary() string {
 	var tables []string
 	for _, t := range l.Tables {
@@ -439,6 +486,13 @@ func (e streamEncoder) value(value any) error {
 	return nil
 }
 
+// EncodeValue encodes a single value using the tagged, length-prefixed framing
+// of E3Logical: 'N' (NULL), 'I' + 8-byte big-endian int64, 'R' + 8-byte
+// big-endian IEEE-754 bits, 'T'/'B' + 8-byte length + bytes. Length prefixes
+// prevent boundary collisions such as ('a3','b') vs ('a','3b') that dbhash
+// misses (tool/dbhash.c:281-360). Values with no SQLite storage class are
+// tagged with 'U' + Go type + 'v' + Go representation so direct callers never
+// see empty or colliding encodings.
 func EncodeValue(value any) []byte {
 	var b bytes.Buffer
 	e := streamEncoder{&b}
@@ -450,6 +504,9 @@ func EncodeValue(value any) []byte {
 	return b.Bytes()
 }
 
+// LogicalHash computes the E3Logical fingerprint of conn's main database
+// inside a single read transaction so concurrent writers cannot split the
+// snapshot.
 func LogicalHash(ctx context.Context, conn *sql.Conn) (Logical, error) {
 	if _, err := conn.ExecContext(ctx, "BEGIN"); err != nil {
 		return Logical{}, fmt.Errorf("begin read transaction: %w", err)
@@ -459,6 +516,8 @@ func LogicalHash(ctx context.Context, conn *sql.Conn) (Logical, error) {
 	if err != nil {
 		end = "ROLLBACK"
 	}
+	// End the transaction with WithoutCancel so a canceled caller context
+	// never leaks an open read transaction (and pinned WAL read mark) on conn.
 	if _, endErr := conn.ExecContext(context.WithoutCancel(ctx), end); endErr != nil && err == nil {
 		err = fmt.Errorf("end read transaction: %w", endErr)
 	}
@@ -593,8 +652,12 @@ func foreignKeyCheck(ctx context.Context, q RowsQuerier) ([]string, error) {
 	return lines, rows.Err()
 }
 
+// ErrNoDatabase is returned when OpenExisting or LogicalHashFile is given a
+// path that does not exist.
 var ErrNoDatabase = errors.New("database file does not exist")
 
+// OpenExisting opens an existing database file in read-write mode without
+// creating missing files or running any PRAGMA changes.
 func OpenExisting(ctx context.Context, path string) (*sql.DB, error) {
 	return openExisting(ctx, path, "rw")
 }
@@ -604,12 +667,18 @@ func openForReading(ctx context.Context, path string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	// If a live -wal or -journal exists, open read-only so closing does not
+	// checkpoint the WAL into the main file and delete -wal. When the file is
+	// at rest, open read-write because a read-only open of an at-rest WAL file
+	// leaves a -wal/-shm sidecar behind.
 	if busy {
 		return openExisting(ctx, path, "ro")
 	}
 	return openExisting(ctx, path, "rw")
 }
 
+// HasLiveSideFile reports whether path has a non-empty -wal or -journal file
+// beside it.
 func HasLiveSideFile(path string) (bool, error) {
 	for _, suffix := range []string{"-wal", "-journal"} {
 		info, err := os.Stat(path + suffix)
@@ -653,6 +722,8 @@ func openExisting(ctx context.Context, path, mode string) (*sql.DB, error) {
 	return db, nil
 }
 
+// LogicalHashFile opens path on a dedicated connection without altering its
+// settings, computes LogicalHash, and closes the connection.
 func LogicalHashFile(ctx context.Context, path string) (Logical, error) {
 	db, err := openForReading(ctx, path)
 	if err != nil {
@@ -673,6 +744,7 @@ func LogicalHashFile(ctx context.Context, path string) (Logical, error) {
 	return result, err
 }
 
+// LogicalResult summarizes an E3Logical comparison between two Logical digests.
 type LogicalResult struct {
 	Level       Level
 	Equal       bool
@@ -681,6 +753,7 @@ type LogicalResult struct {
 	Differences []string
 }
 
+// String formats r as a single-line E3 verdict naming any differences found.
 func (r LogicalResult) String() string {
 	if r.Equal {
 		return fmt.Sprintf("%s: equal (logical sha256 %s; integrity_check ok; foreign_key_check unchanged)", r.Level, r.SHA256A)
@@ -688,6 +761,9 @@ func (r LogicalResult) String() string {
 	return fmt.Sprintf("%s: differ: %s", r.Level, strings.Join(r.Differences, "; "))
 }
 
+// CompareLogical compares two Logical fingerprints at level E3Logical. Two
+// databases are equal only when their logical hash streams match, both pass
+// integrity_check ("ok"), and their sorted foreign_key_check lists are equal.
 func CompareLogical(a, b Logical) LogicalResult {
 	r := LogicalResult{Level: E3Logical, SHA256A: a.SHA256, SHA256B: b.SHA256}
 	if a.SchemaSHA256 != b.SchemaSHA256 {
@@ -744,6 +820,8 @@ func CompareLogical(a, b Logical) LogicalResult {
 	return r
 }
 
+// CompareLogicalFiles hashes database files a and b with LogicalHashFile and
+// compares the resulting Logical digests.
 func CompareLogicalFiles(ctx context.Context, a, b string) (LogicalResult, Logical, Logical, error) {
 	la, err := LogicalHashFile(ctx, a)
 	if err != nil {

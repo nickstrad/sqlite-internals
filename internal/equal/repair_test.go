@@ -12,6 +12,7 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
 )
 
+// TestEncodeValueKeepsTypesWithoutAStorageClassApart checks that unsupported Go types encode non-empty and distinct under tag 'U'.
 func TestEncodeValueKeepsTypesWithoutAStorageClassApart(t *testing.T) {
 	values := []any{int(1), true, false, int32(1), float32(1), struct{}{}, int64(1), float64(1), "1", []byte("1"), nil}
 	seen := map[string]any{}
@@ -33,6 +34,7 @@ func TestEncodeValueKeepsTypesWithoutAStorageClassApart(t *testing.T) {
 	}
 }
 
+// TestLogicalHashUsesAnIntegerPrimaryKeyNamedRowid verifies the IPK fallback when rowid/_rowid_/oid are all taken, and rejects non-alias PKs.
 func TestLogicalHashUsesAnIntegerPrimaryKeyNamedRowid(t *testing.T) {
 	dir := t.TempDir()
 	a := buildDB(t, dir, "a.db", "CREATE TABLE t(rowid INTEGER PRIMARY KEY, _rowid_ TEXT, oid TEXT)", "INSERT INTO t VALUES(5, 'x', 'y')")
@@ -70,6 +72,7 @@ func TestLogicalHashUsesAnIntegerPrimaryKeyNamedRowid(t *testing.T) {
 	}
 }
 
+// TestLogicalHashReadsMainWhenTempShadowsIt confirms TEMP tables with matching names do not shadow main tables during LogicalHash.
 func TestLogicalHashReadsMainWhenTempShadowsIt(t *testing.T) {
 	dir := t.TempDir()
 	a := buildDB(t, dir, "a.db", "CREATE TABLE t(a INTEGER)", "INSERT INTO t VALUES(1), (2)")
@@ -127,6 +130,7 @@ func (c *doneAfter) Err() error {
 	}
 }
 
+// TestLogicalHashEndsItsTransactionWhenTheContextEnds verifies LogicalHash rolls back its read transaction on cancellation or walk error.
 func TestLogicalHashEndsItsTransactionWhenTheContextEnds(t *testing.T) {
 	dir := t.TempDir()
 	a := buildDB(t, dir, "a.db", "CREATE TABLE t(id INTEGER PRIMARY KEY, v)", "CREATE TABLE u(id INTEGER PRIMARY KEY, v)",
@@ -176,6 +180,7 @@ func TestLogicalHashEndsItsTransactionWhenTheContextEnds(t *testing.T) {
 	}
 }
 
+// TestLogicalHashSeesDefaultCacheSize verifies that differing persistent default_cache_size values produce different E3 digests.
 func TestLogicalHashSeesDefaultCacheSize(t *testing.T) {
 	dir := t.TempDir()
 	a := buildDB(t, dir, "a.db", "CREATE TABLE t(id INTEGER PRIMARY KEY)")
@@ -185,6 +190,7 @@ func TestLogicalHashSeesDefaultCacheSize(t *testing.T) {
 	}
 }
 
+// TestHashingALiveWALSnapshotChangesNoFile confirms LogicalHashFile and RunDBHash leave an uncheckpointed WAL snapshot's .db and -wal intact.
 func TestHashingALiveWALSnapshotChangesNoFile(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()

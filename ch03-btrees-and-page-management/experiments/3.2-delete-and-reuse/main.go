@@ -1,3 +1,6 @@
+// Experiment 3.2 tracks page freeing, freelist reuse, file growth, VACUUM,
+// auto_vacuum modes, and deleted-byte residue across secure_delete=OFF and
+// secure_delete=ON in both the database file at rest and the -wal file.
 package main
 
 import (
@@ -61,6 +64,8 @@ type fileState struct {
 	tableLeaf map[int][]int64
 }
 
+// readState inspects a closed, at-rest database file directly from disk so no
+// open SQLite connection holds POSIX locks in this process.
 func readState(path string) fileState {
 	if err := recipe.CheckAtRest(path); err != nil {
 		fatal("at rest", err)
@@ -280,6 +285,9 @@ type outcome struct {
 	deleteFrames      int
 }
 
+// walFrames computes the frame count from the -wal file length (32-byte header
+// plus 24-byte frame header and 4096-byte page image per frame) before close
+// checkpoints and deletes the WAL.
 func walFrames(path string) int {
 	info, err := os.Stat(path + "-wal")
 	if err != nil {
@@ -323,6 +331,10 @@ func run(ctx context.Context, dir string, secureDelete bool) outcome {
 		}
 	}
 
+	// Under secure_delete=OFF, freePage2 (btree.c:6836-6969) calls
+	// sqlite3PagerDontWrite (pager.c:6329-6339) for freed freelist leaves, so
+	// they are not written to the WAL and retain their old bytes; freeSpace
+	// (btree.c:1918-2014) likewise skips zeroing freeblocks on live leaves.
 	session(ctx, path, secureDelete, func(db *sqlitex.DB) {
 		if _, err := db.ExecContext(ctx, "DELETE FROM t WHERE id BETWEEN ? AND ?", deleteFirst, deleteLast); err != nil {
 			fatal("delete", err)
@@ -443,6 +455,9 @@ func execOne(ctx context.Context, db *sqlitex.DB, statement string, args ...any)
 	}
 }
 
+// largeTransaction verifies that allocateBtreePage (btree.c:6514-6822) pops
+// freelist pages before extending the file on a per-allocation basis, so one
+// transaction can drain the freelist and grow page_count in the same commit.
 func largeTransaction(ctx context.Context, dir string) {
 	fmt.Println()
 	fmt.Println("== a transaction that needs more pages than the freelist holds (secure_delete=ON, WAL)")
@@ -462,6 +477,9 @@ func largeTransaction(ctx context.Context, dir string) {
 	check(freeBefore > 0 && freeAfter == 0 && pagesAfter > pagesBefore, "a transaction that needs more pages than the freelist holds takes the freelist pages first, then grows the file in the same transaction: so the rule is per page allocation, not per transaction")
 }
 
+// autoVacuumModes contrasts NONE (default, never shrinks without VACUUM), FULL
+// (relocates pages and truncates during the DELETE's own commit), and
+// INCREMENTAL (keeps freed pages on the freelist until PRAGMA incremental_vacuum).
 func autoVacuumModes(ctx context.Context, dir string) {
 	fmt.Println()
 	fmt.Println("== auto_vacuum: the file shrinks on its own only when the database was created with auto_vacuum FULL or INCREMENTAL")
@@ -526,6 +544,9 @@ func countMarkers(data []byte, r markerRange) int {
 	return found
 }
 
+// walResidue shows that secure_delete=ON zeroes pages in the database file but
+// does not erase earlier INSERT frames already sitting in -wal until the WAL
+// is reset (for example by wal_checkpoint(TRUNCATE)).
 func walResidue(ctx context.Context, dir string) {
 	fmt.Println()
 	fmt.Println("== secure_delete=ON and the -wal file (wal_autocheckpoint=0, one connection)")

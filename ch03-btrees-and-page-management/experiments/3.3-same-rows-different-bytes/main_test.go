@@ -9,6 +9,7 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/equal"
 )
 
+// TestDumpReplaysOddValuesAndNames verifies R2 dump/replay/VACUUM INTO on embedded NULs, ? identifiers, IPK rowid, and creation order.
 func TestDumpReplaysOddValuesAndNames(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -54,6 +55,7 @@ func TestDumpReplaysOddValuesAndNames(t *testing.T) {
 	}
 }
 
+// TestSQLLiteralSplitsTextAtNUL checks quoting and char(0) splitting for strings with and without NUL bytes.
 func TestSQLLiteralSplitsTextAtNUL(t *testing.T) {
 	cases := map[string]string{
 		"plain":        "'plain'",

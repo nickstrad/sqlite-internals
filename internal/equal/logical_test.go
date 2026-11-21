@@ -109,6 +109,7 @@ var blindSpots = []blindSpot{
 	},
 }
 
+// TestLogicalHashTellsApartTheBlindSpots confirms E3 distinguishes all six blind-spot pairs and contrasts them with dbhash.
 func TestLogicalHashTellsApartTheBlindSpots(t *testing.T) {
 	for _, spot := range blindSpots {
 		t.Run(spot.name, func(t *testing.T) {
@@ -136,6 +137,7 @@ func TestLogicalHashTellsApartTheBlindSpots(t *testing.T) {
 	}
 }
 
+// TestLogicalHashIgnoresPhysicalHistory verifies that forward, backward, and delete-history builds differ at E1 but match at E3.
 func TestLogicalHashIgnoresPhysicalHistory(t *testing.T) {
 	dir := t.TempDir()
 	schema := "CREATE TABLE t(id INTEGER PRIMARY KEY, v BLOB)"
@@ -171,6 +173,7 @@ func TestLogicalHashIgnoresPhysicalHistory(t *testing.T) {
 	}
 }
 
+// TestLogicalHashCoversWithoutRowidAndOddNames checks WITHOUT ROWID tables, quoted identifiers, oid fallback, and hidden-rowid refusal.
 func TestLogicalHashCoversWithoutRowidAndOddNames(t *testing.T) {
 	dir := t.TempDir()
 	a := buildDB(t, dir, "a.db",
@@ -197,6 +200,7 @@ func TestLogicalHashCoversWithoutRowidAndOddNames(t *testing.T) {
 	}
 }
 
+// TestLogicalHashSeesSchemaPragmasIntegrityAndForeignKeys verifies schema diffs, pragma coverage, integrity_check, and foreign_key_check.
 func TestLogicalHashSeesSchemaPragmasIntegrityAndForeignKeys(t *testing.T) {
 	dir := t.TempDir()
 	base := []string{"CREATE TABLE p(id INTEGER PRIMARY KEY)", "CREATE TABLE c(id INTEGER PRIMARY KEY, p INTEGER REFERENCES p(id))", "INSERT INTO p VALUES(1)", "INSERT INTO c VALUES(1, 1)"}
@@ -237,6 +241,7 @@ func TestLogicalHashSeesSchemaPragmasIntegrityAndForeignKeys(t *testing.T) {
 	}
 }
 
+// TestLogicalHashFileRefusesMissingFileAndLeavesFileUnchanged ensures missing files fail without creation and at-rest files remain untouched.
 func TestLogicalHashFileRefusesMissingFileAndLeavesFileUnchanged(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := LogicalHashFile(context.Background(), filepath.Join(dir, "missing.db")); !errors.Is(err, ErrNoDatabase) {
@@ -262,6 +267,7 @@ func TestLogicalHashFileRefusesMissingFileAndLeavesFileUnchanged(t *testing.T) {
 	}
 }
 
+// TestStorageClassesAndEncoding checks StorageClassOf against typeof() (including DATETIME text) and confirms nine distinct encodings.
 func TestStorageClassesAndEncoding(t *testing.T) {
 	dir := t.TempDir()
 	a := buildDB(t, dir, "a.db", "CREATE TABLE t(id INTEGER PRIMARY KEY, d DATETIME, r REAL, b BLOB, n)",

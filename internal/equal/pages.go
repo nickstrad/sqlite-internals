@@ -8,13 +8,17 @@ import (
 	"strings"
 )
 
+// ByteRange is a half-open file byte offset range [Start, End) ignored during
+// an E2Pages comparison.
 type ByteRange struct {
 	Start int
 	End   int
 }
 
+// Contains reports whether file offset lies within [r.Start, r.End).
 func (r ByteRange) Contains(offset int) bool { return offset >= r.Start && offset < r.End }
 
+// String formats r using inclusive byte offsets (for example "24-27" or "43").
 func (r ByteRange) String() string {
 	if r.End-r.Start == 1 {
 		return fmt.Sprintf("%d", r.Start)
@@ -22,8 +26,15 @@ func (r ByteRange) String() string {
 	return fmt.Sprintf("%d-%d", r.Start, r.End-1)
 }
 
+// DeclaredHeaderIgnore lists the volatile page-1 header byte ranges ignored by
+// E2Pages: bytes 24-27 (file change counter, pager.c:3130-3143), bytes 40-43
+// (schema cookie, incremented by sqlite3_backup_step at backup.c:448 and by
+// sqlite3RunVacuum at vacuum.c:143-427), and bytes 92-99 (version-valid-for
+// and SQLite library version). Header bytes 18-19 (write/read format version)
+// are deliberately NOT ignored because they distinguish WAL from rollback mode.
 var DeclaredHeaderIgnore = []ByteRange{{24, 28}, {40, 44}, {92, 100}}
 
+// FormatRanges formats a slice of ByteRange values as a comma-separated list.
 func FormatRanges(ranges []ByteRange) string {
 	parts := make([]string, len(ranges))
 	for i, r := range ranges {
@@ -40,6 +51,7 @@ func formatOffsets(offsets []int) string {
 	return "[" + strings.Join(parts, " ") + "]"
 }
 
+// ValidateRanges verifies that every range has Start >= 0 and End > Start.
 func ValidateRanges(ranges []ByteRange) error {
 	for _, r := range ranges {
 		if r.Start < 0 || r.End <= r.Start {
@@ -58,6 +70,10 @@ func ignored(ranges []ByteRange, offset int) bool {
 	return false
 }
 
+// CompareImagesIgnoring compares raw database images a and b page by page at
+// level E2Pages, allowing byte differences only at file offsets covered by
+// ignore. When the images are equal outside ignore, Result.IgnoredDiffering
+// records every file offset inside ignore where a and b differed.
 func CompareImagesIgnoring(a, b []byte, pageSize int, ignore []ByteRange) (Result, error) {
 	if err := ValidateRanges(ignore); err != nil {
 		return Result{}, err
@@ -83,6 +99,7 @@ func CompareImagesIgnoring(a, b []byte, pageSize int, ignore []ByteRange) (Resul
 	}
 	r.Equal = r.DifferingPages == 0 && r.SizeA == r.SizeB
 	if !r.Equal {
+		// Only report IgnoredDiffering when every difference fell inside ignore.
 		r.IgnoredDiffering = nil
 	}
 	return r, nil
@@ -103,10 +120,14 @@ func equalOutside(pageA, pageB []byte, base int, ranges []ByteRange, differing *
 	return true
 }
 
+// ComparePages compares raw database images a and b at level E2Pages using
+// DeclaredHeaderIgnore.
 func ComparePages(a, b []byte, pageSize int) (Result, error) {
 	return CompareImagesIgnoring(a, b, pageSize, DeclaredHeaderIgnore)
 }
 
+// ComparePageFiles reads database files a and b from disk and compares them
+// with ComparePages. Do not call on files open by SQLite in the same process.
 func ComparePageFiles(a, b string, pageSize int) (Result, error) {
 	imageA, err := os.ReadFile(a)
 	if err != nil {

@@ -1,3 +1,7 @@
+// Experiment 3.3 implements Rebuild Ladder rung R2 (canonical logical capture
+// and replay) and tests E1, E2, and E3 equality across different build
+// histories, a sqlite3_backup copy, dbhash blind spots, and VACUUM INTO's
+// canonical-form boundaries.
 package main
 
 import (
@@ -113,6 +117,9 @@ func rowidName(name string) string {
 	return equal.QuoteIdentifier(name)
 }
 
+// insertStatement builds an INSERT statement directly from the table's column
+// list and value expressions (either "?" placeholders or SQL literals), avoiding
+// string replacement that would corrupt identifiers containing "?".
 func insertStatement(t equal.TableInfo, values []string) string {
 	var names []string
 	if !t.WithoutRowid {
@@ -176,6 +183,9 @@ func buildPerStatement(ctx context.Context, path, mode string, c content, order 
 	}
 }
 
+// sqlLiteral renders a scanned SQLite storage-class value as a SQL literal
+// that round-trips with the exact same storage class. Embedded NUL bytes in
+// TEXT are split with ||char(0)|| because SQLite's parser stops at raw NULs.
 func sqlLiteral(value any) string {
 	switch v := value.(type) {
 	case nil:
@@ -207,6 +217,10 @@ func sqlLiteral(value any) string {
 	return ""
 }
 
+// dump emits rung R2's deterministic SQL capture using equal.WalkLogical.
+// CREATE statements follow main.sqlite_schema rowid order (creation order) so
+// a replayed database matches its source's VACUUM INTO bytes (vacuum.c:143-427
+// copies tables in sqlite_schema order).
 func dump(ctx context.Context, path string) string {
 	db := must(equal.OpenExisting(ctx, path))("open " + filepath.Base(path))
 	defer db.Close()
@@ -513,6 +527,9 @@ func partA(ctx context.Context, dir, tool string) content {
 	check(allE3, "every build is equal to R0 at E3 (logical hash, integrity_check ok, foreign_key_check unchanged)")
 	check(distinct(dumps) == 1, "the ordered logical capture is itself identical for every build: it depends on content and the schema's creation order, not on insert order, batching or updates")
 	check(distinct(canon[:5]) == 1, "after VACUUM INTO every build, the replayed copy included, has the same sha256 (E1 between canonical forms)")
+	// sqlite3_backup_step sets the destination schema cookie to old+1
+	// (backup.c:448; 0+1=1 on a fresh file), and sqlite3RunVacuum copies the
+	// source schema cookie +1 (vacuum.c:143-427), leaving byte 43 differing.
 	backupCanon := builds[5].canonical
 	ce1 := must(equal.CompareFiles(builds[0].canonical, backupCanon, pageSize))("E1")
 	ce2 := must(equal.ComparePageFiles(builds[0].canonical, backupCanon, pageSize))("E2")
@@ -619,6 +636,9 @@ type pair struct {
 	dbhash bool
 }
 
+// partB exercises six logical-difference pairs where weaker tools fail,
+// including dbhash's unframed value concatenation and missing table boundaries
+// in tool/dbhash.c:281-360 and tool/dbhash.c:379-491.
 func partB(ctx context.Context, dir, tool string) {
 	fmt.Println()
 	fmt.Println("== B. pairs that differ in content where a weaker logical hash says equal")
@@ -669,6 +689,9 @@ func sameWord(equalValues bool) string {
 	return "differ"
 }
 
+// partC tests the three boundaries of VACUUM INTO as a canonical form
+// (vacuum.c:143-427): table creation order, prior schema-cookie increments,
+// and index creation timing.
 func partC(ctx context.Context, dir, tool string) {
 	fmt.Println()
 	fmt.Println("== C. where VACUUM INTO stops being a canonical form")

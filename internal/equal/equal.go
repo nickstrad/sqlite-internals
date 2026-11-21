@@ -22,8 +22,10 @@ type Level int
 // Equality levels supported by this package.
 const (
 	// E1Bytes checks exact byte-for-byte equality via SHA-256 and locates the first differing page.
-	E1Bytes   Level = 1
-	E2Pages   Level = 2
+	E1Bytes Level = 1
+	// E2Pages compares every page while ignoring a declared list of volatile header byte ranges.
+	E2Pages Level = 2
+	// E3Logical hashes schema, rows (with explicit rowids and storage classes), and persistent pragmas.
 	E3Logical Level = 3
 )
 
@@ -41,7 +43,8 @@ func (l Level) String() string {
 }
 
 // Result summarizes the outcome of comparing two database images or files at a
-// given Level, including both SHA-256 digests, sizes, and differing-page counts.
+// given Level, including both SHA-256 digests, sizes, differing-page counts,
+// and (for E2Pages) any ignored header byte ranges and differing offsets within them.
 type Result struct {
 	Level              Level
 	Equal              bool

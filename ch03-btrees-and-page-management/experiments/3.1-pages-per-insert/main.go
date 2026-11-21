@@ -1,3 +1,8 @@
+// Experiment 3.1 measures how many pages and WAL frames each single-row INSERT
+// modifies across five workloads: ascending appends through two depth changes
+// (Part A), a middle split into a full leaf (Part B), a table with two secondary
+// indexes (Part C), rollback-journal mode (Part D), and four boundary workloads
+// showing where "most inserts change one page" stops holding (Part E).
 package main
 
 import (
@@ -79,6 +84,9 @@ func openLab(ctx context.Context, path, mode string, statements ...string) *lab 
 	options := sqlitex.DefaultOptions()
 	options.SingleConnection = true
 	options.File.JournalMode = mode
+	// SyncOff skips fsync across ~3,000 single-row commits without altering any
+	// file byte or WAL frame sequence; WALAutocheckpoint=0 keeps each commit's
+	// frames in -wal until snapshot() reads them and runs TRUNCATE.
 	options.Conn.Synchronous = sqlitex.SyncOff
 	options.Conn.WALAutocheckpoint = 0
 	db, err := sqlitex.Open(ctx, path, options)
@@ -120,6 +128,9 @@ func (l *lab) snapshot(ctx context.Context) (*dbfile.File, equal.Manifest) {
 		fatal("page_count", err)
 	}
 	image := make([]byte, 0, count*pageSize)
+	// Read raw pages through sqlite_dbpage instead of os.Open: opening and
+	// closing the database file in the same process that holds a SQLite
+	// connection drops that process's POSIX locks (see Chapter 6).
 	rows, err := l.conn.QueryContext(ctx, "SELECT pgno, data FROM sqlite_dbpage ORDER BY pgno")
 	if err != nil {
 		fatal("sqlite_dbpage", err)
@@ -161,6 +172,8 @@ func (l *lab) snapshot(ctx context.Context) (*dbfile.File, equal.Manifest) {
 	for n := 1; n <= count; n++ {
 		page := image[(n-1)*pageSize : n*pageSize]
 		sum := ""
+		// Reuse the previous manifest's SHA-256 when a page's bytes are unchanged;
+		// verifyManifest() checks the final manifest against capture.BuildManifest.
 		if l.image != nil && n*pageSize <= len(l.image) && bytes.Equal(page, l.image[(n-1)*pageSize:n*pageSize]) {
 			sum = l.manifest.Entries[n-1].SHA256
 		} else {
@@ -181,6 +194,9 @@ func (l *lab) verifyManifest() bool {
 	return full.Text() == l.manifest.Text()
 }
 
+// readWALPages parses the 32-byte WAL header and each 24-byte frame header to
+// list the page numbers written by the most recent commit. Reading -wal with
+// os.ReadFile is safe while SQLite is open because WAL POSIX locks live on -shm.
 func readWALPages(path string) ([]int, error) {
 	data, err := os.ReadFile(path + "-wal")
 	if err != nil {
@@ -270,6 +286,8 @@ func (l *lab) exec(ctx context.Context, number int, rowid int64, table, statemen
 
 func (s step) pages() []int { return equal.PageNumbers(s.changes) }
 
+// leafHoldsRowid verifies that page is a user table leaf (not page 1, whose
+// B-tree is sqlite_schema) containing a cell with the given rowid.
 func leafHoldsRowid(f *dbfile.File, page int, rowid int64) bool {
 	if page == 1 {
 		return false
@@ -416,6 +434,8 @@ type arithmetic struct {
 	deeperInsert int
 }
 
+// predict computes leaf capacity, first split, and root interior capacity from
+// SQLite's cell format (btreeInt.h:149-228) before any row is inserted.
 func predict() arithmetic {
 	usable := pageSize
 	serialBlob := uint64(12 + 2*blobBytes)
@@ -597,6 +617,8 @@ func partB(ctx context.Context, dir string) {
 		fmt.Printf("  leaf page %d: %s\n", c.LeftChild, describePage(l.file, int(c.LeftChild)))
 	}
 	fmt.Printf("  leaf page %d: %s\n", root.RightChild, describePage(l.file, int(root.RightChild)))
+	// Insert rowid 11 into full leaf 4 (keys 10..16), forcing balance_nonroot
+	// (btree.c:8204-9027) to redistribute cells across sibling leaves.
 	rowid := int64(11)
 	s := l.exec(ctx, 21, rowid, "t", "INSERT INTO t(id, v) VALUES(?, ?)", rowid, rowBlob(rowid))
 	printStep("middle split", s)
@@ -611,6 +633,9 @@ func partB(ctx context.Context, dir string) {
 		}
 	}
 	check(leaves >= 2, fmt.Sprintf("a split in the middle rewrites the full leaf and its siblings (%d leaf pages changed), not just one new page", leaves))
+	// balance_nonroot calls sqlite3PagerWrite on every reused sibling page before
+	// rewriting it (btree.c:8245-9027), so a sibling whose rebuilt cells match its
+	// old bytes still enters the WAL as a frame even though its SHA-256 is unchanged.
 	extra := subtract(s.walPages, s.pages())
 	check(len(subtract(s.pages(), s.walPages)) == 0, "every changed page is in the commit's WAL frames")
 	fmt.Printf("WAL frames whose page bytes did not change: %s\n", formatInts(extra))
@@ -838,6 +863,10 @@ func runWorkload(ctx context.Context, dir string, w workload) workloadResult {
 func partE(ctx context.Context, dir string) {
 	fmt.Println()
 	fmt.Println("== E. where \"most inserts change one page\" stops holding (one row per transaction, WAL, the same manifest after every insert)")
+	// Exercise four boundary workloads: random keys with few vs many rows per
+	// leaf, overflowing payloads (fillInCell allocates overflow pages at
+	// btree.c:7212), and WITHOUT ROWID (an index B-tree, excluded from
+	// balance_quick by the pPage->intKeyLeaf guard at btree.c:9185-9189).
 	workloads := []workload{
 		{"random keys, 1000-byte rows (4 per leaf)", "random_large", "CREATE TABLE random_large(k INTEGER PRIMARY KEY, v BLOB)", shuffledKeys(250, 11), 1000},
 		{"random keys, 40-byte rows (about 85 per leaf)", "random_small", "CREATE TABLE random_small(k INTEGER PRIMARY KEY, v BLOB)", shuffledKeys(600, 11), 40},
