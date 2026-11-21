@@ -719,3 +719,33 @@ func TestUnstampedEmptyDatabaseIsStampedButUsedOneIsNot(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSettingPlacementsCoverEveryCourseSetting(t *testing.T) {
+	want := map[string]SettingHome{
+		"page_size": SettingInFile, "journal_mode=wal": SettingInFile, "auto_vacuum": SettingInFile,
+		"encoding": SettingInFile, "user_version": SettingInFile, "application_id": SettingInFile,
+		"default_cache_size": SettingInFile, "journal_mode=delete|truncate|persist|memory|off": SettingPerConnection,
+		"synchronous": SettingPerConnection, "foreign_keys": SettingPerConnection, "cache_size": SettingPerConnection,
+		"busy_timeout": SettingPerConnection, "wal_autocheckpoint": SettingPerConnection, "secure_delete": SettingPerConnection,
+	}
+	placements := SettingPlacements()
+	if len(placements) != len(want) {
+		t.Fatalf("got %d placements, want %d", len(placements), len(want))
+	}
+	for _, p := range placements {
+		home, ok := want[p.Name]
+		if !ok || home != p.Home {
+			t.Errorf("%s: home %q, want %q (known %v)", p.Name, p.Home, home, ok)
+		}
+		if (p.Home == SettingInFile) != (p.HeaderBytes != "") {
+			t.Errorf("%s: header bytes %q with home %s", p.Name, p.HeaderBytes, p.Home)
+		}
+		got, found := SettingPlacementFor(p.Name)
+		if !found || got != p {
+			t.Errorf("SettingPlacementFor(%q) = %+v, %v", p.Name, got, found)
+		}
+	}
+	if _, found := SettingPlacementFor("mmap_size"); found {
+		t.Error("mmap_size is not a course setting")
+	}
+}
