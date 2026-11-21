@@ -2,6 +2,7 @@ package relocate
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"os"
 	"path/filepath"
@@ -141,7 +142,7 @@ func (l *lab) requireOwner(owner string, epoch uint64, userVersion int) {
 	if err != nil {
 		l.t.Fatal(err)
 	}
-	if got := int(image[63]); got != userVersion {
+	if got := int(binary.BigEndian.Uint32(image[60:64])); got != userVersion {
 		l.t.Fatalf("the store's last state has user_version %d, want %d", got, userVersion)
 	}
 	l.closeAll()
@@ -335,5 +336,96 @@ func TestActivateRefusesAStoreThatMovedAfterTheDrain(t *testing.T) {
 	_, err = l.nodes["b"].Activate(context.Background(), "db-1", r.ToEpoch, r.Position, walship.SHA256Hex([]byte("other")), true)
 	if !errors.Is(err, node.ErrStagedMismatch) {
 		t.Fatalf("%v", err)
+	}
+}
+
+type unreachable struct {
+	Participant
+}
+
+var errUnreachable = errors.New("the node is not running")
+
+func (unreachable) Discard(ctx context.Context, id string) error { return errUnreachable }
+
+func TestRollbackWhileTheDestinationIsDown(t *testing.T) {
+	ctx := context.Background()
+	l := newLab(t)
+	l.prepare()
+	c := l.coordinator()
+	c.CrashAfter = Rebuild
+	if _, err := c.Run(ctx, "db-1", "a", "b"); !errors.Is(err, ErrCrashed) {
+		t.Fatal(err)
+	}
+	down := l.coordinator()
+	down.Node = func(name string) Participant {
+		if name == "b" {
+			return unreachable{l.nodes["b"]}
+		}
+		return l.nodes[name]
+	}
+	result, err := down.Rollback(ctx, "db-1")
+	if err != nil || result.Outcome != RolledBack || result.Epoch != 3 || !errors.Is(result.DiscardErr, errUnreachable) {
+		t.Fatalf("%+v %v", result, err)
+	}
+	relocation, err := l.catalog.GetRelocation(ctx, "db-1")
+	if err != nil || relocation.State != catalog.RelocationRolledBack {
+		t.Fatalf("%s %v", relocation, err)
+	}
+	if again, err := l.coordinator().Rollback(ctx, "db-1"); err != nil || again.Outcome != NothingToDo {
+		t.Fatalf("%+v %v", again, err)
+	}
+	if _, err := l.catalog.BeginRelocation(ctx, "db-1", "a", "b"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRollbackFinishesARollbackThatStoppedAfterTheClaim(t *testing.T) {
+	ctx := context.Background()
+	l := newLab(t)
+	l.prepare()
+	c := l.coordinator()
+	c.CrashAfter = Rebuild
+	if _, err := c.Run(ctx, "db-1", "a", "b"); !errors.Is(err, ErrCrashed) {
+		t.Fatal(err)
+	}
+	a := l.nodes["a"]
+	if err := a.Seal(ctx, "db-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Drain(ctx, "db-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Claim(ctx, "db-1"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := l.coordinator().Rollback(ctx, "db-1")
+	if err != nil || result.Outcome != RolledBack || result.Epoch != 3 || result.DiscardErr != nil {
+		t.Fatalf("%+v %v", result, err)
+	}
+	if _, err := os.Stat(filepath.Join(l.work, "b", "db-1.staged")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the destination kept its staged file: %v", err)
+	}
+	relocation, err := l.catalog.GetRelocation(ctx, "db-1")
+	if err != nil || relocation.State != catalog.RelocationRolledBack {
+		t.Fatalf("%s %v", relocation, err)
+	}
+	l.requireOwner("a", 3, 3)
+}
+
+func TestRollbackStillReportsAThirdNodesTakeover(t *testing.T) {
+	ctx := context.Background()
+	l := newLab(t)
+	l.prepare()
+	c := l.coordinator()
+	c.CrashAfter = Rebuild
+	if _, err := c.Run(ctx, "db-1", "a", "b"); !errors.Is(err, ErrCrashed) {
+		t.Fatal(err)
+	}
+	if _, err := l.nodes["b"].Claim(ctx, "db-1"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := l.coordinator().Rollback(ctx, "db-1")
+	if !errors.Is(err, ErrSupersededBy) || result.Outcome != Superseded {
+		t.Fatalf("%+v %v", result, err)
 	}
 }

@@ -83,11 +83,12 @@ const (
 )
 
 type Result struct {
-	Outcome  Outcome
-	Position int64
-	SHA256   string
-	Fence    int64
-	Epoch    uint64
+	Outcome    Outcome
+	Position   int64
+	SHA256     string
+	Fence      int64
+	Epoch      uint64
+	DiscardErr error
 }
 
 type StepError struct {
@@ -260,6 +261,13 @@ func (c *Coordinator) Rollback(ctx context.Context, id string) (Result, error) {
 		return Result{}, err
 	}
 	switch {
+	case newest > r.ToEpoch && c.reclaimedBySource(ctx, r, newest):
+		result := Result{Outcome: RolledBack, Epoch: newest}
+		if err := c.Catalog.FinishRelocation(ctx, id, catalog.RelocationRolledBack); err != nil {
+			return result, err
+		}
+		result.DiscardErr = c.Node(r.Destination).Discard(ctx, id)
+		return result, nil
 	case newest > r.ToEpoch:
 		return Result{Outcome: Superseded}, errors.Join(fmt.Errorf("%w: epoch %d, relocation epoch %d", ErrSupersededBy, newest, r.ToEpoch), c.Catalog.FinishRelocation(ctx, id, catalog.RelocationSuperseded))
 	case newest == r.ToEpoch:
@@ -278,9 +286,15 @@ func (c *Coordinator) Rollback(ctx context.Context, id string) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("relocate: roll back %s: the source's claim: %w", id, err)
 	}
-	if err := c.Node(r.Destination).Discard(ctx, id); err != nil {
-		return Result{}, fmt.Errorf("relocate: roll back %s: discard at the destination: %w", id, err)
-	}
 	result := Result{Outcome: RolledBack, Position: drained.Position, SHA256: drained.SHA256, Fence: claimed.Fence, Epoch: claimed.Epoch}
-	return result, c.Catalog.FinishRelocation(ctx, id, catalog.RelocationRolledBack)
+	if err := c.Catalog.FinishRelocation(ctx, id, catalog.RelocationRolledBack); err != nil {
+		return result, err
+	}
+	result.DiscardErr = c.Node(r.Destination).Discard(ctx, id)
+	return result, nil
+}
+
+func (c *Coordinator) reclaimedBySource(ctx context.Context, r catalog.Relocation, newest uint64) bool {
+	record, err := c.Catalog.Get(ctx, r.ID)
+	return err == nil && record.Owner == r.Source && record.Epoch == newest
 }
