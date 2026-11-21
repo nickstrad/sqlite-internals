@@ -117,7 +117,7 @@ Open chunks (worktrees `../sqlite-internals-work/<name>`, branches `chunk/<name>
 | Chunk | State (2026-11-21 06:10 UTC) |
 | --- | --- |
 | 10b chapter 10 and relocation | done | Neon FAIL → one Opus repair → PASS | 25 held / 0 broken after repair (run 1: 2 broken) | merged 11681f8 |
-| pub | review 1 FAIL → repair → review 2 FAIL (new blocker in `internal/site/check.go`) → arbitration by Muse Wonder Full: FAIL STANDS (`agent_work/pub/ARBITRATION.md` on the branch) → Opus repair round 2 scoped to the arbiter's checklist running, done, then Neon re-review 3: NITS, 48 held / 0 broken; part B (Neon writes README as the book home + comments) and landing come last, after the self-contained sweep |
+| pub publishing | done | Neon FAIL → repair → FAIL → arbitration (Muse Wonder Full: FAIL stands) → second repair → NITS | 48 held / 0 broken (one attack aligned to the final home page) | merged 6f4292c |
 
 Closing prose record (commit of each chapter's closing Neon pass): chapter 5 — 394203d (single late prose pass); chapter 7 — c645979 (closing rewrite); chapter 3 — e71fa8c (single late prose pass); chapter 4 — a9fff51 (closing rewrite); chapter 6 — d394e64, chapter 8 — dfd1dfd and chapter 9 — b58a1a0 (single late prose passes); 10a — 09037a8 (comments only; no chapter text in that chunk); chapter 3 — e71fa8c (single late prose pass); chapter 4 — a9fff51 (closing rewrite); chapter 6 — d394e64, chapter 8 — dfd1dfd and chapter 9 — b58a1a0 (single late prose passes); 10a — 09037a8 (comments only; no chapter text in that chunk); chapter 1 — 66fca8e and chapter 2 — dd5a9b4 (retroactive closing rewrites, merged on main).
 
