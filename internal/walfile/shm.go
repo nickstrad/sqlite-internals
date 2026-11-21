@@ -135,7 +135,9 @@ type Index struct {
 // in walIndexWriteHdr, src/wal.c:951-953).
 func (x *Index) Header() IndexHeader { return x.Headers[0] }
 
-// HeadersAgree reports whether both WalIndexHdr copies in -shm are identical.
+// HeadersAgree reports whether both raw 48-byte WalIndexHdr copies in -shm are
+// byte-for-byte identical, including the 4-byte unused field at bytes 4..7 and
+// 52..55 (matching walIndexTryHdr's memcmp at src/wal.c:2619).
 func (x *Index) HeadersAgree() bool {
 	return bytes.Equal(x.data[:IndexHeaderSize], x.data[IndexHeaderSize:IndexHeaderCopies*IndexHeaderSize])
 }
@@ -160,8 +162,15 @@ func ParseIndexFile(path string) (*Index, error) {
 
 // ParseIndex decodes a raw wal-index (-shm) byte slice. Because -shm uses the
 // host's native byte order (src/wal.c:144-146), the byte order is detected from
-// the version word (3007000). An all-zero first header returns Initialized=false
-// with a nil error (a freshly truncated or zeroed -shm before recovery).
+// the version word (3007000). When both 48-byte header copies are all zero,
+// ParseIndex returns Initialized=false with a nil error (a freshly truncated or
+// zeroed -shm before recovery). When copy 1 (bytes 0..47) is all zero and copy
+// 2 (bytes 48..95) carries version 3007000 in either byte order—the midpoint of
+// walIndexWriteHdr (src/wal.c:942-954)—ParseIndex decodes both headers and
+// Checkpoint using copy 2's byte order and returns a nil error with
+// Initialized=false and HeadersAgree()==false (FramePage refuses lookups with
+// ErrFrameNotIndexed). If copy 1 is zero and copy 2 starts with any other
+// non-zero word, ParseIndex returns ErrIndexVersion.
 func ParseIndex(data []byte) (*Index, error) {
 	if len(data) < IndexHeaderRegionSize {
 		return nil, fmt.Errorf("%w: %d bytes, need %d", ErrShortIndex, len(data), IndexHeaderRegionSize)
@@ -174,6 +183,9 @@ func ParseIndex(data []byte) (*Index, error) {
 		index.order = binary.BigEndian
 		index.BigEndian = true
 	case allZero(data[:IndexHeaderSize]):
+		// walIndexWriteHdr writes copy 2 before the barrier and copy 1 after
+		// (src/wal.c:951-953), so a zero copy 1 beside a populated copy 2 is a
+		// torn header rather than an uninitialized file.
 		second := data[IndexHeaderSize:]
 		switch {
 		case allZero(second[:IndexHeaderSize]):
