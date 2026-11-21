@@ -43,7 +43,7 @@ func Serve(ctx context.Context, n *Node, assertion *bounds.Assertion, apply func
 			status = "EXCEEDED: " + err.Error()
 		}
 		fmt.Fprintf(out, "bounds descriptors=%d memory=%d %s\n", sample.Descriptors, sample.MemoryGrowth, status)
-		if fields[0] == "close" {
+		if fields[0] == "close" && len(fields) == 1 {
 			fmt.Fprintln(out, assertion.Summary())
 			return nil
 		}

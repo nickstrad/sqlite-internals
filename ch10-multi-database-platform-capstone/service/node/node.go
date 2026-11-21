@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -34,6 +35,7 @@ var (
 	ErrMissingLocalFile  = errors.New("the local database file is missing; claim the database again to restore it")
 	ErrChangedWhileShut  = errors.New("the local database file changed while it was closed")
 	idPattern            = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+	sha256Pattern        = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
 type Config struct {
@@ -102,10 +104,25 @@ func Start(config Config) (*Node, error) {
 		if err != nil {
 			return nil, err
 		}
-		if _, err := fmt.Sscanf(string(data), "epoch %d\n", &epoch); err != nil || fmt.Sprintf("epoch %d\n", epoch) != string(data) {
+		if _, err := fmt.Sscanf(string(data), "epoch %d\n", &epoch); err != nil || epoch == 0 || fmt.Sprintf("epoch %d\n", epoch) != string(data) {
 			return nil, fmt.Errorf("node: belief file %s: %q", belief, data)
 		}
 		n.owned[strings.TrimSuffix(filepath.Base(belief), ".owner")] = epoch
+	}
+	records, err := filepath.Glob(filepath.Join(config.Dir, "*.atrest"))
+	if err != nil {
+		return nil, err
+	}
+	for _, record := range records {
+		data, err := os.ReadFile(record)
+		if err != nil {
+			return nil, err
+		}
+		digest := strings.TrimSuffix(string(data), "\n")
+		if !sha256Pattern.MatchString(digest) || digest+"\n" != string(data) {
+			return nil, fmt.Errorf("node: at-rest record %s: %q", record, data)
+		}
+		n.atRest[strings.TrimSuffix(filepath.Base(record), ".atrest")] = digest
 	}
 	n.manager, err = connmgr.New(connmgr.Options{Capacity: config.Capacity, PathFor: n.path, Open: n.openDatabase, OnEvict: n.evicted})
 	return n, err
@@ -139,6 +156,9 @@ func (n *Node) openDatabase(ctx context.Context, path string) (*sqlitex.DB, erro
 		if !status.AtRest || status.SHA256 != recorded {
 			return nil, fmt.Errorf("%w: %s: %s", ErrChangedWhileShut, id, status)
 		}
+		if err := n.removeFile(id, ".atrest"); err != nil {
+			return nil, err
+		}
 	}
 	record, err := n.config.Catalog.Get(ctx, id)
 	if err != nil {
@@ -156,15 +176,55 @@ func (n *Node) openDatabase(ctx context.Context, path string) (*sqlitex.DB, erro
 	if _, err := shipper.AdoptAtRest(ctx); err != nil {
 		return nil, errors.Join(err, shipper.Close())
 	}
-	if _, err := shipper.Cycle(ctx); err != nil {
+	report, err := shipper.Cycle(ctx)
+	if err != nil {
 		return nil, errors.Join(err, shipper.Close())
 	}
 	db, err := sqlitex.Open(ctx, path, options)
 	if err != nil {
 		return nil, errors.Join(err, shipper.Close())
 	}
+	if shipped(report) {
+		var version int
+		err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version)
+		if err == nil {
+			err = n.recordShipped(ctx, id, epoch, shipper.Position(), version)
+		}
+		if err != nil {
+			return nil, errors.Join(err, db.Close(), shipper.Close())
+		}
+	}
 	n.open[id] = &capture{shipper: shipper, epoch: epoch}
 	return db, nil
+}
+
+func shipped(report walship.CycleReport) bool {
+	return report.Segment != nil || report.Snapshot != nil
+}
+
+func (n *Node) recordShipped(ctx context.Context, id string, epoch uint64, position int64, userVersion int) error {
+	err := n.config.Catalog.RecordShipped(ctx, id, epoch, position, userVersion, n.config.Name+":"+id+".db")
+	if errors.Is(err, catalog.ErrStaleEpoch) {
+		return nil
+	}
+	return err
+}
+
+func (n *Node) removeFile(id, suffix string) error {
+	err := os.Remove(filepath.Join(n.config.Dir, id+suffix))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+func (n *Node) writeFile(id, suffix, content string) error {
+	final := filepath.Join(n.config.Dir, id+suffix)
+	temp := final + ".tmp"
+	if err := os.WriteFile(temp, []byte(content), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(temp, final)
 }
 
 func (n *Node) evicted(eviction connmgr.Eviction) {
@@ -176,8 +236,9 @@ func (n *Node) evicted(eviction connmgr.Eviction) {
 	}
 	_, fenced := n.fenced[eviction.ID]
 	var shipErr error
+	var report walship.CycleReport
 	if !fenced && !c.broken {
-		_, shipErr = c.shipper.Cycle(context.Background())
+		report, shipErr = c.shipper.Cycle(context.Background())
 	}
 	closeErr := c.shipper.Close()
 	if errors.Is(shipErr, fence.ErrFenced) {
@@ -199,13 +260,38 @@ func (n *Node) evicted(eviction connmgr.Eviction) {
 		n.problems = append(n.problems, fmt.Sprintf("evict %s: the closed file is not the last shipped state: %s", eviction.ID, status))
 	default:
 		n.atRest[eviction.ID] = status.SHA256
+		if err := n.writeFile(eviction.ID, ".atrest", status.SHA256+"\n"); err != nil {
+			n.problems = append(n.problems, fmt.Sprintf("evict %s: %v", eviction.ID, err))
+		}
 	}
+	if shipped(report) {
+		version, err := userVersionOf(eviction.Path)
+		if err == nil {
+			err = n.recordShipped(context.Background(), eviction.ID, c.epoch, c.shipper.Position(), version)
+		}
+		if err != nil {
+			n.problems = append(n.problems, fmt.Sprintf("evict %s: record shipped: %v", eviction.ID, err))
+		}
+	}
+}
+
+func userVersionOf(path string) (int, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+	header := make([]byte, 100)
+	if _, err := io.ReadFull(file, header); err != nil {
+		return 0, err
+	}
+	return int(binary.BigEndian.Uint32(header[60:64])), nil
 }
 
 func (n *Node) markFenced(id string, err error) {
 	n.fenced[id] = err
 	delete(n.owned, id)
-	if removeErr := os.Remove(filepath.Join(n.config.Dir, id+".owner")); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+	if removeErr := n.removeFile(id, ".owner"); removeErr != nil {
 		n.problems = append(n.problems, fmt.Sprintf("forget ownership of %s: %v", id, removeErr))
 	}
 }
@@ -217,20 +303,21 @@ func (n *Node) evictIfOpen(id string) {
 }
 
 func (n *Node) writeBelief(id string, epoch uint64) error {
-	final := filepath.Join(n.config.Dir, id+".owner")
-	temp := final + ".tmp"
-	if err := os.WriteFile(temp, []byte(fmt.Sprintf("epoch %d\n", epoch)), 0o644); err != nil {
-		return err
-	}
-	return os.Rename(temp, final)
+	return n.writeFile(id, ".owner", fmt.Sprintf("epoch %d\n", epoch))
 }
 
-func pageSizeOf(image []byte) int {
+func pageSizeOf(image []byte) (int, error) {
+	if len(image) < 100 {
+		return 0, fmt.Errorf("node: image of %d bytes", len(image))
+	}
 	size := int(binary.BigEndian.Uint16(image[16:18]))
 	if size == 1 {
-		return 65536
+		size = 65536
 	}
-	return size
+	if size < 512 || size&(size-1) != 0 || len(image)%size != 0 {
+		return 0, fmt.Errorf("node: image of %d bytes has page size %d", len(image), size)
+	}
+	return size, nil
 }
 
 func (n *Node) Claim(ctx context.Context, id string) (ClaimResult, error) {
@@ -243,6 +330,10 @@ func (n *Node) Claim(ctx context.Context, id string) (ClaimResult, error) {
 	n.evictIfOpen(id)
 	delete(n.fenced, id)
 	delete(n.owned, id)
+	delete(n.atRest, id)
+	if err := errors.Join(n.removeFile(id, ".owner"), n.removeFile(id, ".atrest")); err != nil {
+		return ClaimResult{}, err
+	}
 	epoch, err := n.config.Catalog.Claim(ctx, id, n.config.Name)
 	if err != nil {
 		return ClaimResult{}, err
@@ -260,11 +351,12 @@ func (n *Node) Claim(ctx context.Context, id string) (ClaimResult, error) {
 		if err != nil {
 			return ClaimResult{Epoch: epoch, Attempts: attempt}, err
 		}
-		if len(image) < 100 {
-			return ClaimResult{Epoch: epoch, Attempts: attempt}, fmt.Errorf("node: claim %s: image of %d bytes", id, len(image))
+		pageSize, err := pageSizeOf(image)
+		if err != nil {
+			return ClaimResult{Epoch: epoch, Attempts: attempt}, fmt.Errorf("claim %s: %w", id, err)
 		}
 		meta := walship.SnapshotMeta{
-			Position: end + 1, Reason: ReasonFence, PageSize: pageSizeOf(image), Pages: uint32(len(image) / pageSizeOf(image)),
+			Position: end + 1, Reason: ReasonFence, PageSize: pageSize, Pages: uint32(len(image) / pageSize),
 			UserVersion: binary.BigEndian.Uint32(image[60:64]), StateSHA256: walship.SHA256Hex(image),
 		}
 		object, err := walship.EncodeSnapshot(meta, image)
@@ -289,7 +381,7 @@ func (n *Node) Claim(ctx context.Context, id string) (ClaimResult, error) {
 		}
 		n.owned[id] = epoch
 		result := ClaimResult{Epoch: epoch, RestoredFrom: end, Fence: end + 1, Attempts: attempt}
-		return result, n.config.Catalog.RecordShipped(ctx, id, epoch, end+1, int(meta.UserVersion), n.config.Name+":"+id+".db")
+		return result, n.recordShipped(ctx, id, epoch, end+1, int(meta.UserVersion))
 	}
 	return ClaimResult{Epoch: epoch, Attempts: claimAttempts}, fmt.Errorf("node: claim %s: the next position stayed taken for %d attempts", id, claimAttempts)
 }
@@ -376,11 +468,7 @@ func (n *Node) shipLocked(ctx context.Context, id string, userVersion int) (int6
 		return 0, err
 	}
 	position := c.shipper.Position()
-	err := n.config.Catalog.RecordShipped(ctx, id, c.epoch, position, userVersion, n.config.Name+":"+id+".db")
-	if errors.Is(err, catalog.ErrStaleEpoch) {
-		err = nil
-	}
-	return position, err
+	return position, n.recordShipped(ctx, id, c.epoch, position, userVersion)
 }
 
 func (n *Node) afterShip(id string, err error) {
