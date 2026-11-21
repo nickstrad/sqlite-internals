@@ -12,3 +12,11 @@ Run 1 — 2026-11-20, on the Opus build with Neon's comments, `run-all.sh`. Raw 
 | REP-07b | call walfile.ReplayFiles when outPath+".replay-tmp" already exists with sentinel content | ReplayFiles returns an error and preserves the pre-existing .replay-tmp file untouched | replay_err=open _work/adv-ch05/wal-replay-falsify/rep07b/out.db.replay-tmp: file exists tmp_still_exists=false tmp_preserved=false |
 | CHK-03 | connection C runs TRUNCATE then connection W writes restarted WAL header; check OUTLINE 5.4 claim 'salt-1 increments on restart' | restarted WAL header salt-1 == prev_salt1 + 1 (OUTLINE 5.4 literal evidence claim) | before_salt1=0xc08ddcfd after_trunc_shm_salt1=0xc08ddcfe(+1:true) restarted_wal_salt1=0x1d025b82(+1:false) ckpt_seq=0->0 |
 | CHK-05 | lock-free NOOP under simultaneous writer+checkpointer+reader; multi-conn close cleanup vs Replay E1; read-only checkpoint | NOOP returns immediately (<100ms, busy=0, accurate log); -wal persists until last close then auto-checkpoints E1-equal and deletes -wal/-shm; mode=ro cannot che | noop=busy=0 log=38 checkpointed=0(0ms,err=<nil>) wal_kept_1close=true cleaned_last=true E1=true ro_ckpt=busy=0 log=38 checkpointed=38(err=<nil>) |
+
+Run 2 — after the Opus repair round (208d5ad): 24 HELD, 4 BROKEN (`results-run2.txt`).
+The repair report (`../REPAIR-REPORT.md`) says for each run-1 finding whether it was fixed or answered. Still BROKEN in run 2:
+
+- REP-02 — replay generation-2 WAL (steps 6-8, ckpt-seq=1) onto stale generation-0 base (step 0)
+- REP-05 — committed transaction with cache_size=5 spills/in-place overwrites + SAVEPOINT/ROLLBACK TO/RELEASE
+- CHK-03 — connection C runs TRUNCATE then connection W writes restarted WAL header; check OUTLINE 5.4 claim 'salt-1 increments on restart'
+- CHK-05 — lock-free NOOP under simultaneous writer+checkpointer+reader; multi-conn close cleanup vs Replay E1; read-only checkpoint
