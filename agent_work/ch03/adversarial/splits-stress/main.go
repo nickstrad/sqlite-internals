@@ -326,17 +326,19 @@ func main() {
 		fatal("mkdir scratch", err)
 	}
 
-	// SPL-01: Random insert orders under 3 fixed seeds (OUTLINE 3.1 bullet 1).
-	// Attacks: "most inserts change one page", root page invariance,
-	// integrity_check=ok every step, changedPages subset of WAL frames, and
-	// measures how often balance_nonroot ships unchanged-byte WAL frames.
+	// SPL-01: Random insert orders under 3 fixed seeds (OUTLINE 3.1 bullet 1 +
+	// repair-round correction 7 / 3.1 part E).
+	// Verifies the corrected rule: root constancy, integrity_check=ok, and
+	// changed<=WAL hold across all random workloads; for 1000B rows (4/leaf),
+	// <50% of inserts change 1 page (frequent splits and sibling rebalances),
+	// while for small 40B rows (~85/leaf), >50% of inserts change 1 page again.
 	{
 		seeds := []uint64{11, 42, 99}
 		const nRows = 250
 		allRootConst := true
 		allIntegrityOK := true
 		allChangedInWAL := true
-		allMostOnePage := true
+		allLargeUnderHalf := true
 		var seedSummaries []string
 		for _, seed := range seeds {
 			dbPath := filepath.Join(scratch, fmt.Sprintf("spl01-seed-%d.db", seed))
@@ -374,18 +376,49 @@ func main() {
 					maxDepth = d
 				}
 			}
-			if onePage <= nRows/2 {
-				allMostOnePage = false
+			if onePage*2 >= nRows {
+				allLargeUnderHalf = false
 			}
 			seedSummaries = append(seedSummaries,
 				fmt.Sprintf("seed=%d:1pg=%d/%d,splits=%d,wal>changed=%d,depth=%d,pages=%d",
 					seed, onePage, nRows, splits, walExtra, maxDepth, tr.file.PageCount()))
 			tr.close()
 		}
-		held := allRootConst && allIntegrityOK && allChangedInWAL && allMostOnePage
+		// Companion small-row random check (40B rows, ~85/leaf): >50% change 1 page.
+		smallOnePage := 0
+		{
+			const nSmall = 250
+			dbPath := filepath.Join(scratch, "spl01-small-seed-11.db")
+			tr := openTracker(ctx, dbPath, "CREATE TABLE t(id INTEGER PRIMARY KEY, v BLOB)")
+			rootPage := tr.rootOf("t")
+			ids := make([]int64, nSmall)
+			for i := range ids {
+				ids[i] = int64(i + 1)
+			}
+			rng := rand.New(rand.NewPCG(11, 0))
+			rng.Shuffle(len(ids), func(i, j int) { ids[i], ids[j] = ids[j], ids[i] })
+			for _, id := range ids {
+				res := tr.exec(ctx, true, "INSERT INTO t(id, v) VALUES(?, ?)", id, makeBlob(fmt.Sprintf("s%04d", id), 40))
+				if len(res.changes) == 1 {
+					smallOnePage++
+				}
+				if !isSubset(equal.PageNumbers(res.changes), res.walPages) {
+					allChangedInWAL = false
+				}
+				if tr.rootOf("t") != rootPage {
+					allRootConst = false
+				}
+				if res.integrity != "ok" {
+					allIntegrityOK = false
+				}
+			}
+			seedSummaries = append(seedSummaries, fmt.Sprintf("small40B-seed=11:1pg=%d/%d", smallOnePage, nSmall))
+			tr.close()
+		}
+		held := allRootConst && allIntegrityOK && allChangedInWAL && allLargeUnderHalf && smallOnePage*2 > 250
 		report("SPL-01",
-			"random insert orders (3 fixed seeds x 250 rows of 1000-byte blobs)",
-			"root constant, integrity ok, changed<=WAL, and >50% of inserts change 1 page across all seeds",
+			"random insert orders (3 fixed seeds x 250 rows of 1000B blobs + 250 rows of 40B blobs)",
+			"root constant, integrity ok, changed<=WAL; <50% 1-page for 1000B (4/leaf) across all seeds and >50% 1-page for 40B (~85/leaf)",
 			fmt.Sprintf("rootConst=%v integrity=%v changedInWAL=%v [%s]",
 				allRootConst, allIntegrityOK, allChangedInWAL, strings.Join(seedSummaries, "; ")),
 			held)
@@ -454,24 +487,27 @@ func main() {
 	}
 
 	// SPL-03: Overflowing row sizes (5000B = 1 overflow page, 10000B = 2 overflow pages).
-	// Attacks the unqualified headline claim "most inserts change one page" (OUTLINE 3.1).
+	// Verifies the corrected claim (3.1 part E / correction 7): overflowing rows never
+	// change 1 page (0/25); each writes leaf + overflow page(s) + page 1 (>=3 / >=4 pages).
 	{
 		cases := []struct {
 			name    string
 			blobLen int
+			minExp  int
 		}{
-			{"ovf1-5000B", 5000},
-			{"ovf2-10000B", 10000},
+			{"ovf1-5000B", 5000, 3},
+			{"ovf2-10000B", 10000, 4},
 		}
 		const nInserts = 25
 		var parts []string
-		anyMostlyOne := false
+		allOK := true
 		for _, tc := range cases {
 			dbPath := filepath.Join(scratch, "spl03-"+tc.name+".db")
 			tr := openTracker(ctx, dbPath, "CREATE TABLE t(id INTEGER PRIMARY KEY, v BLOB)")
 			onePage, minChg, maxChg := 0, 999, 0
+			walOK, intOK := true, true
 			for i := 1; i <= nInserts; i++ {
-				res := tr.exec(ctx, false, "INSERT INTO t(id, v) VALUES(?, ?)", int64(i), makeBlob("ovf", tc.blobLen))
+				res := tr.exec(ctx, true, "INSERT INTO t(id, v) VALUES(?, ?)", int64(i), makeBlob("ovf", tc.blobLen))
 				c := len(res.changes)
 				if c == 1 {
 					onePage++
@@ -482,20 +518,24 @@ func main() {
 				if c > maxChg {
 					maxChg = c
 				}
+				if !isSubset(equal.PageNumbers(res.changes), res.walPages) {
+					walOK = false
+				}
+				if res.integrity != "ok" {
+					intOK = false
+				}
 			}
 			tr.close()
-			if onePage > nInserts/2 {
-				anyMostlyOne = true
+			if onePage != 0 || minChg < tc.minExp || !walOK || !intOK {
+				allOK = false
 			}
-			parts = append(parts, fmt.Sprintf("%s:1pg=%d/%d,min=%d,max=%d", tc.name, onePage, nInserts, minChg, maxChg))
+			parts = append(parts, fmt.Sprintf("%s:1pg=%d/%d,min=%d,max=%d,walOK=%v,intOK=%v", tc.name, onePage, nInserts, minChg, maxChg, walOK, intOK))
 		}
-		// Unqualified claim "most inserts change one page" FAILS for overflowing payloads:
-		// every single insert writes overflow page(s) + leaf + page 1 (0 of 25 change 1 page).
 		report("SPL-03",
 			"append 25 overflowing rows (5000B and 10000B > maxLocal 4061B) into a WAL table",
-			"headline claim 'most inserts change one page' holds (or breaks cleanly for overflowing payloads)",
+			"0/25 one-page inserts; every insert writes leaf + overflow(s) + page 1 (>=3 for 5000B, >=4 for 10000B), changed<=WAL, integrity ok",
 			strings.Join(parts, "; "),
-			anyMostlyOne)
+			allOK)
 	}
 
 	// SPL-04: Secondary index multiplication (0, 1, 2, 4 indexes) + index root invariance
@@ -586,13 +626,16 @@ func main() {
 			held)
 	}
 
-	// SPL-05: WITHOUT ROWID sequential appends do NOT get balance_quick (btree.c:9185 checks leafData).
-	// Attacks 3.1's append-split claim: "an append split at depth 2 changes three pages; the full leaf is not rewritten."
+	// SPL-05: WITHOUT ROWID sequential appends do NOT get balance_quick (btree.c:9185 checks intKeyLeaf).
+	// Verifies the corrected claim (3.1 part E / correction 7): WITHOUT ROWID is an index
+	// B-tree, so root stays constant, changed<=WAL, integrity ok, and every depth-2 append
+	// split goes through balance_nonroot and changes >3 pages.
 	{
 		dbPath := filepath.Join(scratch, "spl05-without-rowid.db")
 		tr := openTracker(ctx, dbPath, "CREATE TABLE t(k TEXT PRIMARY KEY, v BLOB) WITHOUT ROWID")
 		rootPage := tr.rootOf("t")
 		rootConst := true
+		walOK := true
 		var depth2Splits []int
 		for i := 1; i <= 30; i++ {
 			k := fmt.Sprintf("key-%06d", i)
@@ -600,6 +643,9 @@ func main() {
 			res := tr.exec(ctx, true, "INSERT INTO t(k, v) VALUES(?, ?)", k, makeBlob(k, 400))
 			if tr.rootOf("t") != rootPage {
 				rootConst = false
+			}
+			if !isSubset(equal.PageNumbers(res.changes), res.walPages) {
+				walOK = false
 			}
 			if res.integrity != "ok" {
 				fatal("spl05 integrity", fmt.Errorf("%s", res.integrity))
@@ -609,20 +655,18 @@ func main() {
 			}
 		}
 		tr.close()
-		// Every depth-2 append split in a rowid table changes 3 pages (balance_quick);
-		// in WITHOUT ROWID it uses balance_nonroot and rewrites existing leaf(s), changing >=4 pages.
-		allThree := len(depth2Splits) > 0
+		allWide := len(depth2Splits) > 0
 		for _, c := range depth2Splits {
-			if c != 3 {
-				allThree = false
+			if c <= 3 {
+				allWide = false
 			}
 		}
 		report("SPL-05",
 			"sequential ascending appends into a WITHOUT ROWID table (30 x 400B rows)",
-			"append split at depth 2 changes 3 pages (balance_quick) as 3.1 claims for append splits",
-			fmt.Sprintf("rootConst=%v depth2_append_split_changed_pages=%v (WITHOUT ROWID uses index B-tree -> balance_nonroot, not balance_quick)",
-				rootConst, depth2Splits),
-			allThree)
+			"root constant, changed<=WAL, integrity ok, and every depth-2 append split changes >3 pages (index B-tree uses balance_nonroot, not balance_quick)",
+			fmt.Sprintf("rootConst=%v walOK=%v depth2_append_split_changed_pages=%v",
+				rootConst, walOK, depth2Splits),
+			rootConst && walOK && allWide)
 	}
 
 	// SPL-06: In-place UPDATE (btreeOverwriteCell) vs size-growing UPDATE on a full leaf.

@@ -42,17 +42,23 @@ func fatal(what string, err error) {
 
 // --- Exact R2 dump / replay functions matching 3.3-same-rows-different-bytes/main.go ---
 
-func insertSQL(t equal.TableInfo) string {
-	var names, marks []string
+func rowidName(name string) string {
+	switch strings.ToLower(name) {
+	case "rowid", "_rowid_", "oid":
+		return name
+	}
+	return equal.QuoteIdentifier(name)
+}
+
+func insertStatement(t equal.TableInfo, values []string) string {
+	var names []string
 	if !t.WithoutRowid {
-		names = append(names, t.RowidColumn)
-		marks = append(marks, "?")
+		names = append(names, rowidName(t.RowidColumn))
 	}
 	for _, c := range t.Columns {
 		names = append(names, equal.QuoteIdentifier(c))
-		marks = append(marks, "?")
 	}
-	return fmt.Sprintf("INSERT INTO %s(%s) VALUES(%s)", equal.QuoteIdentifier(t.Name), strings.Join(names, ", "), strings.Join(marks, ", "))
+	return fmt.Sprintf("INSERT INTO %s(%s) VALUES(%s)", equal.QuoteIdentifier(t.Name), strings.Join(names, ", "), strings.Join(values, ", "))
 }
 
 func sqlLiteral(value any) string {
@@ -74,7 +80,11 @@ func sqlLiteral(value any) string {
 		}
 		return text
 	case string:
-		return "'" + strings.ReplaceAll(v, "'", "''") + "'"
+		parts := strings.Split(v, "\x00")
+		for i, part := range parts {
+			parts[i] = "'" + strings.ReplaceAll(part, "'", "''") + "'"
+		}
+		return strings.Join(parts, "||char(0)||")
 	case []byte:
 		return "X'" + strings.ToUpper(hex.EncodeToString(v)) + "'"
 	}
@@ -82,8 +92,8 @@ func sqlLiteral(value any) string {
 	return ""
 }
 
-// r2Dump mirrors 3.3-same-rows-different-bytes/main.go's dump() verbatim so we
-// can test its edge cases against arbitrary valid SQLite databases.
+// r2Dump mirrors the repaired 3.3-same-rows-different-bytes/main.go's dump()
+// verbatim so we can test its edge cases against arbitrary valid SQLite databases.
 func r2Dump(ctx context.Context, path string) (string, error) {
 	db, err := equal.OpenExisting(ctx, path)
 	if err != nil {
@@ -103,27 +113,42 @@ func r2Dump(ctx context.Context, path string) (string, error) {
 	var body strings.Builder
 	var sequence []string
 	pragmas := map[string]string{}
+	schema, err := conn.QueryContext(ctx, "SELECT type, name, sql FROM main.sqlite_schema WHERE sql IS NOT NULL ORDER BY rowid")
+	if err != nil {
+		return "", err
+	}
+	for schema.Next() {
+		var kind, name, statement string
+		if err := schema.Scan(&kind, &name, &statement); err != nil {
+			schema.Close()
+			return "", err
+		}
+		if strings.HasPrefix(name, "sqlite_") {
+			continue
+		}
+		switch kind {
+		case "table":
+			tables = append(tables, statement+";")
+		case "index":
+			indexes = append(indexes, statement+";")
+		default:
+			others = append(others, statement+";")
+		}
+	}
+	if err := schema.Err(); err != nil {
+		schema.Close()
+		return "", err
+	}
+	if err := schema.Close(); err != nil {
+		return "", err
+	}
 	err = equal.WalkLogical(ctx, conn, equal.LogicalVisitor{
-		Schema: func(r equal.SchemaRow) error {
-			if !r.SQL.Valid || strings.HasPrefix(r.Name, "sqlite_") {
-				return nil
-			}
-			switch r.Type {
-			case "table":
-				tables = append(tables, r.SQL.String+";")
-			case "index":
-				indexes = append(indexes, r.SQL.String+";")
-			default:
-				others = append(others, r.SQL.String+";")
-			}
-			return nil
-		},
 		Row: func(t equal.TableInfo, values []any) error {
 			literals := make([]string, len(values))
 			for i, v := range values {
 				literals[i] = sqlLiteral(v)
 			}
-			line := strings.Replace(insertSQL(t), strings.TrimSuffix(strings.Repeat("?, ", len(values)), ", "), strings.Join(literals, ", "), 1) + ";\n"
+			line := insertStatement(t, literals) + ";\n"
 			switch {
 			case t.Name == "sqlite_sequence":
 				sequence = append(sequence, line)
@@ -436,12 +461,12 @@ func main() {
 		if err != nil {
 			fatal("E2", err)
 		}
-		// Claim in 3.3 / R2: replayed copy canonicalizes to the same VACUUM INTO sha256 as the source.
-		// Breaks whenever source tables were not created in alphabetical order because WalkLogical sorts tables by name!
+		// Claim in 3.3 / R2 (repaired): dump preserves sqlite_schema rowid order, so the
+		// replayed copy is E3-equal AND canonicalizes to the source's VACUUM INTO sha256 at E1.
 		report("R2-02",
 			"R2 dump + replay + VACUUM INTO on DB with tables created in non-alphabetical order (zebra before alpha)",
 			"replayed DB is E3-equal to original AND its VACUUM INTO matches original's VACUUM INTO at E1",
-			fmt.Sprintf("E3_equal=%v, VACUUM_INTO_E1_equal=%v(diffPages=%d), VACUUM_INTO_E2_equal=%v (dump sorted tables alphabetically, changing sqlite_schema rowid order)",
+			fmt.Sprintf("E3_equal=%v, VACUUM_INTO_E1_equal=%v(diffPages=%d), VACUUM_INTO_E2_equal=%v",
 				e3.Equal, e1.Equal, e1.DifferingPages, e2.Equal),
 			e3.Equal && e1.Equal)
 	}

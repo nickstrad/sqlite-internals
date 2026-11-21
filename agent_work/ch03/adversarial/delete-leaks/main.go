@@ -242,17 +242,19 @@ func main() {
 		fB, fD, fF, _ := runAV(sqlitex.AutoVacuumFull)
 		iB, iD, iF, iV := runAV(sqlitex.AutoVacuumIncremental)
 
-		// Unqualified claim "the file never shrinks on its own" breaks under auto_vacuum=FULL:
-		// pagesAfterDel < pagesBefore immediately on DELETE without VACUUM.
-		fullShrankOnDelete := fD < fB
+		// Corrected claim (3.2 auto_vacuum part / correction 8):
+		// NONE never shrinks on DELETE (freelist>0) and shrinks on VACUUM;
+		// FULL shrinks immediately on DELETE leaving freelist=0;
+		// INCREMENTAL holds freed pages on freelist until PRAGMA incremental_vacuum.
+		fullShrankOnDelete := fD < fB && fF == 0
 		noneNeedsVacuum := nD == nB && nF > 0 && nV < nB
 		incNeedsPragma := iD == iB && iF > 0 && iV < iB
 		report("DEL-02",
 			"DELETE 150 of 200 rows under auto_vacuum=NONE, FULL, and INCREMENTAL",
-			"unqualified claim 'file never shrinks on its own' holds across auto_vacuum modes (or breaks for FULL)",
+			"NONE never shrinks until VACUUM (freelist>0); FULL shrinks on DELETE (freelist=0); INCREMENTAL holds freelist until incremental_vacuum",
 			fmt.Sprintf("NONE:%d->del:%d(free=%d)->vacuum:%d; FULL:%d->del:%d(free=%d); INC:%d->del:%d(free=%d)->inc_vac:%d (noneOK=%v incOK=%v fullShrank=%v)",
 				nB, nD, nF, nV, fB, fD, fF, iB, iD, iF, iV, noneNeedsVacuum, incNeedsPragma, fullShrankOnDelete),
-			!fullShrankOnDelete && noneNeedsVacuum && incNeedsPragma)
+			noneNeedsVacuum && fullShrankOnDelete && incNeedsPragma)
 	}
 
 	// DEL-03: secure_delete=ON vs OFF across 5 distinct deletion/overwrite paths:
@@ -458,21 +460,22 @@ func main() {
 		db.Close()
 		dbAtRest := countMarkers(mustRead(p), "WALKEY", 1, 40)
 
-		// BROKEN highlights the critical platform caveat: secure_delete=ON scrubs the .db file (0),
-		// but the -wal file (and any shipped WAL segments!) still holds all 40 plaintext secrets
-		// after DELETE and even after PASSIVE checkpoint until TRUNCATE!
-		noLeakAnywhere := walAfterDel == 0 && walAfterPassive == 0 && walAfterTrunc == 0 && dbAtRest == 0
+		// Corrected claim (3.2 -wal part / correction 9): secure_delete=ON scrubs the .db file
+		// at rest (0/40), while -wal retains prior INSERT frames (40/40) after DELETE and even
+		// after PASSIVE checkpoint until TRUNCATE clears -wal (0/40).
+		matchesCorrected := walAfterDel == 40 && walAfterPassive == 40 && walAfterTrunc == 0 && dbAtRest == 0
 		report("DEL-05",
 			"INSERT + DELETE 40 secret rows with secure_delete=ON (wal_autocheckpoint=0); inspect -wal after DELETE, after PASSIVE checkpoint, after TRUNCATE, and .db at rest",
-			"deleted payload bytes are nowhere on disk once DELETE commits with secure_delete=ON",
+			"secure_delete=ON scrubs .db at rest (0/40), while -wal keeps 40/40 after DELETE and PASSIVE until TRUNCATE clears it (0/40)",
 			fmt.Sprintf("wal_after_delete=%d/40, wal_after_PASSIVE=%d/40, wal_after_TRUNCATE=%d/40, db_at_rest=%d/40",
 				walAfterDel, walAfterPassive, walAfterTrunc, dbAtRest),
-			noLeakAnywhere)
+			matchesCorrected)
 	}
 
 	// DEL-06: Multi-page transaction starting with a non-empty freelist.
-	// Attacks 3.2's exact check wording: "page_count grows only in a transaction
-	// that started with an empty freelist".
+	// Verifies the corrected 3.2 wording (step 4 + large-transaction part / correction 10):
+	// reuse is per page allocation, so a transaction needing more pages than the freelist holds
+	// exhausts the freelist (freelist_count -> 0) and grows page_count in the same transaction.
 	{
 		p := filepath.Join(scratch, "del06-multipage-tx.db")
 		cleanDB(p)
@@ -502,14 +505,12 @@ func main() {
 		pagesAfter := pragmaInt(ctx, db, "page_count")
 		db.Close()
 
-		// Literally, page_count grew in a transaction that started with freelist_count > 0
-		// (SQLite exhausts the freelist per page allocation, not per transaction).
-		grewWhenNonEmpty := freeBefore > 0 && pagesAfter > pagesBefore && freeAfter == 0
+		exhaustedThenGrew := freeBefore > 0 && freeAfter == 0 && pagesAfter > pagesBefore
 		report("DEL-06",
 			"single transaction inserting 32 x 1000B rows (~8 pages) when freelist_count > 0",
-			"3.2 check wording 'page_count grows only in a transaction that started with an empty freelist'",
+			"per-allocation reuse: transaction exhausts freelist (freelist_count->0) and then grows page_count in the same commit",
 			fmt.Sprintf("freelist %d->%d, page_count %d->%d (freelist exhausted mid-tx, then file grew by %d pages in same tx)",
 				freeBefore, freeAfter, pagesBefore, pagesAfter, pagesAfter-pagesBefore),
-			!grewWhenNonEmpty)
+			exhaustedThenGrew)
 	}
 }
