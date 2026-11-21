@@ -1,0 +1,423 @@
+// Experiment 10.2 tests two capstone invariants under process kills: every
+// database can be reopened after process failure, and no acknowledged durable
+// write is lost under its stated durability mode.
+//
+// One node owns 4 databases while keeping at most 2 open (forcing LRU eviction
+// on every round-robin write). Each run sends 12 writes in either local-durable
+// mode (synchronous=FULL; walFrames syncs -wal before COMMIT returns at
+// src/wal.c:4195-4213; recovery restarts on the local directory) or
+// store-durable mode (acknowledged after the segment put; recovery deletes the
+// node's entire directory and rebuilds every database from SeaweedFS S3).
+//
+// Part A (Linux only) uses strace to kill the node on entry to evenly spaced
+// fsync/fdatasync calls and verifies walIndexRecover (src/wal.c:1390-1614)
+// recovers every database cleanly with recovered user_version >= acknowledged.
+// Part B (portable) kills interactive runs at seeded random delays inside the
+// measured write-loop window (redrawing if a kill lands after the last reply).
+// Part C runs the ack-before-put mutant as a self-test to prove the checker
+// catches an unshipped store-durable acknowledgement.
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"math/rand/v2"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"time"
+
+	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/lab"
+	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/node"
+	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/sqlite-internals/internal/trace"
+)
+
+const packagePath = "ch10-multi-database-platform-capstone/experiments/10.2-acknowledged-writes-survive"
+
+var (
+	failures     []string
+	databases    = flag.Int("databases", 4, "databases the node owns")
+	writes       = flag.Int("writes", 12, "writes in each killed run, round robin over the databases")
+	syscallKills = flag.Int("syscall-kills", 4, "kill points at fsync per mode (Linux, strace)")
+	randomKills  = flag.Int("random-kills", 2, "kills at a random time per mode")
+	seed         = flag.Uint64("seed", 1, "seed of the random kill times")
+	mutant       = flag.String("mutant", "", "ack-before-put: the killed node acknowledges store-durable writes before the segment put")
+	portable     = flag.Bool("portable", false, "skip the strace kill points even on Linux")
+	role         = flag.String("role", "", "internal: run as a service node")
+	process      node.ProcessConfig
+)
+
+func init() {
+	flag.StringVar(&process.Name, "name", "", "internal: node name")
+	flag.StringVar(&process.Work, "work", "", "internal: work directory")
+	flag.StringVar(&process.Fault, "fault", "", "internal: fault rule fault:match:nth on the node's store")
+	flag.StringVar(&process.Bucket, "bucket", "course-ch10b", "S3 bucket")
+	flag.StringVar(&process.Prefix, "prefix", "exp-10-2", "key prefix of this experiment in the bucket")
+	flag.IntVar(&process.Capacity, "capacity", 2, "databases a node keeps open")
+	flag.BoolVar(&process.AckBeforePut, "ack-before-put", false, "internal: the mutant node")
+}
+
+func check(ok bool, claim string) {
+	status := "ok"
+	if !ok {
+		status = "FAILED"
+		failures = append(failures, claim)
+	}
+	fmt.Printf("check %s: %s\n", status, claim)
+}
+
+func fatal(what string, err error) {
+	fmt.Printf("FATAL %s: %v\n", what, err)
+	os.Exit(1)
+}
+
+type experiment struct {
+	env *lab.Env
+	ids []string
+}
+
+type outcome struct {
+	acked      map[string]int
+	acks       int
+	replies    int
+	recovered  map[string]lab.Recovered
+	integrity  map[string]string
+	reopened   int
+	violations []string
+}
+
+func (x *experiment) script(mode node.AckMode) []string {
+	commands := make([]string, *writes)
+	for i := range commands {
+		commands[i] = fmt.Sprintf("write %s %s", x.ids[i%len(x.ids)], mode)
+	}
+	return commands
+}
+
+func (x *experiment) setup() {
+	if err := x.env.Reset(x.ids); err != nil {
+		fatal("reset", err)
+	}
+	p, err := x.env.Start(x.env.Config("a", ""))
+	if err != nil {
+		fatal("start node a", err)
+	}
+	for _, id := range x.ids {
+		reply, err := x.env.Send(p, "claim "+id)
+		if err != nil || !strings.HasPrefix(reply.Line, "ok claim ") {
+			fatal("claim "+id, fmt.Errorf("%q %v", reply.Line, err))
+		}
+	}
+	if _, err := x.env.Stop(p); err != nil {
+		fatal("stop node a", err)
+	}
+}
+
+func (x *experiment) killedConfig() node.ProcessConfig {
+	config := x.env.Config("a", "")
+	config.AckBeforePut = *mutant == "ack-before-put"
+	return config
+}
+
+func (x *experiment) record(o *outcome, replies []string) {
+	o.replies = len(replies)
+	for _, line := range replies {
+		if !strings.HasPrefix(line, "ok write ") {
+			continue
+		}
+		id, ack, err := node.ParseAck(line)
+		if err != nil {
+			fatal("parse acknowledgement", err)
+		}
+		o.acked[id] = max(o.acked[id], ack.UserVersion)
+		o.acks++
+	}
+}
+
+func newOutcome() *outcome {
+	return &outcome{acked: map[string]int{}, recovered: map[string]lab.Recovered{}, integrity: map[string]string{}}
+}
+
+func (x *experiment) traced(mode node.AckMode, kill *trace.KillAt) (*trace.Result, *outcome) {
+	x.setup()
+	command, err := trace.SelfCommand(x.killedConfig().Args()...)
+	if err != nil {
+		fatal("self command", err)
+	}
+	stdin := strings.Join(x.script(mode), "\n") + "\n"
+	result, err := trace.Run(x.env.Ctx, trace.Options{Command: command, Stdin: strings.NewReader(stdin), Syscalls: []string{"fsync", "fdatasync"}, KillAt: kill})
+	if err != nil {
+		fatal("strace", err)
+	}
+	o := newOutcome()
+	x.record(o, x.env.Tracker.NoteOutput("a", result.Stdout))
+	return result, o
+}
+
+func (x *experiment) randomKill(mode node.AckMode, delay time.Duration) (*outcome, time.Duration) {
+	x.setup()
+	p, err := x.env.Start(x.killedConfig())
+	if err != nil {
+		fatal("start node a", err)
+	}
+	// Time only the write loop (after setup and node startup) so random kill
+	// delays fall inside the active write window rather than after the last reply.
+	writesStarted := time.Now()
+	timer := time.AfterFunc(delay, func() { p.Signal() })
+	var replies []string
+	for _, command := range x.script(mode) {
+		reply, err := x.env.Send(p, command)
+		if err != nil {
+			break
+		}
+		replies = append(replies, reply.Line)
+	}
+	writeElapsed := time.Since(writesStarted)
+	timer.Stop()
+	p.Signal()
+	p.Reap()
+	o := newOutcome()
+	x.record(o, replies)
+	return o, writeElapsed
+}
+
+func (x *experiment) recover(mode node.AckMode, o *outcome) {
+	if mode == node.StoreDurable {
+		if err := os.RemoveAll(x.env.NodeDir("a")); err != nil {
+			fatal("delete the local files", err)
+		}
+	}
+	p, err := x.env.Start(x.env.Config("a", ""))
+	if err != nil {
+		fatal("restart node a", err)
+	}
+	remote := node.Remote{Process: func() *node.Process { return p }, OnReply: func(_ string, reply node.Reply) { x.env.Tracker.Note("a", reply) }}
+	for _, id := range x.ids {
+		if mode == node.StoreDurable {
+			if _, err := remote.Claim(x.env.Ctx, id); err != nil {
+				o.violations = append(o.violations, fmt.Sprintf("%s: no rebuild from the store: %v", id, err))
+				continue
+			}
+		}
+		inspection, err := remote.Inspect(x.env.Ctx, id)
+		if err != nil {
+			o.violations = append(o.violations, fmt.Sprintf("%s does not reopen: %v", id, err))
+			continue
+		}
+		o.reopened++
+		o.integrity[id] = inspection.Integrity
+	}
+	if _, err := x.env.Stop(p); err != nil {
+		fatal("stop node a", err)
+	}
+	for _, id := range x.ids {
+		if _, ok := o.integrity[id]; !ok {
+			continue
+		}
+		recovered, err := x.env.MatchFile(x.env.DatabasePath("a", id))
+		if err != nil {
+			fatal("match "+id, err)
+		}
+		o.recovered[id] = recovered
+		switch {
+		case o.integrity[id] != "ok":
+			o.violations = append(o.violations, fmt.Sprintf("%s integrity %s", id, o.integrity[id]))
+		case !recovered.RecipeState:
+			o.violations = append(o.violations, fmt.Sprintf("%s is not a recipe state: %s", id, recovered.Match))
+		case recovered.UserVersion < o.acked[id]:
+			o.violations = append(o.violations, fmt.Sprintf("%s recovered step %d, acknowledged step %d", id, recovered.UserVersion, o.acked[id]))
+		}
+	}
+}
+
+func (x *experiment) versions(o *outcome) (string, string) {
+	var recovered, acked []string
+	for _, id := range x.ids {
+		recovered = append(recovered, fmt.Sprint(o.recovered[id].UserVersion))
+		acked = append(acked, fmt.Sprint(o.acked[id]))
+	}
+	return strings.Join(recovered, ","), strings.Join(acked, ",")
+}
+
+func killedFile(result *trace.Result) string {
+	for _, call := range result.Log.Calls {
+		if call.Unfinished && (call.Name == "fsync" || call.Name == "fdatasync") {
+			return filepath.Base(call.Path)
+		}
+	}
+	return "no file: nothing was killed"
+}
+
+func fsyncsByThread(result *trace.Result) (int, int, int) {
+	counts := map[int]int{}
+	for _, call := range result.Log.Calls {
+		if call.Name == "fsync" || call.Name == "fdatasync" {
+			counts[call.PID]++
+		}
+	}
+	best, most, total := 0, 0, 0
+	for pid, n := range counts {
+		total += n
+		if n > most {
+			best, most = pid, n
+		}
+	}
+	return best, most, total - most
+}
+
+func (x *experiment) syscallKills(mode node.AckMode) {
+	uninterrupted, base := x.traced(mode, nil)
+	_, syncs, elsewhere := fsyncsByThread(uninterrupted)
+	fmt.Printf("%s, uninterrupted: %d commands, %d acknowledged, %d fsync calls on the node's command thread (the process exits at the end of its input without closing)\n", mode, base.replies, base.acks, syncs)
+	fmt.Printf("INFO: fsync calls on other threads: %d\n", elsewhere)
+	check(uninterrupted.ExitCode == 0 && base.acks == *writes && elsewhere == 0, fmt.Sprintf("%s: the uninterrupted run acknowledges all %d writes and every fsync runs on the command thread", mode, *writes))
+	violations, killed := 0, 0
+	for i := range *syscallKills {
+		when := 1 + i*(syncs-1)/max(*syscallKills-1, 1)
+		result, o := x.traced(mode, &trace.KillAt{Syscalls: []string{"fsync", "fdatasync"}, When: when})
+		if result.Killed == "SIGKILL" {
+			killed++
+		}
+		x.recover(mode, o)
+		recovered, acked := x.versions(o)
+		during := "after the last command"
+		if o.replies < *writes {
+			during = fmt.Sprintf("during command %d (%s)", o.replies+1, x.script(mode)[o.replies])
+		}
+		fmt.Printf("%s, kill at fsync %d of %d (of %s) %s: %d acknowledged; reopened %d of %d; recovered user_version %s; acknowledged %s\n",
+			mode, when, syncs, killedFile(result), during, o.acks, o.reopened, len(x.ids), recovered, acked)
+		for _, v := range o.violations {
+			fmt.Println("  violation: " + v)
+		}
+		violations += len(o.violations)
+	}
+	check(killed == *syscallKills, fmt.Sprintf("%s: strace killed the node at each of the %d fsync kill points", mode, *syscallKills))
+	check(violations == 0, fmt.Sprintf("%s: after each kill at an fsync every database reopens (integrity ok, a recipe state) and holds at least every write acknowledged in this mode", mode))
+}
+
+const drawsPerRandomKill = 5
+
+func (x *experiment) randomTimeKills(mode node.AckMode, rng *rand.Rand) {
+	full, elapsed := x.randomKill(mode, time.Hour)
+	fmt.Printf("INFO: %s, the write loop of an unkilled interactive run of %d writes took %s (%d acknowledged)\n", mode, *writes, elapsed.Round(time.Millisecond), full.acks)
+	violations, inFlight := 0, 0
+	for i := range *randomKills {
+		for draw := 1; draw <= drawsPerRandomKill; draw++ {
+			delay := time.Duration(rng.Int64N(int64(elapsed)))
+			o, _ := x.randomKill(mode, delay)
+			x.recover(mode, o)
+			recovered, acked := x.versions(o)
+			fmt.Printf("INFO: %s, random kill %d (draw %d) after %s: %d acknowledged; reopened %d; recovered %s; acknowledged %s\n", mode, i+1, draw, delay.Round(time.Millisecond), o.acks, o.reopened, recovered, acked)
+			for _, v := range o.violations {
+				fmt.Println("  violation: " + v)
+			}
+			violations += len(o.violations)
+			// Every draw is recovered and checked; redraw up to drawsPerRandomKill
+			// if the timer fired after all writes had already replied.
+			if o.replies < *writes {
+				inFlight++
+				break
+			}
+		}
+	}
+	check(full.acks == *writes, fmt.Sprintf("%s: an interactive run that is not killed acknowledges all %d writes", mode, *writes))
+	check(inFlight == *randomKills, fmt.Sprintf("%s: each of the %d random kills landed while writes were in flight (a kill after the last reply is recovered and checked too, then redrawn, at most %d draws per kill)", mode, *randomKills, drawsPerRandomKill))
+	check(violations == 0, fmt.Sprintf("%s: after every kill at a random time every database reopens (integrity ok, a recipe state) and holds at least every acknowledged write", mode))
+}
+
+func (x *experiment) selfTest() {
+	fmt.Println("\n== C. self-test: a node that acknowledges store-durable writes before the segment put ==")
+	x.setup()
+	config := x.env.Config("a", "")
+	config.AckBeforePut = true
+	p, err := x.env.Start(config)
+	if err != nil {
+		fatal("start the mutant node", err)
+	}
+	reply, err := x.env.Send(p, fmt.Sprintf("write %s %s", x.ids[0], node.StoreDurable))
+	if err != nil {
+		fatal("mutant write", err)
+	}
+	fmt.Println("  " + reply.Line)
+	p.Signal()
+	p.Reap()
+	o := newOutcome()
+	x.record(o, []string{reply.Line})
+	x.recover(node.StoreDurable, o)
+	for _, v := range o.violations {
+		fmt.Println("  violation: " + v)
+	}
+	check(o.acks == 1 && len(o.violations) == 1, "self-test: the checker finds the store-durable acknowledgement the store never received")
+}
+
+func main() {
+	flag.Parse()
+	ctx := context.Background()
+	if *role == "node" {
+		// Pin the command loop to one OS thread so strace's per-thread syscall
+		// counter sees every SQLite fsync on a single deterministic thread.
+		runtime.LockOSThread()
+		if err := node.RunProcess(ctx, process); err != nil {
+			fatal("node "+process.Name, err)
+		}
+		return
+	}
+	sqlitex.MustPinCheckMemory(ctx)
+	if *mutant != "" && *mutant != "ack-before-put" {
+		fatal("-mutant", fmt.Errorf("unknown mutant %q (want ack-before-put)", *mutant))
+	}
+	if *databases < 1 || *writes < 1 || *syscallKills < 1 || *randomKills < 0 {
+		fatal("flags", fmt.Errorf("-databases, -writes and -syscall-kills must be positive, -random-kills not negative"))
+	}
+	store, err := lab.Connect(ctx, process)
+	if err != nil {
+		fmt.Printf("STORE UNREACHABLE: %v\n", err)
+		os.Exit(1)
+	}
+	env, err := lab.New(ctx, "10.2", store, process)
+	if err != nil {
+		fatal("work directory", err)
+	}
+	defer env.Close()
+	x := &experiment{env: env, ids: lab.Ids("db", *databases)}
+	fmt.Printf("INFO: store %s, work directory %s\n", store.Endpoint, env.ShownWork())
+	fmt.Printf("store: bucket %s, prefix %s; one node owns %d databases and keeps at most %d open; each killed run sends %d writes round robin; settings %s\n",
+		store.Bucket, store.Prefix, *databases, process.Capacity, *writes, node.PlatformSettings())
+	fmt.Println("recovery: local-durable restarts the node on its own files; store-durable deletes the node's directory first and rebuilds every database from the store alone")
+	if *mutant != "" {
+		fmt.Printf("mutant: %s\n", *mutant)
+	}
+	modes := []node.AckMode{node.LocalDurable, node.StoreDurable}
+	fmt.Println("\n== A. kills at a chosen fsync (strace) ==")
+	if trace.Supported && !*portable {
+		for _, mode := range modes {
+			x.syscallKills(mode)
+		}
+	} else {
+		fmt.Println(trace.LinuxOnlyMessage("killing the node at a chosen fsync with strace", packagePath))
+	}
+	fmt.Println("\n== B. kills at a random time (portable) ==")
+	rng := rand.New(rand.NewPCG(*seed, 102))
+	for _, mode := range modes {
+		x.randomTimeKills(mode, rng)
+	}
+	x.selfTest()
+	fmt.Println()
+	for _, problem := range env.Tracker.Problems {
+		fmt.Println("problem: " + problem)
+	}
+	for _, line := range env.Tracker.OverBounds {
+		fmt.Println("over bounds: " + line)
+	}
+	check(len(env.Tracker.Problems) == 0, "no node reported a problem")
+	check(len(env.Tracker.OverBounds) == 0 && env.Tracker.Replies > 0, "after every command of every node process the descriptors and memory stayed within the standing bounds")
+	fmt.Printf("INFO: %d node replies carried a bounds check\n", env.Tracker.Replies)
+	if len(failures) > 0 {
+		fmt.Printf("\n%d check(s) FAILED\n", len(failures))
+		os.Exit(1)
+	}
+	fmt.Println("\nall checks passed")
+}

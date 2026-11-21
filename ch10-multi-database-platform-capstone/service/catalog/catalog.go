@@ -1,14 +1,17 @@
 // Package catalog owns the platform's control-plane metadata in a single
 // WAL-mode SQLite database shared by all nodes on the host.
 //
-// Each row maps a database id to its current owner node, monotonically
-// increasing ownership epoch, local file location, last shipped stream
-// position, schema version (the recipe's user_version), and per-connection
-// SQLite settings (from Chapter 8). A Claim increments the epoch atomically in
-// one SQLite write transaction so concurrent claims receive distinct epochs.
-// Because SQLite locks work only within one host (src/os_unix.c:1189-1342), a
-// multi-host platform would replace this file with a networked control-plane
-// service exposing the same operations.
+// Its databases table maps each database id to its current owner node,
+// monotonically increasing ownership epoch, local file location, last shipped
+// stream position, schema version (the recipe's user_version), and
+// per-connection SQLite settings (from Chapter 8). Its relocations table
+// (relocation.go) stores the single durable record of an in-flight or finished
+// relocation so a fresh coordinator can resume or roll back after a crash. A
+// Claim increments the epoch atomically in one SQLite write transaction so
+// concurrent claims receive distinct epochs. Because SQLite locks work only
+// within one host (src/os_unix.c:1189-1342), a multi-host platform would
+// replace this file with a networked control-plane service exposing the same
+// operations.
 package catalog
 
 import (
