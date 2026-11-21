@@ -29,3 +29,8 @@ Run 1 — 2026-11-21, on the Opus build, `run-all.sh`. Raw output: `results-run1
 | PATH-07b | 5-space indented '     ```' (CommonMark indented code block, not a fence) followed by [broken-after-indent](missing-after-indent.md) | fenceState enforces CommonMark's 0-3 space indent limit and catches missing-after-indent.md | problems=0 ([]) |
 | PATH-08a | Pass dot-dot path-traversal URLs under allowlisted prefixes (e.g. github.com/nickstrad/sqlite-internals/../../evil/malware) to IsPublicReference | IsPublicReference normalizes paths and returns false for all 4 traversal URLs | bypassed=4/4 ([https://github.com/nickstrad/sqlite-internals/../../evil/malware https://github.com/sqlite/sqlite/../evil/repo https://nickstrad.github.io/sqlite-internals/../other-site/ https://gitlab |
 | PATH-09b | Delete tracked file gone.md from working tree without git rm while README.md links to [gone](gone.md) | course check paths detects that gone.md is missing on disk and fails the broken link | exit=0; out=PASS check paths: 2 tracked text file(s) free of machine-local paths and unresolved relative links (0 binary file(s) skipped, 0 external link(s) reported) |
+
+Run 2 — after the Opus repair round (eb8121a): 45 HELD, 1 BROKEN (`results-run2.txt`).
+The repair report (`../REPAIR-REPORT.md`) says for each run-1 finding whether it was fixed or answered. Still BROKEN in run 2:
+
+- PATH-03 — Place home-directory paths without trailing slash ('cd /root', 'HOME=/home/alice', 'DIR=/Users/bob') and lowercase macOS '/users/bob/src/' in a tracke
