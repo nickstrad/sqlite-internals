@@ -1,12 +1,17 @@
 package connmgr
 
 import (
+	"bufio"
 	"context"
+	"database/sql"
 	"errors"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -284,8 +289,210 @@ func TestPathErrorAndOpenError(t *testing.T) {
 	if _, err := m.Acquire(ctx, "junk"); err == nil {
 		t.Fatal("junk file opened")
 	}
-	if stats := m.Stats(); stats.OpenFailures != 2 || stats.Open != 0 {
+	if stats := m.Stats(); stats.OpenFailures != 2 || stats.Open != 0 || stats.Misses != 0 || stats.UnverifiedOpens != 0 || stats.VerifiedReopens != 0 {
 		t.Fatalf("stats %+v", stats)
+	}
+}
+
+func TestFailedReopenCountsOnlyAsOpenFailure(t *testing.T) {
+	dir := t.TempDir()
+	var failOpen atomic.Bool
+	m, err := New(Options{
+		Capacity: 1,
+		PathFor:  func(id string) (string, error) { return filepath.Join(dir, id+".db"), nil },
+		Open: func(ctx context.Context, path string) (*sqlitex.DB, error) {
+			if failOpen.Load() {
+				return nil, errors.New("simulated open failure")
+			}
+			options := sqlitex.DefaultOptions()
+			options.SingleConnection = true
+			return sqlitex.Open(ctx, path, options)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	use(t, m, "a", "CREATE TABLE t(x)")
+	if _, err := m.Evict("a"); err != nil {
+		t.Fatal(err)
+	}
+	failOpen.Store(true)
+	if _, err := m.Acquire(context.Background(), "a"); err == nil {
+		t.Fatal("open failure not reported")
+	}
+	stats := m.Stats()
+	if stats.Misses != 1 || stats.OpenFailures != 1 || stats.UnverifiedOpens != 1 || stats.VerifiedReopens != 0 || stats.RefusedReopens != 0 {
+		t.Fatalf("after a failed reopen: %+v", stats)
+	}
+	failOpen.Store(false)
+	use(t, m, "a", "SELECT 1")
+	stats = m.Stats()
+	if stats.Misses != 2 || stats.UnverifiedOpens+stats.VerifiedReopens != stats.Misses || stats.VerifiedReopens != 1 {
+		t.Fatalf("after a good reopen: %+v", stats)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAcquireWithCancelledContextEvictsNothing(t *testing.T) {
+	m, _ := newTestManager(t, 1, nil)
+	use(t, m, "a", "CREATE TABLE t(x)")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := m.Acquire(ctx, "b"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v, want context.Canceled", err)
+	}
+	if ids := m.OpenIDs(); len(ids) != 1 || ids[0] != "a" {
+		t.Fatalf("open ids %v", ids)
+	}
+	if stats := m.Stats(); stats.Evictions != 0 || stats.OpenFailures != 0 {
+		t.Fatalf("stats %+v", stats)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEvictionWithRowsStillOpenSkipsTheFileCheck(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(Options{
+		Capacity: 1,
+		PathFor:  func(id string) (string, error) { return filepath.Join(dir, id+".db"), nil },
+		Open: func(ctx context.Context, path string) (*sqlitex.DB, error) {
+			options := sqlitex.DefaultOptions()
+			options.File.JournalMode = sqlitex.JournalDelete
+			options.SingleConnection = true
+			return sqlitex.Open(ctx, path, options)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	use(t, m, "a", "CREATE TABLE t(x); INSERT INTO t VALUES (1), (2)")
+	ctx := context.Background()
+	h, err := m.Acquire(ctx, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := h.DB.QueryContext(ctx, "SELECT x FROM t ORDER BY x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rows.Next() {
+		t.Fatal(rows.Err())
+	}
+	h.Release()
+	eviction, err := m.Evict("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eviction.Status.AtRest || eviction.Status.SHA256 != "" || len(eviction.Status.Problems) != 1 || !strings.Contains(eviction.Status.Problems[0], "1 connection(s) still open in this process") {
+		t.Fatalf("eviction %+v", eviction)
+	}
+	if _, ok := m.Record("a"); ok {
+		t.Fatal("record kept while the connection is still open")
+	}
+	if !rows.Next() {
+		t.Fatalf("the open rows lost their connection: %v", rows.Err())
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	status, err := CheckAtRest(filepath.Join(dir, "a.db"))
+	if err != nil || !status.AtRest {
+		t.Fatalf("after rows.Close: %+v %v", status, err)
+	}
+	if stats := m.Stats(); stats.EvictedNotAtRest != 1 || stats.EvictedAtRest != 0 {
+		t.Fatalf("stats %+v", stats)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const lockHolderEnv = "CONNMGR_TEST_LOCK_HOLDER"
+
+func TestLockHolderProcess(t *testing.T) {
+	path := os.Getenv(lockHolderEnv)
+	if path == "" {
+		t.Skip("helper process only")
+	}
+	ctx := context.Background()
+	uri, err := sqlitex.FileURI(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", uri)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(ctx, "PRAGMA locking_mode=EXCLUSIVE"); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := conn.QueryRowContext(ctx, "SELECT count(*) FROM t").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout.WriteString("ready\n")
+	io.Copy(io.Discard, os.Stdin)
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCheckAtRestSeesALockHeldByAnotherProcess(t *testing.T) {
+	m, dir := newTestManager(t, 1, nil)
+	use(t, m, "a", "CREATE TABLE t(x)")
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "a.db")
+	child := exec.Command(os.Args[0], "-test.run=^TestLockHolderProcess$")
+	child.Env = append(os.Environ(), lockHolderEnv+"="+path)
+	stdin, err := child.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := child.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	if err != nil || line != "ready\n" {
+		stdin.Close()
+		child.Wait()
+		t.Fatalf("helper: %q %v", line, err)
+	}
+	status, err := CheckAtRest(path)
+	stdin.Close()
+	go io.Copy(io.Discard, stdout)
+	if waitErr := child.Wait(); waitErr != nil {
+		t.Fatalf("helper exit: %v", waitErr)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(path + "-shm"); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("an exclusive-mode WAL reader should leave no -shm: %v", statErr)
+	}
+	if status.AtRest || len(status.Problems) != 1 || !strings.Contains(status.Problems[0], "another process holds a SQLite lock") {
+		t.Fatalf("while another process holds the file: %+v", status)
+	}
+	status, err = CheckAtRest(path)
+	if err != nil || !status.AtRest {
+		t.Fatalf("after the other process closed: %+v %v", status, err)
 	}
 }
 

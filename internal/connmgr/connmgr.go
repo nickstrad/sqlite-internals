@@ -137,6 +137,10 @@ func (m *Manager) Acquire(ctx context.Context, id string) (*Handle, error) {
 			m.mu.Unlock()
 			return m.handle(e), nil
 		}
+		if err := ctx.Err(); err != nil {
+			m.mu.Unlock()
+			return nil, err
+		}
 		if len(m.open) < m.options.Capacity {
 			break
 		}
@@ -163,8 +167,8 @@ func (m *Manager) Acquire(ctx context.Context, id string) (*Handle, error) {
 		m.stats.OpenFailures++
 		return nil, fmt.Errorf("connmgr: path for %s: %w", id, err)
 	}
-	if err := m.verifyBeforeOpen(id, path); err != nil {
-		m.stats.RefusedReopens++
+	verified, err := m.verifyBeforeOpen(id, path)
+	if err != nil {
 		return nil, err
 	}
 	db, err := m.options.Open(ctx, path)
@@ -173,6 +177,11 @@ func (m *Manager) Acquire(ctx context.Context, id string) (*Handle, error) {
 		return nil, fmt.Errorf("connmgr: open %s: %w", id, err)
 	}
 	m.stats.Misses++
+	if verified {
+		m.stats.VerifiedReopens++
+	} else {
+		m.stats.UnverifiedOpens++
+	}
 	if !m.seen[id] {
 		m.seen[id] = true
 		m.stats.DistinctDatabases++
@@ -189,21 +198,21 @@ func (m *Manager) handle(e *entry) *Handle {
 	return &Handle{ID: e.id, Path: e.path, DB: e.db, manager: m, entry: e}
 }
 
-func (m *Manager) verifyBeforeOpen(id, path string) error {
+func (m *Manager) verifyBeforeOpen(id, path string) (bool, error) {
 	recorded, ok := m.records[id]
 	if !ok {
-		m.stats.UnverifiedOpens++
-		return nil
+		return false, nil
 	}
 	found, err := CheckAtRest(path)
 	if err != nil {
-		return fmt.Errorf("connmgr: check %s before reopening: %w", id, err)
+		m.stats.StatusFailures++
+		return false, fmt.Errorf("connmgr: check %s before reopening: %w", id, err)
 	}
 	if !found.AtRest || found.SHA256 != recorded.SHA256 || found.Size != recorded.Size {
-		return &ChangedWhileClosedError{ID: id, Path: path, Recorded: recorded, Found: found}
+		m.stats.RefusedReopens++
+		return false, &ChangedWhileClosedError{ID: id, Path: path, Recorded: recorded, Found: found}
 	}
-	m.stats.VerifiedReopens++
-	return nil
+	return true, nil
 }
 
 func (h *Handle) Release() {
@@ -238,7 +247,14 @@ func (m *Manager) evictLocked(e *entry, cause Cause) Eviction {
 		eviction.CloseErr = err
 		m.stats.CloseFailures++
 	}
-	eviction.Status, eviction.StatusErr = CheckAtRest(e.path)
+	switch stillOpen := e.db.Stats().OpenConnections; {
+	case eviction.CloseErr != nil:
+		eviction.Status = Status{Path: e.path, Problems: []string{fmt.Sprintf("close failed: %v", eviction.CloseErr)}}
+	case stillOpen > 0:
+		eviction.Status = Status{Path: e.path, Problems: []string{fmt.Sprintf("%d connection(s) still open in this process: a statement, transaction or *sql.Conn was not closed, so database/sql closes the connection only when it is returned", stillOpen)}}
+	default:
+		eviction.Status, eviction.StatusErr = CheckAtRest(e.path)
+	}
 	switch {
 	case eviction.StatusErr != nil:
 		m.stats.StatusFailures++

@@ -8,6 +8,12 @@ import (
 	"io"
 	"os"
 	"strings"
+	"syscall"
+)
+
+const (
+	sqliteLockRegionStart  = 0x40000000
+	sqliteLockRegionLength = 2 + 510
 )
 
 type Status struct {
@@ -57,7 +63,20 @@ func CheckAtRest(path string) (Status, error) {
 	if len(status.Problems) > 0 {
 		return status, nil
 	}
-	sum, size, err := fileSHA256(path)
+	file, err := os.Open(path)
+	if err != nil {
+		return status, err
+	}
+	defer file.Close()
+	locked, err := lockedByAnotherProcess(file)
+	if err != nil {
+		return status, err
+	}
+	if locked {
+		status.Problems = append(status.Problems, "another process holds a SQLite lock on the database file: it has the database open")
+		return status, nil
+	}
+	sum, size, err := fileSHA256(file)
 	if err != nil {
 		return status, err
 	}
@@ -65,12 +84,20 @@ func CheckAtRest(path string) (Status, error) {
 	return status, nil
 }
 
-func fileSHA256(path string) (string, int64, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return "", 0, err
+func lockedByAnotherProcess(file *os.File) (bool, error) {
+	probe := syscall.Flock_t{
+		Type:   syscall.F_WRLCK,
+		Whence: 0,
+		Start:  sqliteLockRegionStart,
+		Len:    sqliteLockRegionLength,
 	}
-	defer file.Close()
+	if err := syscall.FcntlFlock(file.Fd(), syscall.F_GETLK, &probe); err != nil {
+		return false, fmt.Errorf("connmgr: probe locks on %s: %w", file.Name(), err)
+	}
+	return probe.Type != syscall.F_UNLCK, nil
+}
+
+func fileSHA256(file *os.File) (string, int64, error) {
 	hash := sha256.New()
 	size, err := io.Copy(hash, file)
 	if err != nil {
