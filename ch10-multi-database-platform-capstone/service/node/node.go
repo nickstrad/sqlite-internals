@@ -1,15 +1,22 @@
 // Package node owns a single service node's runtime: database routing, bounded
 // LRU connection management (internal/connmgr), continuous WAL capture per open
 // database (internal/walship over fence.Adapter), local ownership and at-rest
-// state files, takeover claims, and the two explicit acknowledgement modes
+// state files, takeover claims, relocation participant operations (Seal, Drain,
+// Stage, Activate, Retire, Discard), and the two explicit acknowledgement modes
 // (LocalDurable and StoreDurable). It also provides the line-protocol server
-// (Serve) and child-process driver (Process) used by multi-process experiments.
+// (Serve), child-process driver (Process), and typed remote client (Remote)
+// used by multi-process experiments.
 //
-// Ownership state on disk lives in two per-database sidecar files in Config.Dir:
+// Per-database crash-surviving state on disk lives in four sidecar files in
+// Config.Dir:
 //   - <id>.owner holds "epoch N\n" so a restarted node retains its pre-crash
 //     ownership belief until the store proves a newer epoch fenced it.
 //   - <id>.atrest holds the 64-hex sha256 recorded after a clean eviction or
 //     close so offline tampering between runs is rejected before shipping.
+//   - <id>.sealed holds "epoch N\n" while a relocation is draining this source
+//     so Write refuses new commits until Activate, Retire, or Claim clears it.
+//   - <id>.staged holds a destination node's rebuilt database image between
+//     Stage (relocation step 4) and Activate, Discard, Retire, or Claim.
 //
 // Each open database holds 3 SQLite connections (the writer plus walship's
 // control and pin connections) and opens 7 file descriptors (3 .db, 3 -wal,
@@ -71,14 +78,18 @@ var (
 // Config configures a Node: its identity, local working directory, shared
 // catalog, object store, open-database LRU capacity, persistent SQLite file
 // settings, and initializer for a brand-new database (empty store chain).
+// AckBeforePut is an intentional bug mutant used by Experiment 10.2's self-test
+// to skip shipping on StoreDurable writes and prove the checker detects lost
+// store-durable acknowledgements.
 type Config struct {
-	Name     string
-	Dir      string
-	Catalog  *catalog.Catalog
-	Store    walship.Store
-	Capacity int
-	File     sqlitex.FileSettings
-	Create   func(ctx context.Context, path string) error
+	Name         string
+	Dir          string
+	Catalog      *catalog.Catalog
+	Store        walship.Store
+	Capacity     int
+	File         sqlitex.FileSettings
+	Create       func(ctx context.Context, path string) error
+	AckBeforePut bool
 }
 
 // Ack describes an acknowledged write: the durability mode, the owning epoch,
@@ -387,12 +398,12 @@ func pageSizeOf(image []byte) (int, error) {
 	return size, nil
 }
 
-// Claim takes ownership of id for this node: it clears any local belief and
-// at-rest digest, bumps the catalog epoch, restores the store's latest state
-// (or creates an empty database when the chain is empty), writes a fence
-// snapshot at end+1 with put-if-absent (retrying on ErrExists from a stale
-// listing), writes the local database and <id>.owner belief file, and updates
-// the catalog.
+// Claim takes ownership of id for this node: it clears any local belief,
+// at-rest digest, seal, and staged file, bumps the catalog epoch, restores the
+// store's latest state (or creates an empty database when the chain is empty),
+// writes a fence snapshot at end+1 with put-if-absent (retrying on ErrExists
+// from a stale listing), writes the local database and <id>.owner belief file,
+// and updates the catalog.
 func (n *Node) Claim(ctx context.Context, id string) (ClaimResult, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -408,6 +419,9 @@ func (n *Node) Claim(ctx context.Context, id string) (ClaimResult, error) {
 	// resurrect the old epoch on restart, and an older at-rest digest cannot
 	// reject a reclaimed database that another node advanced.
 	if err := errors.Join(n.removeFile(id, ".owner"), n.removeFile(id, ".atrest")); err != nil {
+		return ClaimResult{}, err
+	}
+	if err := errors.Join(n.removeFile(id, ".sealed"), recipe.RemoveDatabase(n.sidecar(id, ".staged"))); err != nil {
 		return ClaimResult{}, err
 	}
 	epoch, err := n.config.Catalog.Claim(ctx, id, n.config.Name)
@@ -508,17 +522,22 @@ func (n *Node) acquire(ctx context.Context, id string) (*connmgr.Handle, uint64,
 	return h, epoch, err
 }
 
-// Write runs apply against database id under mode. LocalDurable requires
-// synchronous=FULL in the catalog settings and acknowledges after the local
-// commit. StoreDurable acknowledges only after shipping the new WAL frames to
-// the store; if shipping fails (including FencedError), the write is committed
-// locally on this node's orphaned file but not acknowledged, and the database is
-// evicted so the next use reopens from the store.
+// Write runs apply against database id under mode, first refusing any database
+// sealed for relocation (ErrSealed). LocalDurable requires synchronous=FULL in
+// the catalog settings and acknowledges after the local commit. StoreDurable
+// acknowledges only after shipping the new WAL frames to the store (unless the
+// AckBeforePut test mutant is enabled); if shipping fails (including
+// FencedError), the write is committed locally on this node's orphaned file but
+// not acknowledged, and the database is evicted so the next use reopens from
+// the store.
 func (n *Node) Write(ctx context.Context, id string, mode AckMode, apply func(context.Context, *sqlitex.DB) error) (Ack, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if mode != LocalDurable && mode != StoreDurable {
 		return Ack{}, fmt.Errorf("node: unknown acknowledgement mode %q", mode)
+	}
+	if err := n.refuseSealed(id); err != nil {
+		return Ack{}, err
 	}
 	h, epoch, err := n.acquire(ctx, id)
 	if err != nil {
@@ -533,7 +552,7 @@ func (n *Node) Write(ctx context.Context, id string, mode AckMode, apply func(co
 	if err == nil {
 		err = h.DB.QueryRowContext(ctx, "PRAGMA user_version").Scan(&ack.UserVersion)
 	}
-	if err == nil && mode == StoreDurable {
+	if err == nil && mode == StoreDurable && !n.config.AckBeforePut {
 		ack.Position, err = n.shipLocked(ctx, id, ack.UserVersion)
 	}
 	h.Release()

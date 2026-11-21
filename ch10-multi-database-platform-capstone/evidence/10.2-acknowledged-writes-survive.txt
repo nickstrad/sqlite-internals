@@ -1,0 +1,49 @@
+sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
+INFO: store http://127.0.0.1:18333, work directory _work/10.2
+store: bucket course-ch10b, prefix exp-10-2/; one node owns 4 databases and keeps at most 2 open; each killed run sends 12 writes round robin; settings synchronous=FULL foreign_keys=ON secure_delete=ON cache_size=-256 wal_autocheckpoint=0 busy_timeout=5000ms
+recovery: local-durable restarts the node on its own files; store-durable deletes the node's directory first and rebuilds every database from the store alone
+
+== A. kills at a chosen fsync (strace) ==
+local-durable, uninterrupted: 12 commands, 12 acknowledged, 77 fsync calls on the node's command thread (the process exits at the end of its input without closing)
+INFO: fsync calls on other threads: 0
+check ok: local-durable: the uninterrupted run acknowledges all 12 writes and every fsync runs on the command thread
+local-durable, kill at fsync 1 of 77 (of db-0001.db-wal) during command 1 (write db-0001 local-durable): 0 acknowledged; reopened 4 of 4; recovered user_version 0,0,0,0; acknowledged 0,0,0,0
+local-durable, kill at fsync 26 of 77 (of db-0001.db-wal) during command 5 (write db-0001 local-durable): 4 acknowledged; reopened 4 of 4; recovered user_version 1,1,1,1; acknowledged 1,1,1,1
+local-durable, kill at fsync 51 of 77 (of a) during command 9 (write db-0001 local-durable): 8 acknowledged; reopened 4 of 4; recovered user_version 2,2,2,2; acknowledged 2,2,2,2
+local-durable, kill at fsync 77 of 77 (of db-0004.db-wal) during command 12 (write db-0004 local-durable): 11 acknowledged; reopened 4 of 4; recovered user_version 3,3,3,3; acknowledged 3,3,3,2
+check ok: local-durable: strace killed the node at each of the 4 fsync kill points
+check ok: local-durable: after each kill at an fsync every database reopens (integrity ok, a recipe state) and holds at least every write acknowledged in this mode
+store-durable, uninterrupted: 12 commands, 12 acknowledged, 85 fsync calls on the node's command thread (the process exits at the end of its input without closing)
+INFO: fsync calls on other threads: 0
+check ok: store-durable: the uninterrupted run acknowledges all 12 writes and every fsync runs on the command thread
+store-durable, kill at fsync 1 of 85 (of db-0001.db-wal) during command 1 (write db-0001 store-durable): 0 acknowledged; reopened 4 of 4; recovered user_version 0,0,0,0; acknowledged 0,0,0,0
+store-durable, kill at fsync 29 of 85 (of catalog.db-wal) during command 4 (write db-0004 store-durable): 3 acknowledged; reopened 4 of 4; recovered user_version 1,1,1,1; acknowledged 1,1,1,0
+store-durable, kill at fsync 57 of 85 (of catalog.db-wal) during command 8 (write db-0004 store-durable): 7 acknowledged; reopened 4 of 4; recovered user_version 2,2,2,2; acknowledged 2,2,2,1
+store-durable, kill at fsync 85 of 85 (of catalog.db-wal) during command 12 (write db-0004 store-durable): 11 acknowledged; reopened 4 of 4; recovered user_version 3,3,3,3; acknowledged 3,3,3,2
+check ok: store-durable: strace killed the node at each of the 4 fsync kill points
+check ok: store-durable: after each kill at an fsync every database reopens (integrity ok, a recipe state) and holds at least every write acknowledged in this mode
+
+== B. kills at a random time (portable) ==
+INFO: local-durable, the write loop of an unkilled interactive run of 12 writes took 875ms (12 acknowledged)
+INFO: local-durable, random kill 1 (draw 1) after 544ms: 8 acknowledged; reopened 4; recovered 2,2,2,2; acknowledged 2,2,2,2
+INFO: local-durable, random kill 2 (draw 1) after 492ms: 9 acknowledged; reopened 4; recovered 3,2,2,2; acknowledged 3,2,2,2
+check ok: local-durable: an interactive run that is not killed acknowledges all 12 writes
+check ok: local-durable: each of the 2 random kills landed while writes were in flight (a kill after the last reply is recovered and checked too, then redrawn, at most 5 draws per kill)
+check ok: local-durable: after every kill at a random time every database reopens (integrity ok, a recipe state) and holds at least every acknowledged write
+INFO: store-durable, the write loop of an unkilled interactive run of 12 writes took 826ms (12 acknowledged)
+INFO: store-durable, random kill 1 (draw 1) after 791ms: 9 acknowledged; reopened 4; recovered 3,3,2,2; acknowledged 3,2,2,2
+INFO: store-durable, random kill 2 (draw 1) after 773ms: 9 acknowledged; reopened 4; recovered 3,2,2,2; acknowledged 3,2,2,2
+check ok: store-durable: an interactive run that is not killed acknowledges all 12 writes
+check ok: store-durable: each of the 2 random kills landed while writes were in flight (a kill after the last reply is recovered and checked too, then redrawn, at most 5 draws per kill)
+check ok: store-durable: after every kill at a random time every database reopens (integrity ok, a recipe state) and holds at least every acknowledged write
+
+== C. self-test: a node that acknowledges store-durable writes before the segment put ==
+  ok write db-0001 store-durable: acknowledged at epoch 1, user_version 1, stored through position 0
+  violation: db-0001 recovered step 0, acknowledged step 1
+check ok: self-test: the checker finds the store-durable acknowledgement the store never received
+
+check ok: no node reported a problem
+check ok: after every command of every node process the descriptors and memory stayed within the standing bounds
+INFO: 306 node replies carried a bounds check
+
+all checks passed

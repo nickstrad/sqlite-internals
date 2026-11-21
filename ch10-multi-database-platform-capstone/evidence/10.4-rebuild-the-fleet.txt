@@ -1,0 +1,43 @@
+sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
+INFO: descriptor soft limit 1048576; each writer's bound 320
+INFO: store http://127.0.0.1:18333, work directory _work/10.4
+fleet: 500 databases, 8 writer processes (each owns 62-63 and keeps at most 32 open), one checker process; store: bucket course-ch10b, prefix exp-10-4/
+INFO: write stream took 53.786s
+write stream: every database claimed and given recipe steps 1-4, each acknowledged store-durable
+schema rollout: recipe step 5 (CREATE INDEX events_by_account ON events(account_id, id)) applied to 248 of 500 databases, then stopped
+INFO: rollout took 12.897s
+INFO: waiting for the checker's last concurrent pass took 11.691s
+INFO: the concurrent checker ran 8 passes over the store and rebuilt 5440 restore points while the writers ran
+check ok: every restore point the checker found while the writers ran rebuilt to a recipe state
+INFO: writer w1: ok close; standing assertion: 347 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
+INFO: writer w2: ok close; standing assertion: 347 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
+INFO: writer w3: ok close; standing assertion: 347 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
+INFO: writer w4: ok close; standing assertion: 347 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
+INFO: writer w5: ok close; standing assertion: 342 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
+INFO: writer w6: ok close; standing assertion: 342 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
+INFO: writer w7: ok close; standing assertion: 342 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
+INFO: writer w8: ok close; standing assertion: 342 checks, descriptors above baseline <= 320 (3 x 3 connections x 32 open databases + 32 reserve), memory growth <= 104 MiB
+quiesce: every writer closed; 500 databases recorded after a TRUNCATE checkpoint (WAL frames found: 0)
+check ok: every database was at rest when quiesced: the writers' close left no WAL frame for the TRUNCATE checkpoint
+INFO: quiesce took 3.077s
+every local file deleted (0 files left under the writers' directories)
+check ok: the new node starts with empty disks
+INFO: rebuild of 500 databases by 8 workers took 24.866s; standing assertion: 17 checks, descriptors above baseline <= 104 (3 x 3 connections x 8 open databases + 32 reserve), memory growth <= 50 MiB
+rebuild read 5496 objects in 500 listings and wrote 500 fence objects
+INFO: rebuild read 384547544 bytes (769095 per database)
+rebuilt: 500 of 500 byte-identical (E1) to the sha256 recorded after the TRUNCATE checkpoint; 252 at recipe step 4, 248 at recipe step 5
+check ok: 500 of 500 rebuilt databases are byte-identical to the quiesced originals
+check ok: every rebuilt database is a recipe state whose schema version (user_version) is the one the catalog recorded and the last one acknowledged
+check ok: the rollout stopped halfway: databases are on the old schema (step 4) or the new one (step 5 with INDEX events_by_account ON events(account_id, id)), nothing else
+check ok: the rebuilding process stayed within the standing bounds
+INFO: final checker pass took 32.201s
+final checker pass: 500 databases, 3248 restore points, 0 fail to rebuild
+INFO: the final pass read 296918772 bytes, the store's whole content
+check ok: after the rebuild every published restore point of every database rebuilds to a recipe state
+check ok: the rebuild read each of the 2748 slots it found exactly twice (once to check the lineage, once to restore)
+INFO: checker: standing assertion: 10 checks, descriptors above baseline <= 32 (3 x 3 connections x 0 open databases + 32 reserve), memory growth <= 32 MiB
+check ok: no node reported a problem and every command was acknowledged
+check ok: after every command of every writer and checker command the descriptors and memory stayed within the standing bounds
+INFO: 2766 replies carried a bounds check; total runtime 2m28s
+
+all checks passed

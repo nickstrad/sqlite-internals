@@ -27,10 +27,12 @@ func Explain(err error) string {
 	return "error: " + err.Error()
 }
 
-// Serve runs the node's stdin/stdout line protocol. It writes "ready", then
-// for each command line emits any recorded "problem …" lines, one "ok …" or
-// "refused …" reply, and one "bounds …" line checked against assertion. A bare
-// "close" command also writes assertion.Summary() and returns nil.
+// Serve runs the node's stdin/stdout line protocol, dispatching core commands
+// (claim, write, ship, close) and relocation/inspection commands (via
+// handleRelocation in commands.go). It writes "ready", then for each command
+// line emits any recorded "problem …" lines, one "ok …" or "refused …" reply,
+// and one "bounds …" line checked against assertion. A bare "close" command
+// also writes assertion.Summary() and returns nil.
 func Serve(ctx context.Context, n *Node, assertion *bounds.Assertion, apply func(context.Context, *sqlitex.DB) error, in io.Reader, out io.Writer) error {
 	lines := bufio.NewScanner(in)
 	fmt.Fprintln(out, "ready")
@@ -90,5 +92,5 @@ func (n *Node) handle(ctx context.Context, fields []string, apply func(context.C
 		}
 		return "ok close"
 	}
-	return fmt.Sprintf("refused %s: unknown command", command)
+	return n.handleRelocation(ctx, command, fields)
 }

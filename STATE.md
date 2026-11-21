@@ -7,12 +7,11 @@ deterministically, well enough to build platforms holding thousands of SQLite fi
 can be remade as needed; state capture and deterministic rebuild is the through-line.
 Plan: OUTLINE.md (revision 2). What changed from revision 1: OUTLINE-CHANGES.md.
 
-Status: **Phase 2 (build) IN PROGRESS** since 2026-11-20. Chunk 0, chapters 1–9 and the capstone
-service core (10a) have landed. **BLOCKED on Neon since 2026-11-21 07:27 UTC**: the direct Gemini
-route answers "Your project is temporarily rate-limited to prevent exceeding its monthly
-spending cap" and OpenRouter is empty until 2026-12-01 (see blockers). Everything left needs
-Neon: 10b review, attacks, re-review and the chapter 10 text; the publishing chunk's README and
-comments.
+Status: **Phase 2 (build) running again** (2026-11-21 12:50 UTC). Chunk 0, chapters 1–9 and the
+capstone service core (10a) have landed. Neon answered again at 12:48 UTC, so chunk 10b's part A
+(Neon review + attack suite → Opus repair → Neon re-review) was relaunched with
+`agent_work/orch/resume-ch10b.sh`. If Neon is cut off again by the Gemini spending cap, the
+blocker below applies unchanged.
 
 Rulings applied (details: OUTLINE.md section 8):
 - Upstream github.com/nickstrad/sqlite-internals (public); every chunk lands on main and is pushed.
@@ -117,7 +116,7 @@ Open chunks (worktrees `../sqlite-internals-work/<name>`, branches `chunk/<name>
 
 | Chunk | State (2026-11-21 06:10 UTC) |
 | --- | --- |
-| 10b | built (Opus, 04c6ff9, main merged in); part A stopped at its first step: Neon review not written, Neon adversarial suite partly written and committed as partial. Resume: `agent_work/orch/stageA.sh ch10b …` from `review` (same arguments as in `sqlite-p2-ch10b-chainA.log`'s launch, see the progress file), then `stageB.sh ch10b … late` |
+| 10b chapter 10 and relocation | done | Neon FAIL → one Opus repair → PASS | 25 held / 0 broken after repair (run 1: 2 broken) | merged 11681f8 |
 | pub | review 1 FAIL → repair → review 2 FAIL (new blocker in `internal/site/check.go`) → arbitration by Muse Wonder Full: FAIL STANDS (`agent_work/pub/ARBITRATION.md` on the branch) → Opus repair round 2 scoped to the arbiter's checklist running, done, then Neon re-review 3: NITS, 48 held / 0 broken; part B (Neon writes README as the book home + comments) and landing come last, after the self-contained sweep |
 
 Closing prose record (commit of each chapter's closing Neon pass): chapter 5 — 394203d (single late prose pass); chapter 7 — c645979 (closing rewrite); chapter 3 — e71fa8c (single late prose pass); chapter 4 — a9fff51 (closing rewrite); chapter 6 — d394e64, chapter 8 — dfd1dfd and chapter 9 — b58a1a0 (single late prose passes); 10a — 09037a8 (comments only; no chapter text in that chunk); chapter 3 — e71fa8c (single late prose pass); chapter 4 — a9fff51 (closing rewrite); chapter 6 — d394e64, chapter 8 — dfd1dfd and chapter 9 — b58a1a0 (single late prose passes); 10a — 09037a8 (comments only; no chapter text in that chunk); chapter 1 — 66fca8e and chapter 2 — dd5a9b4 (retroactive closing rewrites, merged on main).
@@ -131,7 +130,10 @@ Open decisions / blockers:
   is needed. Still to run on Neon: for 10b a review, the rest of the attack suite, a re-review
   and the chapter 10 prose pass; for the publishing chunk the README/home page and comments —
   about 6 runs, roughly $15–25 at the measured rate. Per ruling 12 no other model may do this
-  work, so it waits. `agent_work/neon/probe.sh` (with OpenCode on PATH) says when a route is back.
+  work, so it waits. `agent_work/neon/probe.sh` (with OpenCode on PATH) only shows that a small call answers; a
+  throttled project still passes it, so judge by whether a real run finishes.
+  Resume, in order: `agent_work/orch/resume-ch10b.sh` (part A; detached, log to
+  `sqlite-p2-ch10b-chainA.log`) → merge main into `chunk/ch10b` → `stageB.sh ch10b "Chapter 10 — Multi-database platform capstone" ch10-multi-database-platform-capstone "section 5, Chapter 10" "ch10-multi-database-platform-capstone/service/ ch10-multi-database-platform-capstone/experiments/" late "<note: this pass writes the whole chapter 10 and brings 10a's comments up to date>"` → `land.sh ch10b …` → merge main into `chunk/pub` → `stageB.sh pub … - … late` with a note that README.md is the book's home page → trim build-machine paths from STATE.md → `land.sh pub …` (publishes the site; record the Pages URL in README and here) → write the done file.
 - Nick or Twin: the Claude sign-in on the build VM ends between 2026-11-25 and 2026-11-28.
 
 Resume: read this file, OUTLINE.md (section 8 first), then `git log` and `git worktree list`.
