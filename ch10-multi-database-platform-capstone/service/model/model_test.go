@@ -97,3 +97,16 @@ func TestParseScriptRejectsBadActions(t *testing.T) {
 		}
 	}
 }
+
+func TestParseMutant(t *testing.T) {
+	for _, m := range []Mutant{Correct, StoreAcceptsEveryPut, ResumeFromGlobalEnd} {
+		if got, err := ParseMutant(string(m)); got != m || err != nil {
+			t.Errorf("%s: %q %v", m, got, err)
+		}
+	}
+	for _, name := range []string{"", "bogus-mutant", "Correct"} {
+		if _, err := ParseMutant(name); err == nil {
+			t.Errorf("%q accepted", name)
+		}
+	}
+}

@@ -58,15 +58,19 @@ func fatal(what string, err error) {
 
 func partA() {
 	fmt.Println("\n== A. the ownership model, every interleaving up to a bounded depth ==")
-	fmt.Printf("model: %d nodes, one database, the catalog's epoch counter, a store of position slots with put-if-absent; actions per node: claim, fence, fence-with-stale-list, write, ship, crash, restart, restart-with-stale-list; at most %d epochs and %d local commits per node\n", model.Nodes, model.MaxEpoch, model.MaxLocal)
+	fmt.Printf("model: %d nodes, one database, the catalog's epoch counter, a store of position slots with put-if-absent; actions per node: claim, fence, fence-with-stale-list, write, ship, crash, restart, restart-with-stale-list; at most %d epochs, and a node's local commits stop at stream position %d (the bound counts positions across all epochs and fences, not commits per node)\n", model.Nodes, model.MaxEpoch, model.MaxLocal)
 	fmt.Println("invariants after every step: no two epochs accepted for overlapping positions; no epoch accepted after a newer one was; no accepted object overwritten")
-	report := model.Explore(model.Mutant(*mutant), *depth, *seed, *walks, *walkLength)
+	under, err := model.ParseMutant(*mutant)
+	if err != nil {
+		fatal("-mutant", err)
+	}
+	report := model.Explore(under, *depth, *seed, *walks, *walkLength)
 	fmt.Printf("%s, depth %d, seed %d: %d interleavings explored, %d distinct states, %d interleavings violate an invariant\n", report.Mutant, report.Depth, *seed, report.Interleavings, report.States, report.Violating)
 	fmt.Printf("seeded random walks: %d walks, %d steps, %d reached a violation\n", report.Walks, report.WalkSteps, report.WalkViolating)
 	printTrace(report)
 	check(report.Violating == 0 && report.WalkViolating == 0 && report.Shortest == nil, fmt.Sprintf("model %s: no interleaving up to depth %d and no random walk lets a fenced epoch get a commit accepted", report.Mutant, *depth))
 	for _, m := range []model.Mutant{model.StoreAcceptsEveryPut, model.ResumeFromGlobalEnd} {
-		if m == model.Mutant(*mutant) {
+		if m == under {
 			continue
 		}
 		self := model.Explore(m, *depth, *seed, 0, 0)
@@ -249,6 +253,8 @@ func partB(ctx context.Context, store *s3store.Store) {
 				a.position = lastNumber(reply.Line)
 			}
 			acks = append(acks, a)
+		} else if strings.HasPrefix(reply.Line, "ok write ") {
+			fatal("parse acknowledgement", fmt.Errorf("%q", reply.Line))
 		}
 	}
 	check(commands == agreed, fmt.Sprintf("the real processes and the model agree at every command step (%d of %d)", agreed, commands))
@@ -263,6 +269,12 @@ func partB(ctx context.Context, store *s3store.Store) {
 		if !reply.WithinBounds() {
 			overBounds = append(overBounds, reply.Bounds)
 		}
+	}
+	for _, problem := range problems {
+		fmt.Println("problem: " + problem)
+	}
+	for _, line := range overBounds {
+		fmt.Println("over bounds: " + line)
 	}
 	check(len(problems) == 0, "no node reported a problem (a failed final ship, an eviction that did not leave the shipped state at rest, an I/O error)")
 	check(len(overBounds) == 0, fmt.Sprintf("after each of the %d commands the node's descriptors and memory stayed within the standing bounds", sampled))
@@ -285,7 +297,7 @@ func verify(ctx context.Context, store *s3store.Store, cat *catalog.Catalog, wor
 			slots = append(slots, fmt.Sprintf("positions %d-%d epoch %d %s", slot.First, slot.Last, slot.Epoch, slot.Kind))
 		}
 		fmt.Printf("%s store: %s\n%s model: %s\n", id, strings.Join(slots, "; "), id, strings.Join(states[id].ChainLines(), "; "))
-		check(strings.Join(slots, "; ") == strings.Join(states[id].ChainLines(), "; "), id+": the store holds exactly the slots the model predicts: one lineage, epochs never decreasing")
+		check(strings.Join(slots, "; ") == strings.Join(states[id].ChainLines(), "; ") && len(restorable.Damaged) == 0, id+": the store holds exactly the slots the model predicts: one lineage, epochs never decreasing, no damaged object")
 		restoreAt := func(position int64) []byte {
 			image, err := fence.RestoreAt(restorable, position)
 			if err != nil {

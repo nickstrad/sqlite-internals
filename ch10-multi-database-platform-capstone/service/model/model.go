@@ -14,6 +14,14 @@ const (
 	ResumeFromGlobalEnd  Mutant = "resume-from-global-end"
 )
 
+func ParseMutant(name string) (Mutant, error) {
+	switch m := Mutant(name); m {
+	case Correct, StoreAcceptsEveryPut, ResumeFromGlobalEnd:
+		return m, nil
+	}
+	return "", fmt.Errorf("model: unknown mutant %q (want %s, %s or %s)", name, Correct, StoreAcceptsEveryPut, ResumeFromGlobalEnd)
+}
+
 const (
 	Nodes       = 2
 	MaxLocal    = 5

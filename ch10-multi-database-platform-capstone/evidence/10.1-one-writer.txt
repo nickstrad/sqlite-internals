@@ -1,7 +1,7 @@
 sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
 
 == A. the ownership model, every interleaving up to a bounded depth ==
-model: 2 nodes, one database, the catalog's epoch counter, a store of position slots with put-if-absent; actions per node: claim, fence, fence-with-stale-list, write, ship, crash, restart, restart-with-stale-list; at most 3 epochs and 5 local commits per node
+model: 2 nodes, one database, the catalog's epoch counter, a store of position slots with put-if-absent; actions per node: claim, fence, fence-with-stale-list, write, ship, crash, restart, restart-with-stale-list; at most 3 epochs, and a node's local commits stop at stream position 5 (the bound counts positions across all epochs and fences, not commits per node)
 invariants after every step: no two epochs accepted for overlapping positions; no epoch accepted after a newer one was; no accepted object overwritten
 correct, depth 16, seed 1: 9595507962 interleavings explored, 44134 distinct states, 0 interleavings violate an invariant
 seeded random walks: 2000 walks, 120000 steps, 0 reached a violation
@@ -34,39 +34,39 @@ INFO: a bounds descriptors=0 memory=1359872 ok
   model db-0001: A claim: ok: catalog epoch 1; A fence: ok: fence at 1
 step 2: node a: write db-0001 store-durable
   ok write db-0001 store-durable: acknowledged at epoch 1, user_version 1, stored through position 2
-INFO: a bounds descriptors=7 memory=3260416 ok
+INFO: a bounds descriptors=7 memory=3239936 ok
   model db-0001: A write: ok: local commit 2; A ship: ok: positions 2-2 accepted
 step 3: node a: write db-0001 local-durable
   ok write db-0001 local-durable: acknowledged at epoch 1, user_version 2, committed locally (not yet in the store)
-INFO: a bounds descriptors=7 memory=3497984 ok
+INFO: a bounds descriptors=7 memory=3579904 ok
   model db-0001: A write: ok: local commit 3
 step 4: node b: claim db-0001
   ok claim db-0001: epoch 2, restored position 2, fence at position 3, attempts 2
-INFO: b bounds descriptors=0 memory=2502656 ok
+INFO: b bounds descriptors=0 memory=3112960 ok
   model db-0001: B claim: ok: catalog epoch 2; B fence-with-stale-list: refused: position 2 holds epoch 1, retry; B fence: ok: fence at 3
 step 5: node a: write db-0001 store-durable
   refused write db-0001 store-durable: fenced: db-0001 position 3 is held by epoch 2, this writer has epoch 1
-INFO: a bounds descriptors=0 memory=5189632 ok
+INFO: a bounds descriptors=0 memory=5476352 ok
   model db-0001: A write: ok: local commit 4; A ship: refused: position 3 holds epoch 2
 step 6: node a: write db-0001 local-durable
   refused write db-0001 local-durable: fenced: db-0001 position 3 is held by epoch 2, this writer has epoch 1
-INFO: a bounds descriptors=0 memory=5197824 ok
+INFO: a bounds descriptors=0 memory=5488640 ok
   model db-0001: A write: refused: not enabled
 step 7: node b: write db-0001 store-durable
   ok write db-0001 store-durable: acknowledged at epoch 2, user_version 2, stored through position 4
-INFO: b bounds descriptors=7 memory=5099520 ok
+INFO: b bounds descriptors=7 memory=5500928 ok
   model db-0001: B write: ok: local commit 4; B ship: ok: positions 4-4 accepted
 step 8: node b: claim db-0002
   ok claim db-0002: epoch 1, restored position 0, fence at position 1, attempts 1
-INFO: b bounds descriptors=7 memory=5480448 ok
+INFO: b bounds descriptors=7 memory=5677056 ok
   model db-0002: B claim: ok: catalog epoch 1; B fence: ok: fence at 1
 step 9: node b: write db-0002 store-durable
   ok write db-0002 store-durable: acknowledged at epoch 1, user_version 1, stored through position 2
-INFO: b bounds descriptors=14 memory=5959680 ok
+INFO: b bounds descriptors=14 memory=6287360 ok
   model db-0002: B write: ok: local commit 2; B ship: ok: positions 2-2 accepted
 step 10: node a: claim db-0002
   ok claim db-0002: epoch 2, restored position 2, fence at position 3, attempts 1
-INFO: a bounds descriptors=0 memory=5525504 ok
+INFO: a bounds descriptors=0 memory=5730304 ok
   model db-0002: A claim: ok: catalog epoch 2; A fence: ok: fence at 3
 step 11: node b: kill
   model db-0001: B crash: ok: volatile state lost
@@ -76,15 +76,15 @@ step 12: node b: restart
   model db-0002: B restart: ok: restarted, then refused: a newer epoch is in the store
 step 13: node b: write db-0002 store-durable
   refused write db-0002 store-durable: fenced: db-0002 position 3 is held by epoch 2, this writer has epoch 1
-INFO: b bounds descriptors=0 memory=2166784 ok
+INFO: b bounds descriptors=0 memory=1953792 ok
   model db-0002: B write: refused: not enabled; B ship: refused: not enabled
 step 14: node b: write db-0001 store-durable
   ok write db-0001 store-durable: acknowledged at epoch 2, user_version 3, stored through position 5
-INFO: b bounds descriptors=7 memory=5275648 ok
+INFO: b bounds descriptors=7 memory=5304320 ok
   model db-0001: B write: ok: local commit 5; B ship: ok: positions 5-5 accepted
 step 15: node a: write db-0002 store-durable
   ok write db-0002 store-durable: acknowledged at epoch 2, user_version 2, stored through position 4
-INFO: a bounds descriptors=7 memory=5754880 ok
+INFO: a bounds descriptors=7 memory=6221824 ok
   model db-0002: A write: ok: local commit 4; A ship: ok: positions 4-4 accepted
 check ok: the real processes and the model agree at every command step (13 of 13)
 node a: ok close; standing assertion: 8 checks, descriptors above baseline <= 68 (3 x 3 connections x 4 open databases + 32 reserve), memory growth <= 41 MiB
@@ -95,7 +95,7 @@ check ok: after each of the 15 commands the node's descriptors and memory stayed
 the store after the run (read back from S3), and the model's store after the same steps:
 db-0001 store: positions 1-1 epoch 1 snapshot; positions 2-2 epoch 1 segment; positions 3-3 epoch 2 snapshot; positions 4-4 epoch 2 segment; positions 5-5 epoch 2 segment
 db-0001 model: positions 1-1 epoch 1 snapshot; positions 2-2 epoch 1 segment; positions 3-3 epoch 2 snapshot; positions 4-4 epoch 2 segment; positions 5-5 epoch 2 segment
-check ok: db-0001: the store holds exactly the slots the model predicts: one lineage, epochs never decreasing
+check ok: db-0001: the store holds exactly the slots the model predicts: one lineage, epochs never decreasing, no damaged object
 db-0001 catalog: owner b, epoch 2, last shipped 5, schema version 3, location b:db-0001.db; restore of position 5: step 3 (exact bytes)
 check ok: db-0001: the catalog names the newest epoch and the last stored position, and the restored state is a recipe state
 check ok: db-0001: the owner's closed local file is byte-identical (E1) to the state rebuilt from the store
@@ -109,7 +109,7 @@ db-0001 store-durable acknowledgement at epoch 2 of user_version 3: in the store
 check ok: db-0001: the store-durable acknowledgement of user_version 3 is stored at position 5 by epoch 2
 db-0002 store: positions 1-1 epoch 1 snapshot; positions 2-2 epoch 1 segment; positions 3-3 epoch 2 snapshot; positions 4-4 epoch 2 segment
 db-0002 model: positions 1-1 epoch 1 snapshot; positions 2-2 epoch 1 segment; positions 3-3 epoch 2 snapshot; positions 4-4 epoch 2 segment
-check ok: db-0002: the store holds exactly the slots the model predicts: one lineage, epochs never decreasing
+check ok: db-0002: the store holds exactly the slots the model predicts: one lineage, epochs never decreasing, no damaged object
 db-0002 catalog: owner a, epoch 2, last shipped 4, schema version 2, location a:db-0002.db; restore of position 4: step 2 (exact bytes)
 check ok: db-0002: the catalog names the newest epoch and the last stored position, and the restored state is a recipe state
 check ok: db-0002: the owner's closed local file is byte-identical (E1) to the state rebuilt from the store
