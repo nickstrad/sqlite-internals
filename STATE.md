@@ -8,9 +8,9 @@ can be remade as needed; state capture and deterministic rebuild is the through-
 Plan: OUTLINE.md (revision 2). What changed from revision 1: OUTLINE-CHANGES.md.
 
 Status: **Phase 2 (build) IN PROGRESS** since 2026-11-20. Nick signed off OUTLINE.md revision 2
-with rulings (OUTLINE.md section 8). Chunks 0, 1 and 2 have landed. **BLOCKED on Neon credit since
-2026-11-20 23:07 UTC** (see blockers): no prose, review or adversarial run can start. Opus-only
-work continues.
+with rulings (OUTLINE.md section 8). Chunks 0, 1 and 2 have landed. Neon credit was restored
+2026-11-20 23:30 UTC (direct Gemini route; OpenRouter stays empty until 2026-12-01) and all Neon
+stages are running again since 2026-11-21 00:45 UTC.
 
 Rulings applied (details: OUTLINE.md section 8):
 - Upstream github.com/nickstrad/sqlite-internals (public); every chunk lands on main and is pushed.
@@ -29,8 +29,21 @@ Rulings applied (details: OUTLINE.md section 8):
   (read-only snapshot VFS over S3 range reads). Risk noted: relies on ccgo's function-pointer
   convention; that package needs `go vet -unsafeptr=false`.
 - S3 client for the capstone: aws-sdk-go-v2 (probe `agent_work/probes/seaweedfs-s3/RESULT.md`).
-- Seats: Opus code; Neon all prose + code review + adversarial scripts; Fable orchestrates,
+- Seats: Opus writes code only. **Neon makes ALL prose — the chapter text and the Go code
+  comments** — and reviews Opus's code and writes the adversarial tests. Fable orchestrates,
   runs the adversarial tests, accepts. Astra not used.
+- Pipeline (Nick, 2026-11-20 prose-ordering and closing-rewrite notes). Every chapter's FINAL
+  step before landing is Neon's unreviewed closing prose; no chapter lands without it.
+  - Late ordering (chapters 3, 5, 6, 8, 9, 10a, 10b): Opus build → Neon review + Neon
+    adversarial → Opus repair → Neon re-review → **Neon prose once, at the end (chapter text +
+    comments on the finished code)** → accept → land. Scripts: `agent_work/orch/stageA.sh`
+    then `stageB.sh … late`.
+  - Old ordering (chapters 1, 2, 7, and 4 whose prose ran before review): they close with a
+    separate **Neon closing rewrite** (`stageB.sh … closing`). Chapters 1 and 2 landed without
+    it and get it retroactively as follow-up commits on main.
+- Docker fallback (Nick, 2026-11-20): where no generic approach works on both systems, the
+  experiment runs in the Docker lab and the chapter presents Linux behaviour first. Uses: (none
+  recorded yet; chapter 7's macOS delFlag mismatch got a generic fix in its repair).
 - Open questions 7, 12, 13: outline recommendations applied (real source copies checked against
   the pin; five questions per chapter with answers in a separate file, no tutor packaging;
   failure-cases sections link the adversarial scripts).
@@ -53,49 +66,34 @@ Chunk status (build → Neon prose → Neon review → repair → re-review → 
 | 2 chapter 2 | done | Neon FAIL → one Opus repair → PASS | 36 held / 0 broken after repair (run 1: 14 broken) | merged 68afd03 |
 | 2, 3, 4, 5, 7, 6, 8, 9, 10a, 10b, publishing | not started | | | |
 
-Where each open chunk stands (worktrees `../sqlite-internals-work/<name>`, branches `chunk/<name>`):
+Where each open chunk stands (worktrees `../sqlite-internals-work/<name>`, branches
+`chunk/<name>`; chain logs `sqlite-p2-<name>-chainA.log` / `-chainB.log` in the run directory;
+a finished part A leaves `sqlite-p2-<name>.stageA`, a finished part B `sqlite-p2-<name>-accept.txt`):
 
-| Chunk | Opus build | Neon prose | Neon review 1 | Neon adversarial | Opus repair | Neon re-review |
-| --- | --- | --- | --- | --- | --- | --- |
-| 7 | done | done (comments + chapter) | FAIL, done | done; runs 1 and 2 recorded | done (5449623) | **waiting for Neon** |
-| 4 | done | done (comments + chapter) | FAIL, done | **partial**: 3 attack programs, no run-all.sh/README | done (075ed33) | waiting for Neon |
-| 5 | done | **partial**: comments done, chapter text not written | FAIL, done | files complete, author run cut before its done marker; run 1 recorded | done (208d5ad) | waiting for Neon |
-| 3 | done (fa19f6a) | **not started** | not started | not started | – | – |
-| pub (Pages site generator + workflow) | done (5bf7893); not on main, workflow not triggered | README/home text not written | not started | not started | – | – |
-| 6 | building (base: repaired chapter 5) | | | | | |
-| 8 | building (base: repaired chapters 4 + 5 merged) | | | | | |
-| 9, 10a, 10b | to build after 6 and 8 (Opus, not blocked) | | | | | |
+| Chunk | State (2026-11-21 00:50 UTC) |
+| --- | --- |
+| 7 | Neon re-review + touch-up running; then closing rewrite (stageB closing) → accept → land |
+| 4 | Neon finishing the adversarial suite; then part A from `rereview`; then stageB closing |
+| 5 | part A from `rereview` running; then stageB late (chapter text not written yet) |
+| 3 | part A running (review + adversarial) |
+| 6, 8 | built (Opus), part A not started yet (start when a Neon slot frees; at most ~5 Neon runs at once) |
+| 9 | Opus build running |
+| 10a, 10b | to build after 8 and 9 |
+| pub | site generator + workflow built on `chunk/pub` (5bf7893), not on main; README/home text, review, adversarial still to do; lands last after the self-contained sweep |
+| 1, 2 closing rewrites | owed on main; not started |
 
-In progress: Opus builds of chapters 6 and 8. Then 9 (needs 6), 10a (needs 8, 9), 10b.
+Closing prose record (commit of each chapter's closing Neon pass): (none yet).
 
-Next steps when Neon credit is back, in this order (scripts in `agent_work/orch/`;
-`agent_work/neon/neon-run.sh` picks the route itself: OpenRouter if it has budget, else the
-direct key):
-1. Chapter 7: `rereview.sh ch07 …` (same arguments as the brief `ch07-rereview` on the build
-   machine) → `finalize.sh ch07 ch07-vfs-and-filesystem-io` → `land.sh`.
-2. Chapter 4: finish the adversarial brief (run-all.sh, README, remaining attacks), run it,
-   then `rereview.sh` → `finalize.sh` → `land.sh`.
-3. Chapter 5: chapter-text pass (a brief like `ch07-prose2`: comments are done, write the
-   chapter only), then `rereview.sh` → `finalize.sh` → `land.sh`.
-4. Chapter 3: `neon-trio.sh` → `post-neon.sh` → `repair.sh` → `rereview.sh` → `finalize.sh` → `land.sh`.
-5. The same full chain for 6, 8, 9, 10a (no chapter text), 10b, then pub (Neon writes
-   README.md as the book's home page; review; adversarial on the site checker), the
-   self-contained sweep, landing pub (this publishes the site), and
-   the done file.
-Branches built on unlanded chapters must merge main before their repair rounds.
+Next steps, in order: land 7, 4, 5, 3 as their chains finish (each branch merges main before
+its part B); run part A for 6 and 8; closing rewrites for 1 and 2; build 10a and 10b; chain 9,
+10a, 10b; then pub, the self-contained sweep, and the done file.
 
 Open decisions / blockers:
-- **Nick: Neon has no credit on either route.** OpenRouter key: $0.15 left of the $50 monthly
-  limit, resets 2026-12-01. Direct Gemini key: "Your prepayment credits are depleted" (AI Studio
-  prepay). Measured need: about $9–10 of Neon per chunk; 11 chunks still need Neon passes
-  (3, 4, 5, 6, 7, 8, 9, 10a, 10b, publishing prose, plus finishing 4/5/7) — roughly $100–120.
-  Either raise the OpenRouter key limit or top up the AI Studio prepay; nothing else is needed.
-  Per ruling 12 no other model may write prose, review or adversarial tests, so those steps wait.
+- Neon spend: the direct Gemini route has $125 prepay (added 2026-11-20) under a $100 monthly
+  spend cap of which $23.33 was used. At about $9–10 per chunk the remaining chunks need roughly
+  $100, so the cap (about $77 left) may bind before the build ends. Owner: Nick (raise the cap
+  if Neon starts failing again). The balance is not visible from the build machine.
 - Nick or Twin: the Claude sign-in on the build VM ends between 2026-11-25 and 2026-11-28.
-- Neon budget: the OpenRouter key (shared with other projects) had $44.14 at Phase 2 start and
-  was spent by the middle of chapter 7's first round (about $9 of Neon per chunk). Since then
-  `agent_work/neon/neon-run.sh` runs Neon on the direct Gemini key (Nick's designated
-  fallback); that spend is billed to Nick's Google project and is not visible from here.
 
 Resume: read this file, OUTLINE.md (section 8 first), then `git log` and `git worktree list`.
 Each run is launched with `agent_work/orch/launch.sh <name> <worktree> <opus|neon> <brief>`;
