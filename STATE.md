@@ -87,31 +87,36 @@ Done:
   kb location `.kb/`, orchestration and Neon scripts (`agent_work/orch`, `agent_work/neon`),
   rulings recorded in OUTLINE.md section 8.
 
-Chunk status (build → Neon prose → Neon review → repair → re-review → adversarial → accept → land):
+Chunk status. Pipeline per chunk: Opus build → Neon review + Neon adversarial → one Opus
+repair → Neon re-review → Neon closing prose → acceptance gate → merge and push. Chunks 0, 1, 2,
+4 and 7 ran the older order (prose before review) and closed with a Neon closing rewrite.
 
 | Chunk | State | Review | Adversarial | Landed |
 | --- | --- | --- | --- | --- |
 | 0 foundation | done | Neon FAIL → repair → PASS | 38 held / 0 broken | merged cf58cb8 |
 | 1 chapter 1 | done | Neon FAIL → one Opus repair → PASS | 48 held / 0 broken after repair (run 1: 11 broken; claims narrowed) | merged 2dcf743 |
 | 2 chapter 2 | done | Neon FAIL → one Opus repair → PASS | 36 held / 0 broken after repair (run 1: 14 broken) | merged 68afd03 |
-| 2, 3, 4, 5, 7, 6, 8, 9, 10a, 10b, publishing | not started | | | |
-
-Where each open chunk stands (worktrees `../sqlite-internals-work/<name>`, branches
-`chunk/<name>`; chain logs `sqlite-p2-<name>-chainA.log` / `-chainB.log` in the run directory;
-a finished part A leaves `sqlite-p2-<name>.stageA`, a finished part B `sqlite-p2-<name>-accept.txt`):
-
-| Chunk | State (2026-11-21 03:45 UTC) |
-| --- | --- |
 | 3 chapter 3 | done | Neon NITS → one Opus repair → PASS | 30 held / 0 broken after repair (run 1: 14 broken) | merged 4e1e290 |
+| 4 chapter 4 | done | Neon FAIL → one Opus repair → NITS | 32 held / 0 broken after repair (run 1: 12 broken) | merged f500664 |
+| 5 chapter 5 | done | Neon FAIL → one Opus repair → PASS | 28 held / 0 broken after repair (run 1: 7 broken) | merged 2629fec |
 | 6 chapter 6 | done | Neon FAIL → one Opus repair → PASS | 49 held / 0 broken after repair (run 1: 6 broken) | merged e4af9e0 |
+| 7 chapter 7 | done | Neon FAIL → one Opus repair → PASS | 34 held / 0 broken after repair | merged 751e198 |
 | 8 chapter 8 | done | Neon FAIL → one Opus repair → PASS | 29 held / 0 broken after repair (run 1: 9 broken) | merged 3f54929 |
 | 9 chapter 9 | done | Neon FAIL → one Opus repair → NITS | 40 held / 0 broken after repair (run 1: 5 broken) | merged a64e85e |
+| 10a capstone service core | done | Neon FAIL → one Opus repair → PASS | 27 held / 0 broken after repair (run 1: 9 broken) | merged 3b2ef92 |
+
+Chapters 1 and 2 also received their retroactive Neon closing rewrites (66fca8e, dd5a9b4, merged).
+A separate small fix (`equal.LogicalHash` always ends its read transaction) is merged, with a
+Neon review PASS (`agent_work/fixeq/`).
+
+Open chunks (worktrees `../sqlite-internals-work/<name>`, branches `chunk/<name>`; chain logs
+`sqlite-p2-<name>-chainA.log` / `-chainB.log` in the run directory; a finished part A leaves
+`sqlite-p2-<name>.stageA`, a finished part B `sqlite-p2-<name>-accept.txt`):
+
+| Chunk | State (2026-11-21 06:10 UTC) |
+| --- | --- |
 | 10b | Opus build running (worktree ch10b, cut from main after 10a landed) |
 | pub | review 1 FAIL → repair → review 2 FAIL (new blocker in `internal/site/check.go`) → arbitration by Muse Wonder Full: FAIL STANDS (`agent_work/pub/ARBITRATION.md` on the branch) → Opus repair round 2 scoped to the arbiter's checklist running, done, then Neon re-review 3: NITS, 48 held / 0 broken; part B (Neon writes README as the book home + comments) and landing come last, after the self-contained sweep |
-| 1 closing rewrite | done (66fca8e, merged) |
-| 4 chapter 4 | done | Neon FAIL → one Opus repair → NITS | 32 held / 0 broken after repair (run 1: 12 broken) | merged f500664 |
-| 10a capstone service core | done | Neon FAIL → one Opus repair → PASS | 27 held / 0 broken after repair (run 1: 9 broken) | merged 3b2ef92 |
-| 2 closing rewrite | done (dd5a9b4, merged) |
 
 Closing prose record (commit of each chapter's closing Neon pass): chapter 5 — 394203d (single late prose pass); chapter 7 — c645979 (closing rewrite); chapter 3 — e71fa8c (single late prose pass); chapter 4 — a9fff51 (closing rewrite); chapter 6 — d394e64, chapter 8 — dfd1dfd and chapter 9 — b58a1a0 (single late prose passes); 10a — 09037a8 (comments only; no chapter text in that chunk); chapter 3 — e71fa8c (single late prose pass); chapter 4 — a9fff51 (closing rewrite); chapter 6 — d394e64, chapter 8 — dfd1dfd and chapter 9 — b58a1a0 (single late prose passes); 10a — 09037a8 (comments only; no chapter text in that chunk); chapter 1 — 66fca8e and chapter 2 — dd5a9b4 (retroactive closing rewrites, merged on main).
 
