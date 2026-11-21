@@ -599,8 +599,9 @@ func attackSnap04(ctx context.Context, root string) {
 	}
 	pinnedBackfill := shmDuring.Checkpoint.Backfill
 	duringMx := shmDuring.Header().MaxFrame
+	duringSalt := shmDuring.Header().Salt1
 
-	// Release slow reader, checkpoint, and commit step 19 to trigger WAL restart (new salt-1).
+	// Release slow reader, checkpoint, and commit step 19 to trigger a second WAL restart.
 	mustDo(script, capturer, "commit")
 	ckptAfter := mustDo(script, writer, "checkpoint", sqlitex.CheckpointPassive)
 	mustDo(script, writer, "recipe-step", "19")
@@ -628,21 +629,25 @@ func attackSnap04(ctx context.Context, root string) {
 		fatal("snap04 compare", err)
 	}
 
-	// Check: WAL grew monotonically past autocheckpoint=20, nBackfill stayed pinned <= startMx,
-	// capture matches step 6 at E1, and after reader ends checkpoint completes and salt-1 advances.
+	// Build-notes #7 (confirmed by probes/snap04-restart): step 6 (22 frames >= autocheckpoint 20)
+	// fully checkpoints the WAL, so capture takes WAL_READ_LOCK(0). Step 7 restarts the WAL under
+	// that READ(0) reader (salt-1 +1, nBackfill=0); READ(0) then blocks all backfill (wal.c:2254-2260)
+	// while the WAL grows monotonically through step 18, capture equals step 6 at E1, and after
+	// capture ends + PASSIVE checkpoint + step 19, salt-1 increments a second time (+2 total).
 	held := seen == "6" &&
 		monotonicGrowth &&
 		duringMx > startMx &&
 		duringMx > 100 &&
-		pinnedBackfill <= startMx &&
+		pinnedBackfill == 0 &&
+		duringSalt == saltBefore+1 &&
 		cmp.Equal &&
-		saltAfter == saltBefore+1
+		saltAfter == saltBefore+2
 	report(
 		"SNAP-04",
 		"slow sqlite_dbpage capture at step 6 while writer with wal_autocheckpoint=20 commits steps 7-18",
-		"WAL grows monotonically past autocheckpoint=20, nBackfill stays pinned at reader mark, capture equals step 6 (E1), salt-1 increments after reader ends",
-		fmt.Sprintf("monotonic=%v mxFrame=%d->%d pinned_nBackfill=%d e1_step6=%v ckpt_after=(%s) salt1=0x%08x->0x%08x",
-			monotonicGrowth, startMx, duringMx, pinnedBackfill, cmp.Equal, ckptAfter.Value, saltBefore, saltAfter),
+		"READ(0) reader allows step-7 WAL restart (salt1+1, nBackfill=0) then pins backfill=0 while WAL grows monotonically past autocheckpoint=20, capture equals step 6 (E1), and salt-1 advances again after reader ends (salt1+2)",
+		fmt.Sprintf("monotonic=%v mxFrame=%d->%d pinned_nBackfill=%d e1_step6=%v ckpt_after=(%s) salt1=0x%08x->0x%08x->0x%08x",
+			monotonicGrowth, startMx, duringMx, pinnedBackfill, cmp.Equal, ckptAfter.Value, saltBefore, duringSalt, saltAfter),
 		held,
 	)
 }

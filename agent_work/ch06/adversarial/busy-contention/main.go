@@ -724,29 +724,29 @@ func attackBusy05b(ctx context.Context, root string) {
 	mustDo(script, w, "exec", "INSERT INTO lab(who) VALUES ('excl-mode')")
 	mustDo(script, w, "commit")
 
-	// Now spawn a second process (reader) while writer retains exclusive lock.
-	// With locking_mode=EXCLUSIVE in WAL mode, reader may fail with SQLITE_BUSY
-	// either during sqlitex.Open (initial PRAGMA read) or on its SELECT query.
+	// Narrowed claim (build-notes #6, pager.c:5982-5988): "writer never blocks readers"
+	// applies to default locking_mode=NORMAL. Under PRAGMA locking_mode=EXCLUSIVE, a WAL
+	// writer takes and keeps the database EXCLUSIVE lock and blocks a second process's reader
+	// with SQLITE_BUSY (either during open or on its query).
 	r, spawnErr := script.Spawn("reader", procs.RoleSQL, opts.Args()...)
 	var gotStr string
-	var held bool
+	var readerBlocked bool
 	if spawnErr != nil {
-		gotStr = fmt.Sprintf("locking_mode=%s reader_open_failed=%v", mode.Value, spawnErr)
-		held = false
+		errText := spawnErr.Error()
+		readerBlocked = strings.Contains(errText, "database is locked") || strings.Contains(errText, "SQLITE_BUSY")
+		gotStr = fmt.Sprintf("locking_mode=%s reader_blocked_at_open=%v err=%q", mode.Value, readerBlocked, errText)
 	} else {
 		readRes := doRes(script, r, "query", "SELECT count(*) FROM lab")
+		readerBlocked = readRes.Code == sqlitex.CodeBusy
 		gotStr = fmt.Sprintf("locking_mode=%s reader=%s", mode.Value, readRes.Outcome())
-		held = readRes.OK()
 	}
 	_ = script.Close()
 
-	// Outline says unconditionally: "in WAL mode readers never block the writer and the writer never blocks readers."
-	// Under PRAGMA locking_mode=EXCLUSIVE, pager.c:5982-5988 takes an EXCLUSIVE lock and blocks other processes' readers!
-	// If reader is blocked with SQLITE_BUSY, that marks a boundary exception to the unqualified WAL concurrency claim -> BROKEN.
+	held := mode.Value == "exclusive" && readerBlocked
 	report(
 		"BUSY-05b",
 		"WAL writer sets PRAGMA locking_mode=EXCLUSIVE and commits; 2nd process attempts read",
-		"unqualified WAL claim: writer never blocks readers (SQLITE_OK)",
+		"build-notes #6 boundary (pager.c:5982-5988): WAL locking_mode=EXCLUSIVE holds DB EXCLUSIVE lock and blocks 2nd-process reader with SQLITE_BUSY (5)",
 		gotStr,
 		held,
 	)

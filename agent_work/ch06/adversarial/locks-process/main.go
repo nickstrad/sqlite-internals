@@ -826,6 +826,10 @@ func attackLock04b(ctx context.Context, cli sqlitex.CLI, root string) {
 		fatal("lock04b stray shm", fmt.Errorf("%v %v", err, r.Outcome()))
 	}
 	afterShmRes, afterShmErr := cli.Run(ctx, sqlitex.CLIRun{Stdin: strings.NewReader(sqlitex.OpenScript(db, cliSQL))})
+	_, walStatErr := os.Stat(db + "-wal")
+	_, shmStatErr := os.Stat(db + "-shm")
+	walGone := errors.Is(walStatErr, os.ErrNotExist)
+	shmGone := errors.Is(shmStatErr, os.ErrNotExist)
 
 	holderCommit, err := script.Do(holder, "commit")
 	if err != nil {
@@ -842,12 +846,15 @@ func attackLock04b(ctx context.Context, cli sqlitex.CLI, root string) {
 	refusedBefore := beforeErr != nil && strings.Contains(beforeRes.Stderr, "database is locked")
 	refusedAfterDB := afterDBErr != nil && strings.Contains(afterDBRes.Stderr, "database is locked")
 	admittedAfterShm := afterShmErr == nil && afterShmRes.ExitCode == 0
-	held := refusedBefore && refusedAfterDB && admittedAfterShm && holderCommit.Code == sqlitex.CodeProtocol && insp.Integrity == "ok" && insp.Values[0] == "cli-contender"
+	// Corrected claim (6.1 D / build-notes #1): the CLI commits and exits as the last
+	// connection, deleting -wal and -shm; the Go holder's COMMIT then returns SQLITE_OK
+	// into the unlinked -wal, silently losing the CLI's committed row.
+	held := refusedBefore && refusedAfterDB && admittedAfterShm && walGone && shmGone && holderCommit.OK() && insp.Integrity == "ok" && insp.Values[0] == "go-holder"
 	report(
 		"LOCK-04b",
 		"C sqlite3 CLI as contender vs Go holder in WAL mode across stray-close db and -shm",
-		"CLI refused before and after stray-close db, commits OK after stray-close -shm; Go holder COMMIT returns SQLITE_PROTOCOL (15), final DB has cli-contender",
-		fmt.Sprintf("before_locked=%v after_db_locked=%v after_shm_ok=%v holder_commit=%s integrity=%s rows=%s", refusedBefore, refusedAfterDB, admittedAfterShm, holderCommit.Outcome(), insp.Integrity, insp.Values[0]),
+		"CLI refused before and after stray-close db, commits OK after stray-close -shm and exits deleting -wal/-shm (6.1 D); Go holder COMMIT returns SQLITE_OK, final DB has only go-holder",
+		fmt.Sprintf("before_locked=%v after_db_locked=%v after_shm_ok=%v wal_gone=%v shm_gone=%v holder_commit=%s integrity=%s rows=%s", refusedBefore, refusedAfterDB, admittedAfterShm, walGone, shmGone, holderCommit.Outcome(), insp.Integrity, insp.Values[0]),
 		held,
 	)
 }
@@ -1147,15 +1154,14 @@ func attackLock06(ctx context.Context, root string) {
 		fatal("lock06 inspect", err)
 	}
 
-	// Build-notes #1 / 6.1 B claims: WAL holder COMMIT returns SQLITE_PROTOCOL (15)
-	// and only contender's row persists ("the holder was told").
-	// If holder COMMIT instead returns SQLITE_OK and silently clobbers contender's commit,
-	// that falsifies the unconditional WAL claim -> BROKEN!
-	held := hCommit.Code == sqlitex.CodeProtocol && insp.Integrity == "ok" && strings.Contains(insp.Values[0], "contender") && !strings.Contains(insp.Values[0], "holder")
+	// Corrected claim (6.1 C / build-notes #1): with uncheckpointed frames in the WAL,
+	// holder reads through WAL_READ_LOCK(1) and skips walRestartLog (wal.c:3879), so both
+	// COMMITs return SQLITE_OK and the holder overwrites the contender's committed row.
+	held := cCommit.OK() && hCommit.OK() && insp.Integrity == "ok" && insp.Values[0] == "2 row(s): seed,holder"
 	report(
 		"LOCK-06",
 		"WAL stray-close -shm when WAL already has uncheckpointed frames (no walRestartLog on commit)",
-		"6.1 B / build-notes #1 claim: holder COMMIT fails with SQLITE_PROTOCOL (15) and contender's commit survives",
+		"6.1 C / build-notes #1 corrected claim: both COMMITs return SQLITE_OK, integrity_check=ok, and contender's row is silently lost (seed,holder)",
 		fmt.Sprintf("contender_commit=%s holder_commit=%s integrity=%s final=(%s)", cCommit.Outcome(), hCommit.Outcome(), procs.IntegritySummary(insp.Integrity), insp.Values[0]),
 		held,
 	)
