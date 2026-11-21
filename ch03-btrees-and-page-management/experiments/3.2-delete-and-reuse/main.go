@@ -151,35 +151,54 @@ func compactPages(xs []int) string {
 }
 
 type finding struct {
-	rowsFound int
-	byRole    map[string]int
-	pages     map[int]bool
+	rowsFound  int
+	rowsSought int
+	byRole     map[string]int
+	pages      map[int]bool
 }
 
+type markerRange struct {
+	prefix      string
+	first, last int64
+}
+
+var firstDeletion = []markerRange{{"SECRET", deleteFirst, deleteLast}}
+
+var secondDeletion = []markerRange{{"NEW", 1001, 1000 + reuseRows}, {"GROW", 2001, 2000 + growBatches*rowsPerTx}}
+
 func searchDeleted(s fileState) finding {
+	return searchMarkers(s, firstDeletion)
+}
+
+func searchMarkers(s fileState, ranges []markerRange) finding {
 	f := finding{byRole: map[string]int{}, pages: map[int]bool{}}
-	for id := int64(deleteFirst); id <= deleteLast; id++ {
-		needle := marker("SECRET", id)
-		found := false
-		for offset := 0; ; {
-			i := bytes.Index(s.image[offset:], needle)
-			if i < 0 {
-				break
+	for _, r := range ranges {
+		for id := r.first; id <= r.last; id++ {
+			f.rowsSought++
+			if f.searchOne(s, marker(r.prefix, id)) {
+				f.rowsFound++
 			}
-			at := offset + i
-			page := at/pageSize + 1
-			if !f.pages[page] {
-				f.pages[page] = true
-				f.byRole[s.census.Page(page).Role.String()]++
-			}
-			found = true
-			offset = at + len(needle)
-		}
-		if found {
-			f.rowsFound++
 		}
 	}
 	return f
+}
+
+func (f finding) searchOne(s fileState, needle []byte) bool {
+	found := false
+	for offset := 0; ; {
+		i := bytes.Index(s.image[offset:], needle)
+		if i < 0 {
+			return found
+		}
+		at := offset + i
+		page := at/pageSize + 1
+		if !f.pages[page] {
+			f.pages[page] = true
+			f.byRole[s.census.Page(page).Role.String()]++
+		}
+		found = true
+		offset = at + len(needle)
+	}
 }
 
 func (f finding) String() string {
@@ -188,7 +207,11 @@ func (f finding) String() string {
 		roles = append(roles, fmt.Sprintf("%s=%d", role, n))
 	}
 	sort.Strings(roles)
-	return fmt.Sprintf("%d of %d deleted rows still readable in the file, on %d page(s): %s", f.rowsFound, deleteLast-deleteFirst+1, len(f.pages), strings.Join(roles, " "))
+	text := fmt.Sprintf("%d of %d deleted rows still readable in the file, on %d page(s)", f.rowsFound, f.rowsSought, len(f.pages))
+	if len(roles) > 0 {
+		text += ": " + strings.Join(roles, " ")
+	}
+	return text
 }
 
 func open(ctx context.Context, path string, secureDelete bool) *sqlitex.DB {
@@ -249,11 +272,12 @@ func insertRows(prefix string, first, count int64) [][]any {
 }
 
 type outcome struct {
-	afterDelete  finding
-	afterReuse   finding
-	afterVacuum  finding
-	sizes        []int64
-	deleteFrames int
+	afterDelete       finding
+	afterReuse        finding
+	afterSecondDelete finding
+	afterVacuum       finding
+	sizes             []int64
+	deleteFrames      int
 }
 
 func walFrames(path string) int {
@@ -346,7 +370,7 @@ func run(ctx context.Context, dir string, secureDelete bool) outcome {
 	o.afterReuse = searchDeleted(reused)
 	fmt.Printf("   search for the deleted markers: %s\n", o.afterReuse)
 
-	grewWithFree := false
+	grewBeforeEmpty := false
 	var growth []string
 	session(ctx, path, secureDelete, func(db *sqlitex.DB) {
 		next := int64(2001)
@@ -357,8 +381,8 @@ func run(ctx context.Context, dir string, secureDelete bool) outcome {
 			next += rowsPerTx
 			freeAfter := pragmaInt(ctx, db, "freelist_count")
 			pagesAfter := pragmaInt(ctx, db, "page_count")
-			if pagesAfter > pagesBefore && freeBefore > 0 {
-				grewWithFree = true
+			if pagesAfter > pagesBefore && freeAfter > 0 {
+				grewBeforeEmpty = true
 			}
 			if pagesAfter != pagesBefore || batch == 1 || freeBefore != freeAfter && freeAfter == 0 {
 				growth = append(growth, fmt.Sprintf("batch %d: freelist %d->%d, page_count %d->%d", batch, freeBefore, freeAfter, pagesBefore, pagesAfter))
@@ -375,7 +399,7 @@ func run(ctx context.Context, dir string, secureDelete bool) outcome {
 			fmt.Printf("   ... (%d more batches that grew the file)\n", len(growth)-5)
 		}
 	}
-	check(!grewWithFree, "page_count grows only in a transaction that started with an empty freelist")
+	check(!grewBeforeEmpty, "page_count grows only once the freelist is used up: every transaction that added pages ended with an empty freelist")
 	check(grown.size > base.size && grown.freelist == 0, "once the freelist is used up, the file grows")
 
 	session(ctx, path, secureDelete, func(db *sqlitex.DB) {
@@ -387,6 +411,8 @@ func run(ctx context.Context, dir string, secureDelete bool) outcome {
 	o.sizes = append(o.sizes, again.size)
 	fmt.Printf("5. DELETE FROM t WHERE id >= 1001: %s\n", again.summary())
 	check(again.size == grown.size, "the file still does not shrink")
+	o.afterSecondDelete = searchMarkers(again, secondDeletion)
+	fmt.Printf("   search for the NEW- and GROW- markers just deleted: %s\n", o.afterSecondDelete)
 
 	session(ctx, path, secureDelete, func(db *sqlitex.DB) {
 		if _, err := db.ExecContext(ctx, "VACUUM"); err != nil {
@@ -395,12 +421,160 @@ func run(ctx context.Context, dir string, secureDelete bool) outcome {
 	})
 	vacuumed := readState(path)
 	o.sizes = append(o.sizes, vacuumed.size)
-	o.afterVacuum = searchDeleted(vacuumed)
+	o.afterVacuum = searchMarkers(vacuumed, append(append([]markerRange(nil), firstDeletion...), secondDeletion...))
 	fmt.Printf("6. VACUUM: %s\n", vacuumed.summary())
 	fmt.Printf("   search for the deleted markers: %s\n", o.afterVacuum)
 	check(vacuumed.freelist == 0 && vacuumed.pages <= again.pages-again.freelist, fmt.Sprintf("VACUUM is what returns space: %d pages -> %d, at least the %d freelist pages are gone", again.pages, vacuumed.pages, again.freelist))
-	check(o.afterVacuum.rowsFound == 0, "after VACUUM no deleted marker is left in the file")
+	check(o.afterVacuum.rowsFound == 0, "after VACUUM no marker of a row deleted in step 2 or step 5 is left in the file")
 	return o
+}
+
+func freshPath(dir, name string) string {
+	path := filepath.Join(dir, name, "t.db")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		fatal("mkdir", err)
+	}
+	return path
+}
+
+func execOne(ctx context.Context, db *sqlitex.DB, statement string, args ...any) {
+	if _, err := db.ExecContext(ctx, statement, args...); err != nil {
+		fatal(statement, err)
+	}
+}
+
+func largeTransaction(ctx context.Context, dir string) {
+	fmt.Println()
+	fmt.Println("== a transaction that needs more pages than the freelist holds (secure_delete=ON, WAL)")
+	path := freshPath(dir, "large-transaction")
+	insert := "INSERT INTO t(id, v) VALUES(?, ?)"
+	var freeBefore, freeAfter, pagesBefore, pagesAfter int
+	session(ctx, path, true, func(db *sqlitex.DB) {
+		execOne(ctx, db, "CREATE TABLE t(id INTEGER PRIMARY KEY, v BLOB)")
+		execAll(ctx, db, insert, insertRows("SECRET", 1, 40))
+		execOne(ctx, db, "DELETE FROM t WHERE id <= 8")
+		freeBefore, pagesBefore = pragmaInt(ctx, db, "freelist_count"), pragmaInt(ctx, db, "page_count")
+		execAll(ctx, db, insert, insertRows("NEW", 101, 32))
+		freeAfter, pagesAfter = pragmaInt(ctx, db, "freelist_count"), pragmaInt(ctx, db, "page_count")
+	})
+	fmt.Printf("40 rows, then DELETE of ids 1..8: freelist %d, page_count %d\n", freeBefore, pagesBefore)
+	fmt.Printf("one transaction of 32 new rows (8 leaves' worth): freelist %d -> %d, page_count %d -> %d\n", freeBefore, freeAfter, pagesBefore, pagesAfter)
+	check(freeBefore > 0 && freeAfter == 0 && pagesAfter > pagesBefore, "a transaction that needs more pages than the freelist holds takes the freelist pages first, then grows the file in the same transaction: so the rule is per page allocation, not per transaction")
+}
+
+func autoVacuumModes(ctx context.Context, dir string) {
+	fmt.Println()
+	fmt.Println("== auto_vacuum: the file shrinks on its own only when the database was created with auto_vacuum FULL or INCREMENTAL")
+	type result struct{ created, afterDelete, freeAfterDelete, afterIncremental int64 }
+	results := map[string]result{}
+	for _, mode := range []string{sqlitex.AutoVacuumNone, sqlitex.AutoVacuumFull, sqlitex.AutoVacuumIncremental} {
+		path := freshPath(dir, "auto-vacuum-"+strings.ToLower(mode))
+		options := sqlitex.DefaultOptions()
+		options.SingleConnection = true
+		options.File.AutoVacuum = mode
+		pages := func() int64 {
+			if err := recipe.CheckAtRest(path); err != nil {
+				fatal("at rest", err)
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				fatal("stat", err)
+			}
+			return info.Size() / pageSize
+		}
+		withDB := func(work func(db *sqlitex.DB)) {
+			db, err := sqlitex.Open(ctx, path, options)
+			if err != nil {
+				fatal("open", err)
+			}
+			work(db)
+			if err := db.Close(); err != nil {
+				fatal("close", err)
+			}
+		}
+		var r result
+		withDB(func(db *sqlitex.DB) {
+			execOne(ctx, db, "CREATE TABLE t(id INTEGER PRIMARY KEY, v BLOB)")
+			execAll(ctx, db, "INSERT INTO t(id, v) VALUES(?, ?)", insertRows("SECRET", 1, 200))
+		})
+		r.created = pages()
+		withDB(func(db *sqlitex.DB) {
+			execOne(ctx, db, "DELETE FROM t WHERE id <= 150")
+			r.freeAfterDelete = int64(pragmaInt(ctx, db, "freelist_count"))
+		})
+		r.afterDelete = pages()
+		withDB(func(db *sqlitex.DB) {
+			execOne(ctx, db, "PRAGMA incremental_vacuum")
+		})
+		r.afterIncremental = pages()
+		results[mode] = r
+		fmt.Printf("  auto_vacuum=%-11s 200 rows: %d pages; DELETE of 150 rows: %d pages, freelist %d; PRAGMA incremental_vacuum: %d pages\n", mode, r.created, r.afterDelete, r.freeAfterDelete, r.afterIncremental)
+	}
+	none, full, incremental := results[sqlitex.AutoVacuumNone], results[sqlitex.AutoVacuumFull], results[sqlitex.AutoVacuumIncremental]
+	check(none.afterDelete == none.created && none.afterIncremental == none.created && none.freeAfterDelete > 0, "auto_vacuum=NONE (SQLite's default and the recipe's): the file never shrinks on its own; PRAGMA incremental_vacuum does nothing")
+	check(full.afterDelete < full.created && full.freeAfterDelete == 0, "auto_vacuum=FULL: the DELETE's own commit moves pages and truncates the file, leaving no freelist")
+	check(incremental.afterDelete == incremental.created && incremental.freeAfterDelete > 0 && incremental.afterIncremental < incremental.afterDelete, "auto_vacuum=INCREMENTAL: freed pages wait on the freelist until PRAGMA incremental_vacuum truncates the file")
+}
+
+func countMarkers(data []byte, r markerRange) int {
+	found := 0
+	for id := r.first; id <= r.last; id++ {
+		if bytes.Contains(data, marker(r.prefix, id)) {
+			found++
+		}
+	}
+	return found
+}
+
+func walResidue(ctx context.Context, dir string) {
+	fmt.Println()
+	fmt.Println("== secure_delete=ON and the -wal file (wal_autocheckpoint=0, one connection)")
+	path := freshPath(dir, "wal-residue")
+	options := sqlitex.DefaultOptions()
+	options.SingleConnection = true
+	options.Conn.SecureDelete = true
+	options.Conn.WALAutocheckpoint = 0
+	db, err := sqlitex.Open(ctx, path, options)
+	if err != nil {
+		fatal("open", err)
+	}
+	secrets := markerRange{"SECRET", 5001, 5040}
+	inWAL := func() int {
+		data, err := os.ReadFile(path + "-wal")
+		if err != nil {
+			fatal("read -wal", err)
+		}
+		return countMarkers(data, secrets)
+	}
+	checkpoint := func(mode string) {
+		result, err := sqlitex.Checkpoint(ctx, db, "main", mode)
+		if err != nil || result.Busy {
+			fatal("checkpoint", fmt.Errorf("%v %+v", err, result))
+		}
+	}
+	execOne(ctx, db, "CREATE TABLE t(id INTEGER PRIMARY KEY, v BLOB)")
+	execAll(ctx, db, "INSERT INTO t(id, v) VALUES(?, ?)", insertRows(secrets.prefix, secrets.first, secrets.last-secrets.first+1))
+	execOne(ctx, db, "DELETE FROM t")
+	afterDelete := inWAL()
+	checkpoint("PASSIVE")
+	afterPassive := inWAL()
+	checkpoint("TRUNCATE")
+	afterTruncate := inWAL()
+	if err := db.Close(); err != nil {
+		fatal("close", err)
+	}
+	if err := recipe.CheckAtRest(path); err != nil {
+		fatal("at rest", err)
+	}
+	image, err := os.ReadFile(path)
+	if err != nil {
+		fatal("read", err)
+	}
+	atRest := countMarkers(image, secrets)
+	total := int(secrets.last - secrets.first + 1)
+	fmt.Printf("%d rows inserted then deleted; deleted rows readable in the -wal: after the DELETE %d of %d, after wal_checkpoint(PASSIVE) %d, after wal_checkpoint(TRUNCATE) %d; in the database file at rest: %d\n", total, afterDelete, total, afterPassive, afterTruncate, atRest)
+	check(afterDelete == total && afterPassive == total, "secure_delete zeroes the database pages, but the -wal still holds the frames the INSERT wrote: every deleted row stays readable there, even after a PASSIVE checkpoint copied the zeroed pages back")
+	check(afterTruncate == 0 && atRest == 0, "only when the WAL is reset (here by wal_checkpoint(TRUNCATE)) are the deleted rows gone from the files on disk")
 }
 
 func main() {
@@ -421,8 +595,12 @@ func main() {
 	check(on.deleteFrames > off.deleteFrames, "secure_delete costs WAL frames: the zeroed pages are written, while without it freed leaf pages are not written at all")
 	check(off.afterDelete.rowsFound > 0, "without secure_delete the deleted payload bytes are still in the file")
 	check(off.afterDelete.byRole["freelist-leaf"] > 0, "without secure_delete freelist leaf pages keep their old content")
-	check(on.afterDelete.rowsFound == 0 && on.afterReuse.rowsFound == 0, "with secure_delete the deleted payload bytes are nowhere in the file")
+	check(off.afterSecondDelete.rowsFound > 0, "the second delete leaves its rows readable too without secure_delete")
+	check(on.afterDelete.rowsFound == 0 && on.afterReuse.rowsFound == 0 && on.afterSecondDelete.rowsFound == 0, "with secure_delete the deleted payload bytes are nowhere in the database file at rest")
 	check(fmt.Sprint(off.sizes) == fmt.Sprint(on.sizes), "secure_delete changes the bytes, not the layout: file sizes are the same at every step")
+	largeTransaction(ctx, dir)
+	autoVacuumModes(ctx, dir)
+	walResidue(ctx, dir)
 	fmt.Println()
 	if len(failures) > 0 {
 		fmt.Printf("DELETE AND REUSE FAILED: %d claim(s) did not hold\n", len(failures))
