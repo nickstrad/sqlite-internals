@@ -13,8 +13,11 @@ src/os_unix.c 4703 4786 unixShmSystemLock
 src/os_unix.c 6833 6869 unixDelete
 src/wal.c 294 299 WAL_WRITE_LOCK
 src/wal.c 1764 1792 walIteratorNext
+src/wal.c 2152 2166 walRestartHdr
 src/wal.c 2199 2395 walCheckpoint
+src/wal.c 2254 2260 nBackfill
 src/wal.c 2312 2314 mxSafeFrame
+src/wal.c 2507 2571 sqlite3WalClose
 src/wal.c 2963 2963 WAL_RETRY_PROTOCOL_LIMIT
 src/wal.c 2985 2997 SQLITE_PROTOCOL
 src/wal.c 3020 3272 walTryBeginRead
@@ -23,6 +26,7 @@ src/wal.c 3261 3265 memcmp
 src/wal.c 3699 3746 sqlite3WalBeginWriteTransaction
 src/wal.c 3734 3737 SQLITE_BUSY_SNAPSHOT
 src/wal.c 3875 3915 walRestartLog
+src/wal.c 3879 3879 readLock
 src/pager.c 5968 6032 sqlite3PagerBegin
 src/pager.c 5982 5988 exclusiveMode
 src/btree.c 3598 3804 btreeBeginTrans
