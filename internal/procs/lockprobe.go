@@ -2,6 +2,8 @@ package procs
 
 import "fmt"
 
+// LockHolder describes the conflicting POSIX advisory lock reported by
+// fcntl(F_GETLK) for a probed byte range.
 type LockHolder struct {
 	Held   bool
 	Write  bool
@@ -10,6 +12,7 @@ type LockHolder struct {
 	Length int64
 }
 
+// Kind returns "none", "read", or "write".
 func (h LockHolder) Kind() string {
 	switch {
 	case !h.Held:
@@ -21,6 +24,7 @@ func (h LockHolder) Kind() string {
 	}
 }
 
+// Describe returns a human-readable lock summary naming the conflicting holder via names.
 func (h LockHolder) Describe(names func(pid int) string) string {
 	if !h.Held {
 		return "unlocked"

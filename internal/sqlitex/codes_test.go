@@ -5,6 +5,7 @@ import (
 	"testing"
 )
 
+// TestResultCodeName verifies known code names, fallback formatting, and numeric constants from sqlite.h.in.
 func TestResultCodeName(t *testing.T) {
 	cases := map[int]string{CodeOK: "SQLITE_OK", CodeBusy: "SQLITE_BUSY", CodeBusySnapshot: "SQLITE_BUSY_SNAPSHOT", CodeBusyTimeout: "SQLITE_BUSY_TIMEOUT", CodeProtocol: "SQLITE_PROTOCOL", CodeIOErrDeleteNoEnt: "SQLITE_IOERR_DELETE_NOENT", CodeIOErr | 30<<8: "SQLITE_IOERR+extended(30)", 300: "SQLITE_code_300"}
 	for code, want := range cases {
@@ -17,6 +18,7 @@ func TestResultCodeName(t *testing.T) {
 	}
 }
 
+// TestDisplayPath checks that repo-internal paths render relative to root while outside paths collapse to their base name.
 func TestDisplayPath(t *testing.T) {
 	root, err := RepoRoot()
 	if err != nil {

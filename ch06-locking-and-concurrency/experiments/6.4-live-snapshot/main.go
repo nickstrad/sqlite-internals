@@ -1,3 +1,14 @@
+// Command 6.4-live-snapshot implements Rebuild Ladder rung R4 (Live snapshot):
+// capturing a consistent database from a live WAL writer without stopping writes.
+//
+// Method 1 reads every page through sqlite_dbpage inside one held read
+// transaction while a writer commits and runs PASSIVE checkpoints between chunks,
+// proving E1 byte equality against the recipe run to the snapshot step.
+// Method 2 copies the database file (torn mid-copy by a PASSIVE checkpoint) and
+// then copies -wal while holding a read transaction, proving Chapter 5's WAL
+// replayer repairs the torn base to the last commit before the -wal copy.
+// The -hold flag selects read (default, BEGIN DEFERRED + read) or immediate
+// (BEGIN IMMEDIATE, blocking concurrent commits while checkpoints still run).
 package main
 
 import (
@@ -37,6 +48,9 @@ type run struct {
 	next     int
 }
 
+// betweenReads advances the live database between capture chunks: under -hold
+// read it commits the next recipe step and runs a PASSIVE checkpoint; under
+// -hold immediate it can only checkpoint because the capture holds WAL_WRITE_LOCK.
 func (x *run) betweenReads() int {
 	if x.hold == holdRead {
 		x.lab.Must(x.writer, "recipe-step", strconv.Itoa(x.next))
@@ -63,6 +77,8 @@ func (x *run) backfill() int {
 	return checkpointed
 }
 
+// beginCapture starts the capture transaction and reads PRAGMA user_version so
+// the read snapshot (and its WAL read mark) is actually acquired before copying.
 func (x *run) beginCapture() int {
 	if x.hold == holdRead {
 		x.lab.Must(x.capturer, "begin", "deferred")
@@ -114,6 +130,9 @@ func (x *run) fileAndWALCopy() bool {
 	return copied > 0
 }
 
+// reference builds the exact ground-truth database for step by applying steps
+// 6..step on a single long-lived connection (matching the writer child's change
+// counter history) and running a TRUNCATE checkpoint so Method 1 can be checked at E1.
 func (x *run) reference(step int) string {
 	path := filepath.Join(x.dir, "reference", "r.db")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

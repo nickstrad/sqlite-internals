@@ -20,6 +20,9 @@ func labOptions(journalMode string) (sqlitex.Options, error) {
 	return options, nil
 }
 
+// CreateDatabase removes any existing database and sidecars at path, creates a
+// fresh database configured with journalMode and recipe settings, executes
+// statements, closes the connection, and verifies the file is at rest.
 func CreateDatabase(ctx context.Context, path, journalMode string, statements ...string) error {
 	if err := recipe.RemoveDatabase(path); err != nil {
 		return err
@@ -44,6 +47,8 @@ func CreateDatabase(ctx context.Context, path, journalMode string, statements ..
 	return recipe.CheckAtRest(path)
 }
 
+// Inspection holds the result of opening a closed database file, running
+// PRAGMA integrity_check, and evaluating caller-supplied queries.
 type Inspection struct {
 	OpenError string
 	Integrity string
@@ -57,6 +62,10 @@ func errorText(err error) string {
 	return "error " + err.Error()
 }
 
+// InspectDatabase verifies path has no live sidecar files, opens it with
+// journalMode, runs PRAGMA integrity_check and each query, and closes it.
+// SQLite errors (such as SQLITE_CORRUPT or SQLITE_NOTADB on a torn copy) are
+// captured as text in Inspection rather than returned as errors.
 func InspectDatabase(ctx context.Context, path, journalMode string, queries ...string) (Inspection, error) {
 	if err := recipe.CheckAtRest(path); err != nil {
 		return Inspection{}, err
@@ -110,6 +119,9 @@ func integrityText(ctx context.Context, db *sqlitex.DB) string {
 	return strings.Join(lines, "; ")
 }
 
+// IntegrityProblems splits the joined output of PRAGMA integrity_check into
+// individual diagnostic lines, skipping SQLite's "*** in database ..." header.
+// It returns nil when text is "ok".
 func IntegrityProblems(text string) []string {
 	if text == "ok" {
 		return nil
@@ -126,6 +138,8 @@ func IntegrityProblems(text string) []string {
 	return problems
 }
 
+// IntegritySummary condenses PRAGMA integrity_check output to either "ok" or
+// "<N> problem(s), the first: <line>".
 func IntegritySummary(text string) string {
 	problems := IntegrityProblems(text)
 	if text == "ok" {

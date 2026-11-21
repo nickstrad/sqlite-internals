@@ -1,3 +1,14 @@
+// Command 6.1-locks-belong-to-the-process demonstrates that SQLite's POSIX
+// advisory locks are byte-range locks owned by the OS process on a specific
+// inode—the database file in rollback mode (src/os.h:160-166) and the -shm
+// file in WAL mode (src/os_unix.c:4602-4603, src/wal.c:294-299)—and that
+// closing any file descriptor to that inode inside the holding process drops
+// every lock it holds on that file (src/os_unix.c:1189-1255).
+//
+// Part A contrasts rollback mode; Parts B, C, and D show all three WAL
+// outcomes after a stray close of -shm (SQLITE_PROTOCOL on an empty WAL,
+// silent overwrite on an active WAL, and silent loss when the contender exits
+// first and deletes -wal/-shm).
 package main
 
 import (
@@ -63,6 +74,10 @@ func finalRows(ctx context.Context, lab *procs.Lab, db, journal string) procs.In
 	return inspection
 }
 
+// rollbackMode runs Part A: in journal_mode=delete, a stray os.Open+Close of
+// the database file drops RESERVED and SHARED, admits a second writer whose
+// COMMIT returns SQLITE_OK, and causes the holder's later COMMIT to overwrite
+// the page and fail with SQLITE_IOERR_DELETE_NOENT (5898, src/os_unix.c:6842-6847).
 func rollbackMode(ctx context.Context, lab *procs.Lab, dir string) {
 	fmt.Println()
 	fmt.Println("== A. rollback mode (journal_mode=delete): the write lock is a byte-range lock on the database file")
@@ -99,6 +114,12 @@ func rollbackMode(ctx context.Context, lab *procs.Lab, dir string) {
 		"the file passes integrity_check but holds only the holder's row: the commit that returned SQLITE_OK is lost")
 }
 
+// walMode runs Part B: in WAL mode with an empty WAL, writer exclusion lives on
+// -shm byte 120 (WAL_WRITE_LOCK). A stray close of the database file drops only
+// the holder's SHARED lock and still refuses the contender; a stray close of
+// -shm drops all -shm locks, admits the contender, and sends the holder's
+// COMMIT (on WAL_READ_LOCK(0)) into walRestartLog -> walTryBeginRead retries
+// until SQLITE_PROTOCOL (15, src/wal.c:2963, 3053-3056, 3261-3265, 3875-3915).
 func walMode(ctx context.Context, lab *procs.Lab, dir string) {
 	fmt.Println()
 	fmt.Println("== B. WAL mode: the write lock is a byte-range lock on the -shm file")
@@ -148,6 +169,11 @@ func walMode(ctx context.Context, lab *procs.Lab, dir string) {
 		"the file passes integrity_check and holds only the second process's row: the holder's transaction is lost, and the holder was told")
 }
 
+// walWithFrames runs Part C: when the WAL already holds an uncheckpointed commit,
+// the holder starts on WAL_READ_LOCK(1) (byte 124). Because walRestartLog only
+// runs when pWal->readLock == 0 (src/wal.c:3879), the holder skips the header
+// check after the stray close of -shm, writes its frames over the contender's,
+// and both COMMITs return SQLITE_OK while the contender's row silently vanishes.
 func walWithFrames(ctx context.Context, lab *procs.Lab, dir string) {
 	fmt.Println()
 	fmt.Println("== C. WAL mode, the WAL already holding a commit no checkpoint has copied (wal_autocheckpoint=0): a stray close of -shm only")
@@ -178,6 +204,11 @@ func walWithFrames(ctx context.Context, lab *procs.Lab, dir string) {
 		"the file passes integrity_check and holds the seed and the holder's row: a commit that returned SQLITE_OK is lost and neither process was told")
 }
 
+// walContenderExits runs Part D: after stray closes of both db and -shm, the
+// contender commits and closes before the holder commits. Seeing no other locks,
+// sqlite3WalClose (src/wal.c:2507-2571) closes as the last connection and unlinks
+// -wal and -shm; the holder then commits SQLITE_OK into its unlinked -wal fd and
+// only the holder's row survives.
 func walContenderExits(ctx context.Context, lab *procs.Lab, dir string) {
 	fmt.Println()
 	fmt.Println("== D. WAL mode as in B, but the second process closes its connection and exits before the holder commits")

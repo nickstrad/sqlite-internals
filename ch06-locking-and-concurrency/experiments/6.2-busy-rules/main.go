@@ -1,3 +1,11 @@
+// Command 6.2-busy-rules scripts cross-process reader/writer and writer/writer
+// interleavings to verify SQLite's exact extended result codes: WAL reader and
+// writer concurrency (including BEGIN EXCLUSIVE behaving like BEGIN IMMEDIATE
+// under locking_mode=NORMAL), BEGIN DEFERRED vs BEGIN IMMEDIATE contention with
+// busy_timeout=0 and 120s, immediate SQLITE_BUSY (5) and SQLITE_BUSY_SNAPSHOT
+// (517) on a deferred read-then-write upgrade (src/btree.c:3740-3741,
+// src/wal.c:3734-3737), rollback-mode COMMIT contention and retained PENDING
+// locks (Part D), and alternating multi-process recipe steps under contention (Part E).
 package main
 
 import (
@@ -14,6 +22,8 @@ import (
 )
 
 const (
+	// longTimeout exceeds stepDeadline so any statement that waited out its busy
+	// handler instead of returning at once (Part C3) would time out the child loudly.
 	longTimeout   = 120 * time.Second
 	stepDeadline  = 30 * time.Second
 	countQuery    = "SELECT count(*) FROM lab"
@@ -42,6 +52,8 @@ func pair(ctx context.Context, lab *procs.Lab, dir, part, journal string, timeou
 	return lab.SpawnSQL(first, options), lab.SpawnSQL(second, options)
 }
 
+// readersAndWriter runs Part A: with busy_timeout=0 in WAL mode, readers and
+// writers never block each other, and BEGIN EXCLUSIVE behaves like BEGIN IMMEDIATE.
 func readersAndWriter(ctx context.Context, lab *procs.Lab, dir string) {
 	fmt.Println()
 	fmt.Println("== A. WAL mode: a reader and a writer (busy_timeout 0, so any wait would show up as SQLITE_BUSY)")
@@ -70,6 +82,9 @@ func readersAndWriter(ctx context.Context, lab *procs.Lab, dir string) {
 	lab.StopChildren()
 }
 
+// writersWithoutTimeout runs Part B: with busy_timeout=0, BEGIN DEFERRED defers
+// SQLITE_BUSY (5) until the first write statement, whereas BEGIN IMMEDIATE fails
+// at BEGIN itself (src/build.c:5245-5274).
 func writersWithoutTimeout(ctx context.Context, lab *procs.Lab, dir string) {
 	fmt.Println()
 	fmt.Println("== B. WAL mode: two writers, busy_timeout 0")
@@ -88,6 +103,11 @@ func writersWithoutTimeout(ctx context.Context, lab *procs.Lab, dir string) {
 	lab.StopChildren()
 }
 
+// writersWithTimeout runs Part C: with a 120s busy_timeout, transactions that
+// have not read yet (C1 BEGIN IMMEDIATE, C2 BEGIN DEFERRED writing first) wait
+// on the busy handler (src/main.c:1730-1792), while a deferred transaction that
+// already read (C3) skips the busy handler (src/btree.c:3740-3741) and gets
+// SQLITE_BUSY (5) then SQLITE_BUSY_SNAPSHOT (517, src/wal.c:3734-3737) at once.
 func writersWithTimeout(ctx context.Context, lab *procs.Lab, dir string) {
 	fmt.Println()
 	fmt.Printf("== C. WAL mode: two writers, busy_timeout %dms (each step must answer within %v, so a statement that waited out the timeout would fail the run)\n", longTimeout.Milliseconds(), stepDeadline)
@@ -131,6 +151,9 @@ func writersWithTimeout(ctx context.Context, lab *procs.Lab, dir string) {
 	lab.StopChildren()
 }
 
+// rollbackContrast runs Part D: in rollback mode a reader's SHARED lock blocks
+// the writer's COMMIT (EXCLUSIVE), and the failed COMMIT retains PENDING so new
+// readers are blocked until the writer retries (src/os_unix.c:1898-1905).
 func rollbackContrast(ctx context.Context, lab *procs.Lab, dir string) {
 	fmt.Println()
 	fmt.Println("== D. rollback mode (journal_mode=delete) as the contrast: a reader and a writer, busy_timeout 0")
@@ -151,6 +174,9 @@ func rollbackContrast(ctx context.Context, lab *procs.Lab, dir string) {
 	lab.StopChildren()
 }
 
+// recipeUnderContention runs Part E: two processes alternate recipe steps 6-15
+// using BEGIN IMMEDIATE and a 120s busy_timeout; each waiter sends BEGIN IMMEDIATE
+// while the holder still owns WAL_WRITE_LOCK so contention is verified by StillWaiting.
 func recipeUnderContention(ctx context.Context, lab *procs.Lab, dir string) {
 	fmt.Println()
 	fmt.Printf("== E. two writers apply recipe steps %d-%d alternately with BEGIN IMMEDIATE and busy_timeout %dms; each step starts while the other writer holds the lock\n", recipeBase+1, recipeBase+recipeWrites, longTimeout.Milliseconds())

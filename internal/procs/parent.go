@@ -14,16 +14,24 @@ import (
 	"time"
 )
 
+// DefaultTimeout is the per-step deadline applied to newly started children.
 const DefaultTimeout = 30 * time.Second
 
+// Sentinel errors returned by Child and Call methods so protocol failures are loud and typed.
 var (
-	ErrChildDied    = errors.New("procs: child exited")
-	ErrTimeout      = errors.New("procs: child did not answer in time")
-	ErrBusyChild    = errors.New("procs: child still has a request outstanding")
+	// ErrChildDied reports that a child's reply pipe closed or its request pipe broke before answering.
+	ErrChildDied = errors.New("procs: child exited")
+	// ErrTimeout reports that a child failed to answer or exit within its deadline and was killed.
+	ErrTimeout = errors.New("procs: child did not answer in time")
+	// ErrBusyChild reports starting or stopping a child while a previous Call is still unanswered.
+	ErrBusyChild = errors.New("procs: child still has a request outstanding")
+	// ErrStepMismatch reports a child reply whose step number or action does not match the request.
 	ErrStepMismatch = errors.New("procs: reply does not match the request")
-	ErrStopped      = errors.New("procs: child already stopped")
+	// ErrStopped reports sending a request to a child that has already been stopped or killed.
+	ErrStopped = errors.New("procs: child already stopped")
 )
 
+// Child represents a running child process driven by the parent over fd 3/4 pipes.
 type Child struct {
 	Name    string
 	Role    string
@@ -45,6 +53,8 @@ type Child struct {
 	stopped     bool
 }
 
+// Call tracks one in-flight request sent to a Child so callers can poll or wait
+// for its reply while driving another child process.
 type Call struct {
 	child   *Child
 	request Request
@@ -53,6 +63,7 @@ type Call struct {
 	done    bool
 }
 
+// StartChild re-executes the current binary in the named child role.
 func StartChild(name, role string, args ...string) (*Child, error) {
 	self, err := os.Executable()
 	if err != nil {
@@ -61,6 +72,9 @@ func StartChild(name, role string, args ...string) (*Child, error) {
 	return StartCommand(name, role, self, args...)
 }
 
+// StartCommand launches executable as a procs child, wires request/reply pipes
+// on ExtraFiles (fd 3 and fd 4), and waits for the child's step-0 ready reply
+// verifying that the reported PID matches the spawned process.
 func StartCommand(name, role, executable string, args ...string) (*Child, error) {
 	requestRead, requestWrite, err := os.Pipe()
 	if err != nil {
@@ -84,6 +98,7 @@ func StartCommand(name, role, executable string, args ...string) (*Child, error)
 		replyWrite.Close()
 		return nil, fmt.Errorf("start child %s: %w", name, err)
 	}
+	// Close the child ends in the parent so EOF fires immediately if the child exits.
 	requestRead.Close()
 	replyWrite.Close()
 	child := &Child{
@@ -136,6 +151,7 @@ func (c *Child) readReplies(r io.ReadCloser) {
 			c.mu.Unlock()
 			return
 		}
+		// Exit promptly if Kill was called while nobody is draining c.replies.
 		select {
 		case c.replies <- result:
 		case <-c.killed:
@@ -190,6 +206,9 @@ func (c *Child) deathError(request Request) error {
 	return fmt.Errorf("%w: child %s (%s) during step %d %q: %s%s; output: %s", ErrChildDied, c.Name, c.Role, request.Step, request.Action, status, detail, c.output.String())
 }
 
+// Start sends one numbered request to c without waiting for the reply.
+// Step numbers must start at 1 (0 is reserved for ActionReady, -1 for ActionExit),
+// and at most one request may be outstanding per child at a time.
 func (c *Child) Start(step int, action string, args ...string) (*Call, error) {
 	if step <= 0 {
 		return nil, fmt.Errorf("procs: step numbers start at 1, got %d", step)
@@ -215,6 +234,7 @@ func (c *Child) Start(step int, action string, args ...string) (*Call, error) {
 	return call, nil
 }
 
+// Do sends one numbered request to c and waits up to c.Timeout for its reply.
 func (c *Child) Do(step int, action string, args ...string) (Result, error) {
 	call, err := c.Start(step, action, args...)
 	if err != nil {
@@ -223,12 +243,16 @@ func (c *Child) Do(step int, action string, args ...string) (Result, error) {
 	return call.Wait()
 }
 
+// Request returns the Request that started this Call.
 func (call *Call) Request() Request { return call.request }
 
+// Wait blocks up to the child's Timeout for this Call's reply.
 func (call *Call) Wait() (Result, error) {
 	return call.WaitFor(call.child.Timeout)
 }
 
+// WaitFor blocks up to timeout for this Call's reply, killing the child on
+// timeout and caching the outcome so repeated calls return the same Result.
 func (call *Call) WaitFor(timeout time.Duration) (Result, error) {
 	if call.done {
 		if call.result == nil {
@@ -241,6 +265,7 @@ func (call *Call) WaitFor(timeout time.Duration) (Result, error) {
 	return result, err
 }
 
+// Answered checks without blocking whether the child has already replied to call.
 func (call *Call) Answered() (bool, error) {
 	if call.done {
 		return true, call.err
@@ -253,6 +278,9 @@ func (call *Call) Answered() (bool, error) {
 	}
 }
 
+// AnsweredWithin waits up to d for the child to reply to call. Unlike WaitFor,
+// expiry returns (false, nil) without killing the child, allowing callers such
+// as Lab.StillWaiting to verify that a blocked SQL statement is still waiting.
 func (call *Call) AnsweredWithin(d time.Duration) (bool, error) {
 	if d <= 0 {
 		return call.Answered()
@@ -295,6 +323,10 @@ func (call *Call) finish(result Result, err error) {
 	}
 }
 
+// Stop sends ActionExit so the child closes its Actor (including any SQLite
+// connection, which checkpoints and cleans up WAL files on last close), waits
+// for the child process to exit, and reports any close or exit error. If a
+// request is still outstanding or the exit handshake fails, Stop kills the child.
 func (c *Child) Stop() error {
 	c.mu.Lock()
 	if c.stopped {
@@ -346,6 +378,8 @@ func (c *Child) Stop() error {
 	return nil
 }
 
+// Kill forcefully terminates the child process, unblocks the reply reader,
+// closes the request pipe, and waits briefly for the process to be reaped.
 func (c *Child) Kill() {
 	c.mu.Lock()
 	c.stopped = true
@@ -361,8 +395,11 @@ func (c *Child) Kill() {
 	}
 }
 
+// Output returns the last 8 KiB of combined stdout and stderr emitted by c.
 func (c *Child) Output() string { return c.output.String() }
 
+// tailBuffer retains the most recent limit bytes written to it so diagnostic
+// errors include the child's trailing stderr without unbounded memory growth.
 type tailBuffer struct {
 	mu    sync.Mutex
 	limit int
