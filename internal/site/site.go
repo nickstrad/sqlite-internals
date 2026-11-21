@@ -10,7 +10,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+
+	"github.com/yuin/goldmark/util"
 )
 
 type Options struct {
@@ -111,6 +114,9 @@ func Build(opts Options, outDir string) (Result, error) {
 	}
 	for _, name := range opts.Files {
 		name = path.Clean(filepath.ToSlash(name))
+		if path.IsAbs(name) || name == ".." || strings.HasPrefix(name, "../") {
+			return Result{}, fmt.Errorf("file %s is not a path relative to the repository root", name)
+		}
 		b.files[name] = true
 		for dir := path.Dir(name); dir != "."; dir = path.Dir(dir) {
 			b.dirs[dir] = true
@@ -212,7 +218,11 @@ func (b *builder) load(p *page) error {
 	if err != nil {
 		return err
 	}
-	body, frontTitle := stripFrontMatter(raw)
+	body := bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n"))
+	frontTitle := ""
+	if p.kind == knowledgePage {
+		body, frontTitle = stripFrontMatter(body)
+	}
 	p.doc = parseMarkdown(body)
 	p.title = p.doc.title
 	if p.title == "" {
@@ -222,38 +232,64 @@ func (b *builder) load(p *page) error {
 		p.title = strings.TrimSuffix(path.Base(p.source), ".md")
 	}
 	if p.kind == chapterPage {
-		p.chapter.rung = findRung(body)
+		p.chapter.rung = findRung(proseOnly(p.doc))
 	}
 	return nil
 }
 
 var frontTitlePattern = regexp.MustCompile(`(?m)^title:\s*(.*?)\s*$`)
 
-func stripFrontMatter(raw []byte) ([]byte, string) {
-	normalized := bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n"))
+func stripFrontMatter(normalized []byte) ([]byte, string) {
 	if !bytes.HasPrefix(normalized, []byte("---\n")) {
 		return normalized, ""
 	}
-	rest := normalized[4:]
-	end := bytes.Index(rest, []byte("\n---\n"))
-	if end < 0 {
-		return normalized, ""
+	offset := 4
+	for offset <= len(normalized) {
+		lineEnd := bytes.IndexByte(normalized[offset:], '\n')
+		next := offset + lineEnd + 1
+		if lineEnd < 0 {
+			lineEnd = len(normalized) - offset
+			next = len(normalized)
+		}
+		if strings.TrimRight(string(normalized[offset:offset+lineEnd]), " \t") == "---" {
+			header := normalized[4:offset]
+			title := ""
+			if m := frontTitlePattern.FindSubmatch(header); m != nil {
+				title = unquoteYAMLScalar(string(m[1]))
+			}
+			return normalized[next:], title
+		}
+		if lineEnd == len(normalized)-offset {
+			break
+		}
+		offset = next
 	}
-	header := rest[:end]
-	body := rest[end+5:]
-	title := ""
-	if m := frontTitlePattern.FindSubmatch(header); m != nil {
-		title = strings.Trim(string(m[1]), `"'`)
+	return normalized, ""
+}
+
+func unquoteYAMLScalar(value string) string {
+	if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+		if unquoted, err := strconv.Unquote(value); err == nil {
+			return unquoted
+		}
+		return value[1 : len(value)-1]
 	}
-	return body, title
+	if len(value) >= 2 && value[0] == '\'' && value[len(value)-1] == '\'' {
+		return strings.ReplaceAll(value[1:len(value)-1], "''", "'")
+	}
+	return value
 }
 
 var (
-	rungIDPattern = regexp.MustCompile(`Rebuild Ladder \(rung (R\d+)\)`)
+	rungDeclarationPattern = regexp.MustCompile(`\*\*The Rebuild Ladder \(rung (R\d+)\)\.?\*\*`)
+	rungIDPattern          = regexp.MustCompile(`Rebuild Ladder \(rung (R\d+)\)`)
 )
 
 func findRung(body []byte) string {
-	m := rungIDPattern.FindSubmatch(body)
+	m := rungDeclarationPattern.FindSubmatch(body)
+	if m == nil {
+		m = rungIDPattern.FindSubmatch(body)
+	}
 	if m == nil {
 		return ""
 	}
@@ -264,6 +300,8 @@ func findRung(body []byte) string {
 	}
 	return id + " (" + string(named[1]) + ")"
 }
+
+var experimentIDPattern = regexp.MustCompile(`^\d+\.\d+$`)
 
 var experimentHeadingPattern = regexp.MustCompile(`^(?:[\d.]+\s+)?(Experiment (\d+\.\d+)\b.*)$`)
 
@@ -287,7 +325,7 @@ func (b *builder) findExperiments(c *chapter) {
 			continue
 		}
 		id, _, ok := strings.Cut(name, "-")
-		if ok && !seen[id] {
+		if ok && experimentIDPattern.MatchString(id) && !seen[id] {
 			orphans = append(orphans, name)
 		}
 	}
@@ -349,10 +387,15 @@ func (b *builder) resolve(source, dest string) (string, string, bool) {
 		return dest, "", true
 	}
 	pathPart, fragment, hasFragment := strings.Cut(dest, "#")
+	pathPart, query, hasQuery := strings.Cut(pathPart, "?")
 	suffix := ""
 	if hasFragment {
 		suffix = "#" + fragment
 	}
+	if pathPart == "" {
+		return dest, "", true
+	}
+	pathPart = string(util.UnescapePunctuations([]byte(pathPart)))
 	if strings.HasPrefix(pathPart, "/") {
 		return dest, "absolute link " + dest, false
 	}
@@ -376,11 +419,15 @@ func (b *builder) resolve(source, dest string) (string, string, bool) {
 	if p, ok := b.byDir[target]; ok {
 		return b.pageURL(p) + suffix, "", true
 	}
+	githubSuffix := suffix
+	if hasQuery {
+		githubSuffix = "?" + query + suffix
+	}
 	if b.files[target] {
-		return b.githubURL(target, false) + suffix, "", true
+		return b.githubURL(target, false) + githubSuffix, "", true
 	}
 	if b.dirs[target] {
-		return b.githubURL(target, true) + suffix, "", true
+		return b.githubURL(target, true) + githubSuffix, "", true
 	}
 	return dest, "link to a path not in the repository: " + dest, false
 }

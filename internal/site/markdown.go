@@ -13,6 +13,7 @@ import (
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/renderer/html"
 	"github.com/yuin/goldmark/text"
+	"github.com/yuin/goldmark/util"
 )
 
 type heading struct {
@@ -62,8 +63,17 @@ func plainText(n ast.Node, source []byte) string {
 			return ast.WalkContinue, nil
 		}
 		switch t := c.(type) {
+		case *ast.CodeSpan:
+			for child := t.FirstChild(); child != nil; child = child.NextSibling() {
+				if segment, ok := child.(*ast.Text); ok {
+					b.Write(segment.Segment.Value(source))
+				}
+			}
+			return ast.WalkSkipChildren, nil
 		case *ast.Text:
-			b.Write(t.Segment.Value(source))
+			value := util.UnescapePunctuations(t.Segment.Value(source))
+			value = util.ResolveNumericReferences(value)
+			b.Write(util.ResolveEntityNames(value))
 			if t.SoftLineBreak() {
 				b.WriteByte(' ')
 			}
@@ -100,6 +110,9 @@ func githubSlug(label string) string {
 
 func (s *slugger) slug(label string) string {
 	original := githubSlug(label)
+	if original == "" {
+		original = "section"
+	}
 	id := original
 	for {
 		if _, taken := s.occurrences[id]; !taken {
@@ -153,7 +166,7 @@ func (b *builder) addExperimentLinks(p *page) {
 	}
 }
 
-var includeMarkerPattern = regexp.MustCompile(`^<!--\s*include:\s*(\S+)\s*-->\s*$`)
+var includeMarkerPattern = regexp.MustCompile(`^<!--\s*include:\s*(\S+)(?:\s+lines=(\d+)-(\d+))?\s*-->\s*$`)
 
 func (b *builder) rewriteLinks(p *page) {
 	source := p.doc.source
@@ -184,11 +197,49 @@ func (b *builder) rewriteLinks(p *page) {
 		}
 		dest := string(m[1])
 		label := path.Clean(path.Join(path.Dir(p.source), dest))
+		target := b.rewrite(p, dest)
+		if m[2] != nil {
+			label += ":" + string(m[2]) + "-" + string(m[3])
+			target += "#L" + string(m[2]) + "-L" + string(m[3])
+		}
 		para := ast.NewParagraph()
 		para.SetAttributeString("class", []byte("include"))
-		para.AppendChild(para, newLink(b.rewrite(p, dest), label))
+		para.AppendChild(para, newLink(target, label))
 		block.Parent().ReplaceChild(block.Parent(), block, para)
 	}
+}
+
+func proseOnly(doc *document) []byte {
+	prose := bytes.Clone(doc.source)
+	blank := func(start, stop int) {
+		for i := start; i < stop; i++ {
+			if prose[i] != '\n' {
+				prose[i] = ' '
+			}
+		}
+	}
+	ast.Walk(doc.root, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
+		}
+		switch t := n.(type) {
+		case *ast.FencedCodeBlock, *ast.CodeBlock, *ast.HTMLBlock:
+			lines := t.Lines()
+			for i := 0; i < lines.Len(); i++ {
+				blank(lines.At(i).Start, lines.At(i).Stop)
+			}
+			return ast.WalkSkipChildren, nil
+		case *ast.CodeSpan:
+			for child := t.FirstChild(); child != nil; child = child.NextSibling() {
+				if segment, ok := child.(*ast.Text); ok {
+					blank(segment.Segment.Start, segment.Segment.Stop)
+				}
+			}
+			return ast.WalkSkipChildren, nil
+		}
+		return ast.WalkContinue, nil
+	})
+	return prose
 }
 
 func renderMarkdown(doc *document) ([]byte, error) {

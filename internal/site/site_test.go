@@ -328,12 +328,165 @@ func TestNormalizeBaseAndFindRung(t *testing.T) {
 }
 
 func TestStripFrontMatter(t *testing.T) {
-	body, title := stripFrontMatter([]byte("---\r\ntitle: 'Quoted'\r\n---\r\n# H\r\n"))
+	body, title := stripFrontMatter([]byte("---\ntitle: 'Quoted'\n---\n# H\n"))
 	if string(body) != "# H\n" || title != "Quoted" {
 		t.Fatalf("body %q title %q", body, title)
 	}
 	body, title = stripFrontMatter([]byte("---\nunterminated\n"))
 	if string(body) != "---\nunterminated\n" || title != "" {
 		t.Fatalf("body %q title %q", body, title)
+	}
+}
+
+func TestStripFrontMatterEdges(t *testing.T) {
+	cases := []struct{ in, body, title string }{
+		{"---\n---\n# Real\n\nPara.\n\n---\n\nAfter.\n", "# Real\n\nPara.\n\n---\n\nAfter.\n", ""},
+		{"---\ntitle: Stub Note\ntags: [stub]\n---", "", "Stub Note"},
+		{"---\ntitle: \"SQLite's 'WAL'\"\n---\nx\n", "x\n", "SQLite's 'WAL'"},
+		{"---\ntitle: 'It''s'\n---\nx\n", "x\n", "It's"},
+	}
+	for _, c := range cases {
+		body, title := stripFrontMatter([]byte(c.in))
+		if string(body) != c.body || title != c.title {
+			t.Errorf("stripFrontMatter(%q) = %q, %q; want %q, %q", c.in, body, title, c.body, c.title)
+		}
+	}
+}
+
+func TestFrontMatterOnlyOnKnowledgePages(t *testing.T) {
+	out, _ := build(t, map[string]string{"README.md": "---\n# Book Title\n\nSome intro\n---\n\nBody after rule\n"}, "/")
+	mustContain(t, "index.html", read(t, out, "index.html"), "Book Title", "Some intro", "Body after rule")
+}
+
+func TestRungIgnoresCodeAndPrefersDeclaration(t *testing.T) {
+	out, _ := build(t, map[string]string{
+		"README.md": "# Book\n",
+		"ch03-b/ch03-b.md": "# Three\n\nChapter 1 introduced the Rebuild Ladder (rung R0) with **R0 (Recipe)**.\n\n" +
+			"**The Rebuild Ladder (rung R2).** This chapter builds **R2 (Canonical form)**.\n",
+		"ch04-p/ch04-p.md": "# Four\n\nNo rung.\n\n```go\n// Rebuild Ladder (rung R0)\n```\n\nAnd `Rebuild Ladder (rung R1)` in code.\n",
+	}, "/")
+	home := read(t, out, "index.html")
+	mustContain(t, "index.html", home, `<span class="rung">Rung R2 (Canonical form)</span>`)
+	if strings.Count(home, `class="rung"`) != 1 {
+		t.Fatalf("rungs: %s", home)
+	}
+}
+
+func TestOnlyNumberedExperimentDirectoriesAreListed(t *testing.T) {
+	out, _ := build(t, map[string]string{
+		"README.md":                         "# Book\n",
+		"ch01-a/ch01-a.md":                  "# One\n",
+		"ch01-a/experiments/1.1-x/main.go":  "package main\n",
+		"ch01-a/experiments/shared-h/h.go":  "package h\n",
+		"ch01-a/experiments/notes-1.2/x.go": "package x\n",
+	}, "/")
+	home := read(t, out, "index.html")
+	mustContain(t, "index.html", home, "1.1-x")
+	if strings.Contains(home, "shared-h") || strings.Contains(home, "notes-1.2") {
+		t.Fatalf("helper directories listed: %s", home)
+	}
+}
+
+func TestAnswersLinkWithoutTableOfContents(t *testing.T) {
+	out, _ := build(t, map[string]string{
+		"README.md":         "# Book\n",
+		"ch01-s/ch01-s.md":  "# One\n\n## Only section\n",
+		"ch01-s/answers.md": "# Answers\n\nSecret.\n",
+	}, "/b/")
+	page := read(t, out, "ch01-s/index.html")
+	mustContain(t, "ch01-s/index.html", page, `<a href="/b/ch01-s/answers/">Answers</a>`)
+	if strings.Contains(page, "Secret.") || strings.Contains(page, "<h2>Contents</h2>") {
+		t.Fatalf("page: %s", page)
+	}
+}
+
+func TestHeadingIDsFromEntitiesAndPunctuation(t *testing.T) {
+	out, result := build(t, map[string]string{
+		"README.md": "# Book\n",
+		"ch01-a/ch01-a.md": "# One\n\n## **Bold** &amp; _italic_ — [link](https://sqlite.org/)\n\n## `a &amp; b`\n\n## ???\n\n## !!!\n\n" +
+			"[x](#bold--italic--link) [y](#a-amp-b) [z](#section) [w](#section-1)\n",
+	}, "/")
+	if len(result.Problems) != 0 {
+		t.Fatal(result.Problems)
+	}
+	page := read(t, out, "ch01-a/index.html")
+	if strings.Contains(page, `id=""`) || strings.Contains(page, `href="#"`) {
+		t.Fatalf("empty id or href: %s", page)
+	}
+	checked, err := CheckSite(out, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(checked.Problems) != 0 {
+		t.Fatal(checked.Problems)
+	}
+}
+
+func TestIncludeMarkerWithLineRange(t *testing.T) {
+	out, _ := build(t, map[string]string{
+		"README.md":        "# Book\n",
+		"ch01-a/ch01-a.md": "# One\n\n<!-- include: foo.go lines=3-7 -->\n```go\nx\n```\n",
+		"ch01-a/foo.go":    "package a\n",
+	}, "/")
+	mustContain(t, "ch01-a/index.html", read(t, out, "ch01-a/index.html"),
+		`<p class="include"><a href="`+testRepoURL+`/blob/main/ch01-a/foo.go#L3-L7">ch01-a/foo.go:3-7</a></p>`)
+}
+
+func TestQueryStringsAndEscapesInRelativeLinks(t *testing.T) {
+	out, result := build(t, map[string]string{
+		"README.md":        "# Book\n",
+		"ch01-a/ch01-a.md": "# One\n\n## 1. Model\n",
+		"ch02-b/ch02-b.md": "# Two\n\n[a](../ch01-a/ch01-a.md?v=1#1-model) [b](../internal/x.go?plain=1#L2) [c](../internal/a\\_b.go)\n",
+		"internal/x.go":    "package internal\n",
+		"internal/a_b.go":  "package internal\n",
+	}, "/")
+	if len(result.Problems) != 0 {
+		t.Fatal(result.Problems)
+	}
+	mustContain(t, "ch02-b/index.html", read(t, out, "ch02-b/index.html"),
+		`href="/ch01-a/#1-model"`, `href="`+testRepoURL+`/blob/main/internal/x.go?plain=1#L2"`, `href="`+testRepoURL+`/blob/main/internal/a_b.go"`)
+}
+
+func TestBuildRejectsAbsoluteFiles(t *testing.T) {
+	if _, err := Build(Options{Root: t.TempDir(), Files: []string{"/etc/README.md"}}, t.TempDir()); err == nil {
+		t.Fatal("absolute file accepted")
+	}
+}
+
+func TestCheckSiteHTMLEdges(t *testing.T) {
+	dir := t.TempDir()
+	pages := map[string]string{
+		"index.html": `<a href='/b/missing-single/'>x</a><img src='/b/missing.png'>` +
+			`<!-- <a href="/b/in-comment/">c</a> id="ghost" -->` +
+			`<a href="#ghost">g</a><a href="/b//a/#nope">d</a><a href="/b/a/?q=1#here">q</a>` +
+			`<div id="dup"></div><h2 id='dup'>t</h2>`,
+		"a/index.html": `<h2 id="here">h</h2>`,
+	}
+	for name, content := range pages {
+		target := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	checked, err := CheckSite(dir, "/b/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, p := range checked.Problems {
+		got = append(got, p.String())
+	}
+	want := []string{
+		`index.html: duplicate id "dup"`,
+		"index.html: broken link /b/missing-single/",
+		"index.html: broken link /b/missing.png",
+		"index.html: missing anchor #ghost in #ghost",
+		"index.html: missing anchor #nope in /b//a/#nope",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("problems:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }

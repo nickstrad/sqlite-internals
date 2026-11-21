@@ -107,7 +107,7 @@ func prepareSiteDir(root, out string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if rel, err := filepath.Rel(dir, absRoot); err == nil && (rel == "." || !strings.HasPrefix(rel, "..")) {
+	if containsPath(resolveExisting(dir), resolveExisting(absRoot)) || sameFileAsAncestor(dir, absRoot) {
 		return "", fmt.Errorf("refusing to write the site into %s: it contains the repository", dir)
 	}
 	entries, err := os.ReadDir(dir)
@@ -126,4 +126,39 @@ func prepareSiteDir(root, out string) (string, error) {
 		return "", err
 	}
 	return dir, os.MkdirAll(dir, 0o755)
+}
+
+func resolveExisting(name string) string {
+	var missing []string
+	for {
+		if resolved, err := filepath.EvalSymlinks(name); err == nil {
+			return filepath.Join(append([]string{resolved}, missing...)...)
+		}
+		parent := filepath.Dir(name)
+		if parent == name {
+			return filepath.Join(append([]string{name}, missing...)...)
+		}
+		missing = append([]string{filepath.Base(name)}, missing...)
+		name = parent
+	}
+}
+
+func containsPath(outer, inner string) bool {
+	rel, err := filepath.Rel(outer, inner)
+	return err == nil && (rel == "." || rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+func sameFileAsAncestor(dir, root string) bool {
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		return false
+	}
+	for current := root; ; current = filepath.Dir(current) {
+		if info, err := os.Stat(current); err == nil && os.SameFile(dirInfo, info) {
+			return true
+		}
+		if filepath.Dir(current) == current {
+			return false
+		}
+	}
 }

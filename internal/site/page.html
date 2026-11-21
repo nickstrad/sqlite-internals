@@ -9,15 +9,17 @@
 </head>
 <body>
 <header class="site-header"><a href="{{.Base}}">{{.BookTitle}}</a></header>
-<div class="layout{{if .TOC}} with-toc{{end}}">
-{{- if .TOC}}
+<div class="layout{{if or .TOC .Answers}} with-toc{{end}}">
+{{- if or .TOC .Answers}}
 <nav class="toc" aria-label="{{.Labels.Contents}}">
+{{- if .TOC}}
 <h2>{{.Labels.Contents}}</h2>
 <ul>
 {{- range .TOC}}
 <li class="toc-{{.Level}}"><a href="#{{.ID}}">{{.Text}}</a></li>
 {{- end}}
 </ul>
+{{- end}}
 {{- if .Answers}}
 <p class="toc-answers"><a href="{{.Answers.URL}}">{{.Answers.Title}}</a></p>
 {{- end}}

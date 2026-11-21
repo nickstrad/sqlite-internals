@@ -9,13 +9,22 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
 var (
-	idAttrPattern   = regexp.MustCompile(`\sid="([^"]*)"`)
-	linkAttrPattern = regexp.MustCompile(`\s(?:href|src)="([^"]*)"`)
+	idAttrPattern      = regexp.MustCompile(`\sid\s*=\s*(?:"([^"]*)"|'([^']*)')`)
+	linkAttrPattern    = regexp.MustCompile(`\s(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)')`)
+	htmlCommentPattern = regexp.MustCompile(`(?s)<!--.*?-->`)
 )
+
+func attrValue(m [][]byte) string {
+	if m[1] != nil {
+		return html.UnescapeString(string(m[1]))
+	}
+	return html.UnescapeString(string(m[2]))
+}
 
 type CheckResult struct {
 	Problems []Problem
@@ -27,6 +36,7 @@ func CheckSite(dir, base string) (CheckResult, error) {
 	base = NormalizeBase(base)
 	ids := map[string]map[string]bool{}
 	links := map[string][]string{}
+	duplicates := map[string][]string{}
 	err := filepath.WalkDir(dir, func(name string, entry fs.DirEntry, err error) error {
 		if err != nil || entry.IsDir() || !strings.HasSuffix(name, ".html") {
 			return err
@@ -40,13 +50,18 @@ func CheckSite(dir, base string) (CheckResult, error) {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
+		data = htmlCommentPattern.ReplaceAll(data, nil)
 		set := map[string]bool{}
 		for _, m := range idAttrPattern.FindAllSubmatch(data, -1) {
-			set[html.UnescapeString(string(m[1]))] = true
+			id := attrValue(m)
+			if set[id] {
+				duplicates[rel] = append(duplicates[rel], id)
+			}
+			set[id] = true
 		}
 		ids[rel] = set
 		for _, m := range linkAttrPattern.FindAllSubmatch(data, -1) {
-			links[rel] = append(links[rel], html.UnescapeString(string(m[1])))
+			links[rel] = append(links[rel], attrValue(m))
 		}
 		return nil
 	})
@@ -60,6 +75,9 @@ func CheckSite(dir, base string) (CheckResult, error) {
 	sort.Strings(pages)
 	result := CheckResult{Pages: len(pages)}
 	for _, page := range pages {
+		for _, id := range duplicates[page] {
+			result.Problems = append(result.Problems, Problem{page, "duplicate id " + strconv.Quote(id)})
+		}
 		for _, link := range links[page] {
 			result.Links++
 			if message := checkLink(dir, base, page, link, ids); message != "" {
@@ -78,6 +96,7 @@ func checkLink(dir, base, page, link string, ids map[string]map[string]bool) str
 		return ""
 	}
 	pathPart, fragment, hasFragment := strings.Cut(link, "#")
+	pathPart, _, _ = strings.Cut(pathPart, "?")
 	var target string
 	switch {
 	case pathPart == "":
@@ -87,7 +106,7 @@ func checkLink(dir, base, page, link string, ids map[string]map[string]bool) str
 			return "link outside the site base " + base + ": " + link
 		}
 		target = strings.TrimPrefix(pathPart, strings.TrimSuffix(base, "/"))
-		target = strings.TrimPrefix(target, "/")
+		target = strings.TrimLeft(target, "/")
 	default:
 		target = path.Join(path.Dir(page), pathPart)
 		if strings.HasSuffix(pathPart, "/") {
@@ -121,6 +140,9 @@ func checkLink(dir, base, page, link string, ids map[string]map[string]bool) str
 	}
 	set, ok := ids[target]
 	if !ok {
+		if strings.HasSuffix(target, ".html") {
+			return "missing anchor #" + fragment + " in " + link
+		}
 		return ""
 	}
 	if decoded, err := url.PathUnescape(fragment); err == nil {
