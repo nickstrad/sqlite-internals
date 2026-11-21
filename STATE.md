@@ -72,7 +72,7 @@ a finished part A leaves `sqlite-p2-<name>.stageA`, a finished part B `sqlite-p2
 
 | Chunk | State (2026-11-21 00:50 UTC) |
 | --- | --- |
-| 7 | Neon re-review + touch-up running; then closing rewrite (stageB closing) → accept → land |
+| 7 chapter 7 | done | Neon FAIL → one Opus repair → PASS | 34 held / 0 broken after repair | merged 751e198 |
 | 4 | Neon finishing the adversarial suite; then part A from `rereview`; then stageB closing |
 | 5 chapter 5 | done | Neon FAIL → one Opus repair → PASS | 28 held / 0 broken after repair (run 1: 7 broken) | merged 2629fec |
 | 3 | part A running (review + adversarial) |
