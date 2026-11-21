@@ -633,23 +633,36 @@ func attackMOD05() {
 		invarianceOK && totalWalkViol == 0,
 	)
 
-	// MOD-05b: probe 10.1's printed bound "at most 3 epochs and 5 local commits per node".
-	// Have A fence at 1 and commit 4 writes (positions 2..5), then B claims and fences at 6,
-	// then B tries its very first write. Because model.go compares n.Local >= MaxLocal where
-	// Fence sets n.Local = at (the absolute stream position), B gets 0 writes!
-	script, err := model.ParseScript("A claim, A fence, A write, A ship, A write, A ship, A write, A ship, A write, A ship, B claim, B fence, B write")
+	// MOD-05b: verify 10.1's corrected bound ("local commits stop at stream position 5,
+	// counting positions across all epochs and fences, not commits per node") and
+	// model.ParseMutant rejecting unknown mutant names.
+	// Case 1: A fences at 1 and ships 2..3; B fences at 4 and writes to 5 (allowed),
+	// then B's next write at 5 is refused (not enabled).
+	script1, err := model.ParseScript("A claim, A fence, A write, A ship, A write, A ship, B claim, B fence, B write, B write")
 	if err != nil {
-		fatal("mod05b parse", err)
+		fatal("mod05b parse script1", err)
 	}
-	lines, finalState := model.Replay(model.Correct, script)
-	lastLine := lines[len(lines)-1]
-	bCouldWrite := !strings.Contains(lastLine, "refused: not enabled")
+	lines1, state1 := model.Replay(model.Correct, script1)
+	bWriteAt4OK := strings.Contains(lines1[len(lines1)-2], "ok: local commit 5")
+	bWriteAt5Refused := strings.Contains(lines1[len(lines1)-1], "refused: not enabled")
+	// Case 2: A writes through position 5, B fences at 6, and B's 1st write is refused.
+	script2, err := model.ParseScript("A claim, A fence, A write, A ship, A write, A ship, A write, A ship, A write, A ship, B claim, B fence, B write")
+	if err != nil {
+		fatal("mod05b parse script2", err)
+	}
+	lines2, state2 := model.Replay(model.Correct, script2)
+	bWriteAt6Refused := strings.Contains(lines2[len(lines2)-1], "refused: not enabled")
+	_, bogusErr := model.ParseMutant("bogus-mutant")
+	held := bWriteAt4OK && state1.Nodes[1].Local == model.MaxLocal &&
+		bWriteAt5Refused && state2.Nodes[1].Local == model.MaxLocal+1 &&
+		bWriteAt6Refused && bogusErr != nil
 	report(
 		"MOD-05b",
-		"probe model bound '5 local commits per node': A commits 4 writes (pos 2..5), B fences at 6 and tries its 1st write",
-		"B can perform at least 1 local commit under '5 local commits per node'",
-		fmt.Sprintf("B.Local=%d, lastStep=%q", finalState.Nodes[1].Local, strings.TrimSpace(lastLine)),
-		bCouldWrite,
+		"verify corrected model bound (local commits stop at stream position 5 across epochs/fences) and ParseMutant",
+		"write from pos 4->5 succeeds; writes at pos 5 and pos 6 are refused; unknown mutant rejected",
+		fmt.Sprintf("pos4to5OK=%t bLocal1=%d pos5Refused=%t bLocal2=%d pos6Refused=%t bogusRejected=%t",
+			bWriteAt4OK, state1.Nodes[1].Local, bWriteAt5Refused, state2.Nodes[1].Local, bWriteAt6Refused, bogusErr != nil),
+		held,
 	)
 }
 
