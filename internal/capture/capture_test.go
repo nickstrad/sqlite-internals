@@ -255,25 +255,3 @@ func TestFailedCaptureLeavesNoCapture(t *testing.T) {
 		t.Fatal("Rebuild accepted the directory of a failed capture")
 	}
 }
-
-func TestHotJournalExported(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "x.db-journal")
-	hot, size, err := HotJournal(path)
-	if err != nil || hot || size != 0 {
-		t.Fatalf("missing: %v %d %v", hot, size, err)
-	}
-	if err := os.WriteFile(path, []byte{0xd9, 0xd5}, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	hot, size, err = HotJournal(path)
-	if err != nil || !hot || size != 2 {
-		t.Fatalf("hot: %v %d %v", hot, size, err)
-	}
-	if err := os.WriteFile(path, []byte{0, 0xd5}, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if hot, _, err = HotJournal(path); err != nil || hot {
-		t.Fatalf("zeroed header: %v %v", hot, err)
-	}
-}

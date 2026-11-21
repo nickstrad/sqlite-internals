@@ -119,11 +119,12 @@ recipe state (8.3 A).
   differs. This is the machine-readable table the capstone's catalog can use. Test:
   `TestSettingPlacementsCoverEveryCourseSetting`.
 
-### Changed: `internal/capture` (additive)
+### `internal/capture`: not changed
 
-- `HotJournal(journalPath) (hot bool, size int64, err error)`: exports the existing `hotJournal`
-  test (`hasHotJournal`, pager.c: exists, non-empty, first byte non-zero) so `connmgr` does not copy
-  it. Test: `TestHotJournalExported`.
+An exported `HotJournal` was added and then reverted: chapter 2 inlines `capture.go` whole, so any
+change to that file breaks `cmd/course inline -check` for ch02. `connmgr` has its own 20-line
+`hotJournal` with the same test (`hasHotJournal`, pager.c: the journal exists, is non-empty and its
+first byte is non-zero). If ch02's chapter is regenerated later, the two copies could be merged.
 
 ### New: `internal/connmgr` (the 8.3 manager, reused by chunk 10a)
 
@@ -153,7 +154,8 @@ API:
   StatusFailures, DistinctDatabases), `Record(id)`, `OpenIDs()` (most recent first).
 - `CheckAtRest(path) (Status, error)`: `Status{Path, AtRest, Problems, SHA256, Size}`. Problems,
   in order: "database file missing"; "-wal holds N bytes: the database file alone may lack
-  committed transactions" (a zero-byte `-wal` is fine); "hot -journal (N bytes) …"; "-shm exists (N
+  committed transactions" (a zero-byte `-wal` is fine); "hot -journal (N bytes) …" (own
+  `hotJournal`, the same test as `capture`'s); "-shm exists (N
   bytes): a connection is open or did not close cleanly". Only when there is no problem is the file
   hashed (sha256 of the whole file). This is stricter than chunk 2's at-rest rule
   (`capture.CheckAtRest`) by the `-shm` rule the brief asked for.

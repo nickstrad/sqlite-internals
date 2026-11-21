@@ -355,7 +355,3 @@ func checkRebuilt(path string, m equal.Manifest) error {
 	}
 	return nil
 }
-
-func HotJournal(journalPath string) (bool, int64, error) {
-	return hotJournal(journalPath)
-}

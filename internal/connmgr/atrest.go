@@ -8,8 +8,6 @@ import (
 	"io"
 	"os"
 	"strings"
-
-	"github.com/nickstrad/sqlite-internals/internal/capture"
 )
 
 type Status struct {
@@ -42,7 +40,7 @@ func CheckAtRest(path string) (Status, error) {
 	case err != nil && !errors.Is(err, os.ErrNotExist):
 		return status, err
 	}
-	hot, journalSize, err := capture.HotJournal(path + "-journal")
+	hot, journalSize, err := hotJournal(path + "-journal")
 	if err != nil {
 		return status, err
 	}
@@ -79,4 +77,27 @@ func fileSHA256(path string) (string, int64, error) {
 		return "", 0, err
 	}
 	return hex.EncodeToString(hash.Sum(nil)), size, nil
+}
+
+func hotJournal(path string) (bool, int64, error) {
+	file, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, 0, nil
+	}
+	if err != nil {
+		return false, 0, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return false, 0, err
+	}
+	if info.Size() == 0 {
+		return false, 0, nil
+	}
+	first := make([]byte, 1)
+	if _, err := file.ReadAt(first, 0); err != nil {
+		return false, info.Size(), err
+	}
+	return first[0] != 0, info.Size(), nil
 }
