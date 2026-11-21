@@ -23,9 +23,15 @@ Rulings applied (details: OUTLINE.md section 8):
 - Go for all code and scripts; working scripts in `agent_work/` (Go or bash), indexed.
 - Driver modernc.org/sqlite v1.60.1, no cgo/C. Rollback experiment 4.1 at full depth.
 - WAL is the platform default; per-chapter evaluation:
+  - Chapter 3: WAL holds. All experiment databases are WAL except 3.1 part D and 3.3 part A2
+    (rollback mode shown as the contrast). WAL frames serve as the independent record of which
+    pages a write changed.
   - Chapter 4: 4.1 is rollback mode by subject (the planned exception, ruling 9). The platform
     stays WAL; 4.1 shows the two places a WAL platform still meets rollback mode: files created
     or imported without the WAL switch, and the switch commit itself. 4.2 runs in WAL.
+  - Chapter 3: WAL holds. All experiment databases are WAL except 3.1 part D and 3.3 part A2
+    (rollback mode shown as the contrast). WAL frames serve as the independent record of which
+    pages a write changed.
   - Chapter 4: 4.1 is rollback mode by subject (the planned exception, ruling 9). The platform
     stays WAL; 4.1 shows the two places a WAL platform still meets rollback mode: files created
     or imported without the WAL switch, and the switch commit itself. 4.2 runs in WAL.
@@ -83,21 +89,21 @@ Where each open chunk stands (worktrees `../sqlite-internals-work/<name>`, branc
 `chunk/<name>`; chain logs `sqlite-p2-<name>-chainA.log` / `-chainB.log` in the run directory;
 a finished part A leaves `sqlite-p2-<name>.stageA`, a finished part B `sqlite-p2-<name>-accept.txt`):
 
-| Chunk | State (2026-11-21 01:45 UTC) |
+| Chunk | State (2026-11-21 02:40 UTC) |
 | --- | --- |
 | 3 chapter 3 | done | Neon NITS → one Opus repair → PASS | 30 held / 0 broken after repair (run 1: 14 broken) | merged 4e1e290 |
-| 6 | part A: review FAIL, run 1 43 held / 6 broken; Opus repair running |
-| 8 | part A running (review + adversarial) |
-| 9 | built (e825529, base = 6 + 3 merged); part A not started |
-| 10a, 10b | to build after 8 and 9 finish part A |
-| pub | site generator + workflow built on `chunk/pub` (5bf7893), not on main; README/home text, review, adversarial still to do; lands last after the self-contained sweep |
+| 6 | part A done (FAIL → repair → PASS, 49 held / 0 broken); closing prose pass (stageB late) running |
+| 8 | part A done (FAIL → repair → PASS, 29 held / 0 broken); closing prose pass (stageB late) running |
+| 9 | part A: review FAIL, run 1 5 broken; Opus repair running |
+| 10a, 10b | 10a builds from main once 8 and 9 have landed; 10b after 10a's part A |
+| pub | branch has main merged (go.mod conflict resolved); part A (Neon review + adversarial on the site generator and repo sweep) running; part B (Neon writes README as the book home + comments) and landing come last, after the self-contained sweep |
 | 1 closing rewrite | done (66fca8e, merged) |
 | 4 chapter 4 | done | Neon FAIL → one Opus repair → NITS | 32 held / 0 broken after repair (run 1: 12 broken) | merged f500664 |
 | 2 closing rewrite | done (dd5a9b4, merged) |
 
-Closing prose record (commit of each chapter's closing Neon pass): chapter 5 — 394203d (single late prose pass); chapter 7 — c645979 (closing rewrite); chapter 4 — a9fff51 (closing rewrite); chapter 4 — a9fff51 (closing rewrite); chapter 1 — 66fca8e and chapter 2 — dd5a9b4 (retroactive closing rewrites, merged on main).
+Closing prose record (commit of each chapter's closing Neon pass): chapter 5 — 394203d (single late prose pass); chapter 7 — c645979 (closing rewrite); chapter 3 — e71fa8c (single late prose pass); chapter 4 — a9fff51 (closing rewrite); chapter 3 — e71fa8c (single late prose pass); chapter 4 — a9fff51 (closing rewrite); chapter 1 — 66fca8e and chapter 2 — dd5a9b4 (retroactive closing rewrites, merged on main).
 
-Next steps, in order: land 4, 3, 6, 8 as their chains finish (each branch merges main before
+Next steps, in order: land 6, 8, 9 as their chains finish (each branch merges main before
 its part B); run part A for 6 and 8; closing rewrites for 1 and 2; build 10a and 10b; chain 9,
 10a, 10b; then pub, the self-contained sweep, and the done file.
 
