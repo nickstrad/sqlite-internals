@@ -1,17 +1,17 @@
 # Publishing chunk (pub) adversarial suite (Gemini 4 Neon)
-# Started: 2026-11-21T03:56:57Z
+# Started: 2026-11-21T15:07:38Z
 # Scratch: _work/adv-pub/
 
 ## group: site-live-and-determinism
-ATTACK LIVE-01 | Build real repo under /sqlite-internals/ and verify every chapter, answers, outline, knowledge page, rung, and experiment anchor + Code/Evidence links | EXPECT all chapters, answers, knowledge pages, anchored experiments, Code/Evidence links, and rungs present | GOT 5 chapters, 16 experiments, 11 knowledge pages verified, 0 issues | HELD
-ATTACK LIVE-02 | Scan all generated HTML and CSS of the real repo for external fonts/CDNs, scripts, omitted raw HTML, and unconverted include markers | EXPECT site is 100% offline self-contained with zero external assets, scripts, raw HTML omissions, or unconverted include markers | GOT scanned 23 HTML pages + style.css: 0 external assets, 0 scripts, 0 omitted HTML, 0 raw include markers, dark mode present | HELD
-ATTACK LIVE-03 | Build, -check, and HTTP-crawl the real site under bases /sqlite-internals/, /, /org/nested/book/, and unnormalized sqlite-internals | EXPECT all bases pass -check, every internal URL returns HTTP 200 without leaking outside base, and every #anchor exists in fetched HTML | GOT all 4 base paths passed -check and HTTP crawl (96 URLs 200, 1140 internal anchors verified) | HELD
-ATTACK LIVE-04 | Build real site 6 times across different TZs (UTC/NY/Tokyo/London/Auckland), subdirectory CWD, and parallel runs | EXPECT all 6 output trees are byte-for-byte identical (deterministic, no timestamps or map-order drift) | GOT 6 builds (25 files each) produced byte-for-byte identical trees across TZs, CWDs, and concurrency | HELD
-ATTACK LIVE-05 | Run course site -check and -out with SQLITE_SRC=/nonexistent and PATH containing only git+go (no sqlite3/strace/docker/gcc) | EXPECT both commands succeed with exit 0 | GOT -check exit=0 (PASS site -check: 23 page(s), 1045 link(s) resolve); -out exit=0 (PASS site: 23 page(s) written to /root/Software/sqlite-internals-work/pub/_work/adv-pub/site-live-and-determinism/nodep-site (base /sqlite-internals/)) | HELD
+ATTACK LIVE-01 | Build real repo under /sqlite-internals/ and verify every chapter, answers, outline, knowledge page, rung, and experiment anchor + Code/Evidence links | EXPECT all chapters, answers, knowledge pages, anchored experiments, Code/Evidence links, and rungs present | GOT 10 chapters, 34 experiments, 17 knowledge pages verified, 0 issues | HELD
+ATTACK LIVE-02 | Scan all generated HTML and CSS of the real repo for external fonts/CDNs, scripts, omitted raw HTML, and unconverted include markers | EXPECT site is 100% offline self-contained with zero external assets, scripts, raw HTML omissions, or unconverted include markers | GOT scanned 39 HTML pages + style.css: 0 external assets, 0 scripts, 0 omitted HTML, 0 raw include markers, dark mode present | HELD
+ATTACK LIVE-03 | Build, -check, and HTTP-crawl the real site under bases /sqlite-internals/, /, /org/nested/book/, and unnormalized sqlite-internals | EXPECT all bases pass -check, every internal URL returns HTTP 200 without leaking outside base, and every #anchor exists in fetched HTML | GOT all 4 base paths passed -check and HTTP crawl (160 URLs 200, 1924 internal anchors verified) | HELD
+ATTACK LIVE-04 | Build real site 6 times across different TZs (UTC/NY/Tokyo/London/Auckland), subdirectory CWD, and parallel runs | EXPECT all 6 output trees are byte-for-byte identical (deterministic, no timestamps or map-order drift) | GOT 6 builds (41 files each) produced byte-for-byte identical trees across TZs, CWDs, and concurrency | HELD
+ATTACK LIVE-05 | Run course site -check and -out with SQLITE_SRC=/nonexistent and PATH containing only git+go (no sqlite3/strace/docker/gcc) | EXPECT both commands succeed with exit 0 | GOT -check exit=0 (PASS site -check: 39 page(s), 1756 link(s) resolve); -out exit=0 (PASS site: 39 page(s) written to /root/Software/sqlite-internals-work/pub/_work/adv-pub/site-live-and-determinism/nodep-site (base /sqlite-internals/)) | HELD
 ATTACK LIVE-06a | Test -out safety guards: '.', '..', non-empty dir without .nojekyll, regular file, and overwrite of previous .nojekyll build | EXPECT '.', '..', non-empty dir, and regular file refused without data loss; previous .nojekyll dir cleanly replaced with stale.html removed | GOT all 5 core -out guard cases behaved safely | HELD
 ATTACK LIVE-06b | Pass -out <symlink-to-parent>/repo pointing to a disposable scratch repo that contains .nojekyll | EXPECT prepareSiteDir resolves symlinks and refuses because -out is the repository itself | GOT exit=1, repo .git intact=true, output="FAIL: refusing to write the site into /root/Software/sqlite-internals-work/pub/_work/adv-pub/site-live-and-determinism/sym-attack/link-to-parent/repo: it contains the repository" | HELD
 ATTACK LIVE-07 | Inspect .github/workflows/pages.yml structure and simulate configure-pages base_path outputs ('', '/sqlite-internals', '/sqlite-internals/') | EXPECT workflow meets all publishing spec requirements and handles custom-domain and project-pages base_path outputs cleanly | GOT pages.yml contains all required triggers, permissions, concurrency, actions, step order, and base_path normalization holds for empty/single/double slashes | HELD
-# site-live-and-determinism finished in 8s
+# site-live-and-determinism finished in 10s
 
 ## group: site-link-and-check
 ATTACK LINK-01 | Must-be-able-to-fail: inject missing file, gitignored file (present on disk), repo escape, absolute link, and broken include marker | EXPECT course site -check exits 1 and reports all 5 broken targets | GOT exit=1; all 5 violations reported | HELD
@@ -27,7 +27,7 @@ ATTACK LINK-10a | Put literal '## Reading path' and '## Reference' headings insi
 ATTACK LINK-10b | Collide raw HTML <div id="1-overview"> with markdown heading ## 1. Overview on the same page | EXPECT site -check detects duplicate DOM id="1-overview" on a page | GOT exit=1; out=FAIL site -check: 1 problem(s) ;   ch02-beta/index.html: duplicate id "1-overview" | HELD
 ATTACK LINK-11a | Include SQL code repeating WHERE id = 'alpha' and fenced HTML showing <a href='/book/single-in-code/'> on a valid page | EXPECT site -check ignores text inside <pre><code> blocks and passes (exit 0) | GOT exit=0; out=PASS site -check: 6 page(s), 35 link(s) resolve | HELD
 ATTACK LINK-11b | Link to [broken](#alpha) on a page whose only id = 'alpha' appears inside a fenced SQL code block | EXPECT site -check rejects #alpha because text inside <pre><code> does not define a DOM anchor | GOT exit=1; out=FAIL site -check: 1 problem(s) ;   ch02-beta/index.html: missing anchor #alpha in #alpha | HELD
-# site-link-and-check finished in 2s
+# site-link-and-check finished in 3s
 
 ## group: site-markdown-edges
 ATTACK MD-01a | YAML front matter title: "SQLite's 'WAL'" (inner single quote before closing double quote) and bare note fallback to filename stem | EXPECT title preserves inner quote ('SQLite's 'WAL'') and bare note falls back to 'stem' | GOT wal <title>="SQLite&#39;s &#39;WAL&#39; · Book", stemFallbackOK=true | HELD
@@ -44,7 +44,7 @@ ATTACK MD-06 | Render GFM tables, strikethrough, task lists, autolinks, and HTML
 ATTACK MD-07a | Build a chapter with only 1 H2 heading plus answers.md | EXPECT chapter page still surfaces the sidebar Answers link and never renders answers inline | GOT hasAnswersLinkInChapterHTML=true, answersLeakedInline=false | HELD
 ATTACK MD-07b | Build a 10-chapter book (ch01..ch10) to verify Previous/Next chain & numeric order, plus missing README.md handling | EXPECT ch01..ch10 link in exact sequence with no Previous on ch01 / Next on ch10; missing README.md returns error | GOT all 10 chapters chained cleanly; missing README.md returned error: README.md is not in the file set | HELD
 ATTACK MD-07c | Build via cmd/course site with tracked ch01, untracked non-ignored ch02, tracked-but-deleted-on-disk ch03, and gitignored ch99 | EXPECT ch01 and ch02 are rendered; deleted ch03 and gitignored ch99 are excluded | GOT exit=0, ch01=true, ch02=true, ch03Absent=true, ch99Absent=true (PASS site: 3 page(s) written to /root/Software/sqlite-internals-work/pub/_work/adv-pub/site-markdown-edges/git-view-out (base /book/)) | HELD
-# site-markdown-edges finished in 2s
+# site-markdown-edges finished in 1s
 
 ## group: repocheck-paths-sweep
 ATTACK PATH-01 | Run `course check paths` on the actual repository checkout (which includes verbatim SOURCES.sha256 SQLite C copies from ch04/ch05/ch07) | EXPECT check paths passes (exit 0) on the clean repository without false-failing on unmodified pinned upstream SQLite C comments | GOT exit=0 PASS | HELD
@@ -62,4 +62,4 @@ ATTACK PATH-09a | Test tracked-but-ignored ELF binary containing /root/ (NUL at 
 ATTACK PATH-09b | Delete tracked file gone.md from working tree without git rm while README.md links to [gone](gone.md) | EXPECT course check paths detects that gone.md is missing on disk and fails the broken link | GOT exit=1; out=FAIL check paths: 1 problem(s) ;   README.md:3: relative link gone.md does not resolve in the repository (gone.md) | HELD
 # repocheck-paths-sweep finished in 3s
 
-# Total elapsed: 15s
+# Total elapsed: 17s

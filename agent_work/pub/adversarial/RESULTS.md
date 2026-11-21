@@ -34,3 +34,6 @@ Run 2 — after the Opus repair round (eb8121a): 45 HELD, 1 BROKEN (`results-run
 The repair report (`../REPAIR-REPORT.md`) says for each run-1 finding whether it was fixed or answered. Still BROKEN in run 2:
 
 - PATH-03 — Place home-directory paths without trailing slash ('cd /root', 'HOME=/home/alice', 'DIR=/Users/bob') and lowercase macOS '/users/bob/src/' in a tracke
+
+Alignment (2026-11-21) — LIVE-01 scoped chapter/rung/experiment checks to the generated `Reading path</h2>` section (since README.md now includes its own chapter list above it) and matched anchored experiment links by `Experiment N.M` + verifying the target `id="..."` exists on the chapter page (since chapters 8–10 omit the numeric prefix from the slug in their headings).
+Re-run after alignment (`results.txt`): 48 HELD, 0 BROKEN.

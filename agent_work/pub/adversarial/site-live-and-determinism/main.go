@@ -189,6 +189,16 @@ func attackLiveReachability(repoRoot, siteDir string) {
 		}
 	}
 
+	readingPath := ""
+	if rpStart := strings.Index(home, "Reading path</h2>"); rpStart >= 0 {
+		readingPath = home[rpStart:]
+		if rpEnd := strings.Index(readingPath, "</section>"); rpEnd >= 0 {
+			readingPath = readingPath[:rpEnd]
+		}
+	} else {
+		issues = append(issues, "home missing Reading path section")
+	}
+
 	// Expected rungs for currently landed chapters from OUTLINE.md §3 & §5.
 	wantRungs := map[string]string{
 		"ch01-architecture-and-execution-path": "Rung R0 (Recipe)",
@@ -218,23 +228,23 @@ func attackLiveReachability(repoRoot, siteDir string) {
 
 		// Verify chapter appears in home reading path.
 		chHref := `href="/sqlite-internals/` + ch.Dir + `/"`
-		if !strings.Contains(home, chHref) {
+		if !strings.Contains(readingPath, chHref) {
 			issues = append(issues, "home missing link to "+ch.Dir)
 		}
 
-		// Check rung attribution in home page slice for this chapter.
+		// Check rung attribution in home reading path slice for this chapter.
 		if wantRung, known := wantRungs[ch.Dir]; known {
-			idx := strings.Index(home, chHref)
+			idx := strings.Index(readingPath, chHref)
 			if idx >= 0 {
-				endIdx := strings.Index(home[idx:], "</li>")
+				endIdx := strings.Index(readingPath[idx:], "</li>")
 				// Slice up to the nested <ul> or </li> for this chapter's heading line.
-				ulIdx := strings.Index(home[idx:], "<ul>")
+				ulIdx := strings.Index(readingPath[idx:], "<ul>")
 				if ulIdx >= 0 && (endIdx < 0 || ulIdx < endIdx) {
 					endIdx = ulIdx
 				}
-				snippet := home[idx:]
+				snippet := readingPath[idx:]
 				if endIdx > 0 {
-					snippet = home[idx : idx+endIdx]
+					snippet = readingPath[idx : idx+endIdx]
 				}
 				if wantRung == "" {
 					if strings.Contains(snippet, `class="rung"`) {
@@ -258,10 +268,15 @@ func attackLiveReachability(repoRoot, siteDir string) {
 			}
 			totalExps++
 			expName := e.Name()
-			// Reading path must link to an anchor (#...) on the chapter page, not bare chapter root.
-			anchorRe := regexp.MustCompile(`href="/sqlite-internals/` + regexp.QuoteMeta(ch.Dir) + `/#([^"]+)"[^>]*>[^<]*` + regexp.QuoteMeta(expName))
-			if !anchorRe.MatchString(home) {
+			expID, _, _ := strings.Cut(expName, "-")
+			// Reading path must link to an anchor (#...) on the chapter page, not bare chapter root,
+			// with link text naming the experiment id ("Experiment N.M") and a matching id on the chapter page.
+			anchorRe := regexp.MustCompile(`href="/sqlite-internals/` + regexp.QuoteMeta(ch.Dir) + `/#([^"]+)"[^>]*>[^<]*Experiment ` + regexp.QuoteMeta(expID) + `\b`)
+			m := anchorRe.FindStringSubmatch(readingPath)
+			if m == nil {
 				issues = append(issues, "home reading path missing anchored link for "+expName)
+			} else if !strings.Contains(chHTML, `id="`+m[1]+`"`) {
+				issues = append(issues, ch.Dir+" missing anchor id "+m[1]+" for "+expName)
 			}
 			codeURL := "https://github.com/nickstrad/sqlite-internals/blob/main/" + ch.Dir + "/experiments/" + expName + "/main.go"
 			evURL := "https://github.com/nickstrad/sqlite-internals/blob/main/" + ch.Dir + "/evidence/" + expName + ".txt"
