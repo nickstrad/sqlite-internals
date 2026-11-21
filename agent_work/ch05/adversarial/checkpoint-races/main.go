@@ -334,45 +334,69 @@ func main() {
 			held)
 	}
 
-	// CHK-03 (OUTLINE 5.4 literal claim test): OUTLINE 5.4 Evidence literally states
-	// "salt-1 increments on restart". Test this claim when connection C runs TRUNCATE
-	// and connection W (whose per-connection pWal->nCkpt is 0) writes the next WAL header.
+	// CHK-03 (corrected claim, build-notes #1 & Experiment 5.4): Test both TRUNCATE
+	// salt/checkpoint-seq cases (wal.c:2156, 4087-4096):
+	// (a) cross-connection TRUNCATE: C truncates (shm salt-1 +1), then W (whose
+	//     per-connection pWal->nCkpt == 0) writes fresh random salts and ckpt-seq 0->0;
+	// (b) same-connection TRUNCATE: W truncates (pWal->nCkpt becomes 1) and writes
+	//     restarted WAL header with salt-1 +1 and ckpt-seq 0->1.
 	{
 		r := recipe.Default().WithSteps(10)
-		d, p := cloneTemplate("chk03-salt-rule")
-		w := openConn(ctx, p, true, 5*time.Second, 0)
+		// (a) Cross-connection TRUNCATE.
+		dA, pA := cloneTemplate("chk03-cross-truncate")
+		wA := openConn(ctx, pA, true, 5*time.Second, 0)
 		for _, step := range []int{6, 7} {
-			if err := r.ApplyStep(ctx, w, step); err != nil {
-				fatal("step chk03", err)
+			if err := r.ApplyStep(ctx, wA, step); err != nil {
+				fatal("step chk03a", err)
 			}
 		}
-		before := liveState(ctx, p, d)
-
-		// Separate checkpointer connection runs TRUNCATE.
-		c := openConn(ctx, p, true, 5*time.Second, 0)
-		if _, err := sqlitex.Checkpoint(ctx, c, "", sqlitex.CheckpointTruncate); err != nil {
-			fatal("truncate chk03", err)
+		beforeA := liveState(ctx, pA, dA)
+		cA := openConn(ctx, pA, true, 5*time.Second, 0)
+		if _, err := sqlitex.Checkpoint(ctx, cA, "", sqlitex.CheckpointTruncate); err != nil {
+			fatal("truncate chk03a", err)
 		}
-		afterTrunc := liveState(ctx, p, d)
-		c.Close()
-
-		// Primary writer W writes the next generation (restarted WAL header).
-		if err := r.ApplyStep(ctx, w, 8); err != nil {
-			fatal("step 8 chk03", err)
+		afterTruncA := liveState(ctx, pA, dA)
+		cA.Close()
+		if err := r.ApplyStep(ctx, wA, 8); err != nil {
+			fatal("step 8 chk03a", err)
 		}
-		afterWrite := liveState(ctx, p, d)
-		w.Close()
+		afterWriteA := liveState(ctx, pA, dA)
+		wA.Close()
 
-		// Does WAL header salt-1 equal before.Salt1 + 1 as OUTLINE 5.4 states?
-		walSalt1Incremented := afterWrite.WAL.Header.Salt1 == before.WAL.Header.Salt1+1
-		shmSalt1Incremented := afterTrunc.Index.Header().Salt1 == before.WAL.Header.Salt1+1
+		shmSalt1IncA := afterTruncA.Index.Header().Salt1 == beforeA.WAL.Header.Salt1+1
+		walFreshSaltA := afterWriteA.WAL.Header.Salt1 != beforeA.WAL.Header.Salt1 &&
+			afterWriteA.WAL.Header.Salt1 != beforeA.WAL.Header.Salt1+1
+		seqSameA := beforeA.WAL.Header.CheckpointSequence == 0 && afterWriteA.WAL.Header.CheckpointSequence == 0
+
+		// (b) Same-connection TRUNCATE.
+		dB, pB := cloneTemplate("chk03-own-truncate")
+		wB := openConn(ctx, pB, true, 5*time.Second, 0)
+		for _, step := range []int{6, 7} {
+			if err := r.ApplyStep(ctx, wB, step); err != nil {
+				fatal("step chk03b", err)
+			}
+		}
+		beforeB := liveState(ctx, pB, dB)
+		if _, err := sqlitex.Checkpoint(ctx, wB, "", sqlitex.CheckpointTruncate); err != nil {
+			fatal("truncate chk03b", err)
+		}
+		if err := r.ApplyStep(ctx, wB, 8); err != nil {
+			fatal("step 8 chk03b", err)
+		}
+		afterWriteB := liveState(ctx, pB, dB)
+		wB.Close()
+
+		walSalt1IncB := afterWriteB.WAL.Header.Salt1 == beforeB.WAL.Header.Salt1+1
+		seqIncB := beforeB.WAL.Header.CheckpointSequence == 0 && afterWriteB.WAL.Header.CheckpointSequence == 1
+
+		held := shmSalt1IncA && walFreshSaltA && seqSameA && walSalt1IncB && seqIncB
 		report("CHK-03",
-			"connection C runs TRUNCATE then connection W writes restarted WAL header; check OUTLINE 5.4 claim 'salt-1 increments on restart'",
-			"restarted WAL header salt-1 == prev_salt1 + 1 (OUTLINE 5.4 literal evidence claim)",
-			fmt.Sprintf("before_salt1=0x%08x after_trunc_shm_salt1=0x%08x(+1:%v) restarted_wal_salt1=0x%08x(+1:%v) ckpt_seq=%d->%d",
-				before.WAL.Header.Salt1, afterTrunc.Index.Header().Salt1, shmSalt1Incremented,
-				afterWrite.WAL.Header.Salt1, walSalt1Incremented, before.WAL.Header.CheckpointSequence, afterWrite.WAL.Header.CheckpointSequence),
-			walSalt1Incremented)
+			"cross-connection vs same-connection TRUNCATE followed by writer's restarted WAL header (build-notes #1, wal.c:4087-4096)",
+			"cross-conn TRUNCATE: shm salt-1 +1, restarted WAL has fresh random salt-1 and ckpt_seq 0->0; same-conn TRUNCATE: salt-1 +1 and ckpt_seq 0->1",
+			fmt.Sprintf("cross(shm+1:%v wal_fresh:%v seq:%d->%d) own(wal+1:%v seq:%d->%d)",
+				shmSalt1IncA, walFreshSaltA, beforeA.WAL.Header.CheckpointSequence, afterWriteA.WAL.Header.CheckpointSequence,
+				walSalt1IncB, beforeB.WAL.Header.CheckpointSequence, afterWriteB.WAL.Header.CheckpointSequence),
+			held)
 	}
 
 	// CHK-04 (wal.c:4335-4345): Two connections overlapping checkpoints contend on
@@ -483,6 +507,20 @@ func main() {
 		}
 		expectedFrames := int(liveState(ctx, p, d).Index.Header().MaxFrame)
 
+		// (c1) Read-only connection calling wal_checkpoint(PASSIVE) BEFORE any
+		// backfill (nBackfill == 0 < mxFrame): must fail with a write I/O error
+		// and leave nBackfill at 0.
+		roOpts := recipe.Default().SQLiteOptions()
+		roOpts.ReadOnly = true
+		roOpts.ImmediateTx = false
+		roOpts.SingleConnection = true
+		roDB, err := sqlitex.Open(ctx, p, roOpts)
+		if err != nil {
+			fatal("open ro chk05", err)
+		}
+		_, roBeforeErr := sqlitex.Checkpoint(ctx, roDB, "", sqlitex.CheckpointPassive)
+		roBeforeBackfill := liveState(ctx, p, d).Index.Checkpoint.Backfill
+
 		// Hold reader + active write tx + blocked RESTART checkpointer simultaneously.
 		rOpts := recipe.Default().SQLiteOptions()
 		rOpts.ImmediateTx = false
@@ -528,16 +566,10 @@ func main() {
 		cpBlock.Close()
 		noopConn.Close()
 
-		// (c) Read-only connection calling wal_checkpoint(PASSIVE) while WAL is live.
-		roOpts := recipe.Default().SQLiteOptions()
-		roOpts.ReadOnly = true
-		roOpts.ImmediateTx = false
-		roOpts.SingleConnection = true
-		roDB, err := sqlitex.Open(ctx, p, roOpts)
-		if err != nil {
-			fatal("open ro chk05", err)
-		}
-		roRes, roErr := sqlitex.Checkpoint(ctx, roDB, "", sqlitex.CheckpointPassive)
+		// (c2) After cpBlock's fallback PASSIVE already backfilled all frames
+		// (nBackfill == mxFrame), mode=ro PASSIVE writes nothing and simply reports
+		// the already-backfilled count without error.
+		roAfterRes, roAfterErr := sqlitex.Checkpoint(ctx, roDB, "", sqlitex.CheckpointPassive)
 		roDB.Close()
 
 		// (b) Close reader (1 of 2 remaining connections): -wal must STILL exist.
@@ -555,16 +587,16 @@ func main() {
 			fatal("compare chk05", err)
 		}
 
-		// Read-only checkpoint in SQLite returns busy=0, log=-1, checkpointed=-1 (or error), never checkpoints.
-		roSafe := roErr != nil || (roRes.LogFrames == -1 && roRes.Checkpointed == -1)
+		roSafe := roBeforeErr != nil && roBeforeBackfill == 0 &&
+			roAfterErr == nil && !roAfterRes.Busy && roAfterRes.LogFrames == expectedFrames && roAfterRes.Checkpointed == expectedFrames
 		noopOK := noopErr == nil && !noopRes.Busy && noopRes.LogFrames == expectedFrames && noopElapsed < 100*time.Millisecond
 
 		held := noopOK && walKeptWithOpenConn && cleanedOnLastClose && cmp.Equal && roSafe
 		report("CHK-05",
-			"lock-free NOOP under simultaneous writer+checkpointer+reader; multi-conn close cleanup vs Replay E1; read-only checkpoint",
-			"NOOP returns immediately (<100ms, busy=0, accurate log); -wal persists until last close then auto-checkpoints E1-equal and deletes -wal/-shm; mode=ro cannot checkpoint",
-			fmt.Sprintf("noop=%s(%dms,err=%v) wal_kept_1close=%v cleaned_last=%v E1=%v ro_ckpt=%s(err=%v)",
-				noopRes, noopElapsed.Milliseconds(), noopErr, walKeptWithOpenConn, cleanedOnLastClose, cmp.Equal, roRes, roErr),
+			"lock-free NOOP under simultaneous writer+checkpointer+reader; multi-conn close cleanup vs Replay E1; mode=ro checkpoint before vs after backfill",
+			"NOOP returns immediately (<100ms, busy=0, accurate log); -wal persists until last close then auto-checkpoints E1-equal and deletes -wal/-shm; mode=ro errors before backfill (nBackfill=0) and reports existing backfill after",
+			fmt.Sprintf("noop=%s(%dms,err=%v) wal_kept_1close=%v cleaned_last=%v E1=%v ro_before=(err=%v,nBackfill=%d) ro_after=%s(err=%v)",
+				noopRes, noopElapsed.Milliseconds(), noopErr, walKeptWithOpenConn, cleanedOnLastClose, cmp.Equal, roBeforeErr, roBeforeBackfill, roAfterRes, roAfterErr),
 			held)
 	}
 }

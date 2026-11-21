@@ -129,10 +129,15 @@ func ignoredGroups(file *File) []IgnoredFrames {
 
 // Replay applies all committed WAL frames onto base in plain Go, mirroring
 // SQLite's checkpoint backfill in walCheckpoint (src/wal.c:2282-2335).
-// Frames are applied in order up to LastCommitFrame so later versions of a page
-// overwrite earlier ones; frames targeting pages past the final commit size are
-// skipped (src/wal.c:2312), and the result is truncated or zero-extended to the
-// final commit size (src/wal.c:2328-2331).
+// A non-empty base must carry the 100-byte SQLite header with a power-of-two
+// page size in 512..65536 (ErrBaseNotDatabase); page-size mismatch
+// (ErrPageSizeMismatch) and non-page-multiple base length (ErrBaseSize) are
+// validated even when the WAL has no commit frame (an empty WAL checks base
+// length against the base's own page size). Frames are applied in order up to
+// LastCommitFrame so later versions of a page overwrite earlier ones; frames
+// targeting pages past the final commit size are skipped (src/wal.c:2312), and
+// the result is truncated or zero-extended to the final commit size
+// (src/wal.c:2328-2331).
 func Replay(base, wal []byte) ([]byte, ReplayReport, error) {
 	report := ReplayReport{BaseBytes: int64(len(base))}
 	pageSize, err := basePageSize(base)
@@ -156,6 +161,9 @@ func Replay(base, wal []byte) ([]byte, ReplayReport, error) {
 	report.Transactions = len(file.Commits())
 	report.DatabasePages = file.DatabasePages()
 	report.Ignored = ignoredGroups(file)
+	// Validate base page size and whole-page alignment before returning early
+	// on zero commits so header-only, uncommitted, and empty WALs still reject
+	// mismatched or truncated base files.
 	walPageSize := file.PageSize()
 	if len(base) > 0 && walPageSize != 0 && pageSize != walPageSize {
 		return nil, report, fmt.Errorf("%w: base %d, WAL %d", ErrPageSizeMismatch, pageSize, walPageSize)
@@ -198,9 +206,13 @@ func Replay(base, wal []byte) ([]byte, ReplayReport, error) {
 }
 
 // ReplayFiles replays walPath onto basePath and atomically writes the rebuilt
-// database to outPath via a synced temporary file and rename. A missing walPath
-// is treated as zero frames. Existing outPath or sibling -wal, -journal, or
-// -shm files are refused so SQLite cannot later apply stale sidecar files.
+// database to outPath via a synced temporary file (outPath + ".replay-tmp",
+// opened with O_EXCL) and rename. A missing walPath is treated as zero frames.
+// Existing outPath or sibling -wal, -journal, or -shm files are refused with
+// ErrOutputExists so SQLite cannot later apply stale sidecar files. If
+// outPath + ".replay-tmp" already exists, ReplayFiles returns an os.ErrExist
+// error and leaves that pre-existing file untouched; the temporary file is
+// removed on error only when this call created it.
 func ReplayFiles(basePath, walPath, outPath string) (ReplayReport, error) {
 	for _, path := range []string{outPath, outPath + "-wal", outPath + "-journal", outPath + "-shm"} {
 		if _, err := os.Lstat(path); err == nil {

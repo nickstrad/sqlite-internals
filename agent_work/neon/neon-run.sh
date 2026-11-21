@@ -11,6 +11,7 @@ set -a; source /root/Software/.secrets/yt-transcribe.env; source /root/Software/
 cd "$dir" || exit 98
 prompt="Read the brief file at $brief and carry it out completely in this directory ($dir). The brief is your full instruction."
 resume=" NOTE: an earlier run of this same brief was cut off part-way. Inspect the working tree (git status, git diff) first, keep the finished parts, and complete everything the brief asks that is still missing."
+[ -n "$NEON_RESUME" ] && prompt="$prompt$resume"
 try() { # $1 model, $2 prompt
   echo "=== neon-run route=$1 $(date -Is) ==="
   timeout 5400 opencode run --auto -m "$1" "$2" 2>&1 | tee /tmp/neon-run.$$.out
