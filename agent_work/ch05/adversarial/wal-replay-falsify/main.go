@@ -289,9 +289,12 @@ func main() {
 			len(problems) == 0)
 	}
 
-	// REP-02 (OUTLINE 5.2 bullet 2): Replay a generation-2 WAL onto a stale
-	// generation-0 base. Outline 5.2 requires: "must be detected — the chapter's
-	// rule that base and WAL travel together".
+	// REP-02 (corrected claim, build-notes #6): Replay a generation-2 WAL onto a
+	// stale generation-0 base. Because the SQLite database file header stores no
+	// WAL salt or generation metadata, raw walfile.Replay(base, wal) cannot detect
+	// the mismatch from raw bytes alone; it returns err=nil and produces a corrupt
+	// database failing PRAGMA integrity_check, proving why base and WAL must travel
+	// with external capture metadata (Chapter 9 walship).
 	{
 		dir := filepath.Join(scratch, "rep02")
 		if err := os.MkdirAll(filepath.Join(dir, "copy"), 0o755); err != nil {
@@ -353,21 +356,23 @@ func main() {
 		if replayErr != nil {
 			report("REP-02",
 				"replay generation-2 WAL (steps 6-8, ckpt-seq=1) onto stale generation-0 base (step 0)",
-				"stale-generation base mismatch is detected and rejected by walfile.Replay (OUTLINE 5.2)",
-				fmt.Sprintf("rejected with error: %v", replayErr),
-				true)
+				"raw Replay cannot detect stale-generation base (no WAL generation in DB header; build-notes #6) and produces corrupt DB failing integrity_check",
+				fmt.Sprintf("unexpected Replay error: %v", replayErr),
+				false)
 		} else {
 			uv, ic, inspErr := inspectDBBytes(ctx, filepath.Join(dir, "inspect-stale"), replayed, r.SQLiteOptions())
 			icSummary := ic
 			if len(icSummary) > 100 {
 				icSummary = icSummary[:100] + "..."
 			}
+			corrupt := inspErr != nil || ic != "ok"
+			held := wf.Header.CheckpointSequence == 1 && rep.AppliedFrames > 0 && corrupt
 			report("REP-02",
 				"replay generation-2 WAL (steps 6-8, ckpt-seq=1) onto stale generation-0 base (step 0)",
-				"stale-generation base mismatch is detected and rejected by walfile.Replay (OUTLINE 5.2)",
-				fmt.Sprintf("Replay returned err=nil (wal_ckpt_seq=%d applied=%d out=%dB); opening result: uv=%d inspect_err=%v integrity_check=%q",
+				"raw Replay cannot detect stale-generation base (no WAL generation in DB header; build-notes #6) and produces corrupt DB failing integrity_check",
+				fmt.Sprintf("Replay err=nil (wal_ckpt_seq=%d applied=%d out=%dB); opening result: uv=%d inspect_err=%v integrity_check=%q",
 					wf.Header.CheckpointSequence, rep.AppliedFrames, len(replayed), uv, inspErr, icSummary),
-				false)
+				held)
 		}
 	}
 
@@ -678,13 +683,43 @@ func main() {
 		if err != nil {
 			fatal("compare rep05", err)
 		}
-		replayedRaw, _ := os.ReadFile(replayedPath)
-		hasSavepointGhost := bytes.Contains(replayedRaw, []byte("SAVEPOINT_SHOULD_VANISH"))
-		held := wf.ValidFrames == len(wf.Frames) && rep.IgnoredFrameCount() == 0 && cmp.Equal && !hasSavepointGhost
+		// Verify logical SQL state and integrity_check on the replayed DB: SQLite
+		// itself leaves unallocated slack bytes from rolled-back savepoint cells
+		// in committed pages (so raw byte search hits both SQLite's TRUNCATE output
+		// and our E1-equal replay identically), but zero live rows may carry it.
+		roOpts := r.SQLiteOptions()
+		roOpts.ReadOnly = true
+		roOpts.ImmediateTx = false
+		roDB, err := sqlitex.Open(ctx, replayedPath, roOpts)
+		if err != nil {
+			fatal("open replayed rep05", err)
+		}
+		var totalRows, ghostRows, v1v2Rows int
+		var ic string
+		if err := roDB.QueryRowContext(ctx, "SELECT count(*) FROM events").Scan(&totalRows); err != nil {
+			roDB.Close()
+			fatal("count total rep05", err)
+		}
+		if err := roDB.QueryRowContext(ctx, "SELECT count(*) FROM events WHERE note LIKE '%SAVEPOINT_SHOULD_VANISH%'").Scan(&ghostRows); err != nil {
+			roDB.Close()
+			fatal("count ghost rep05", err)
+		}
+		if err := roDB.QueryRowContext(ctx, "SELECT count(*) FROM events WHERE note LIKE '%-v1-v2'").Scan(&v1v2Rows); err != nil {
+			roDB.Close()
+			fatal("count v1v2 rep05", err)
+		}
+		if err := roDB.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&ic); err != nil {
+			roDB.Close()
+			fatal("ic rep05", err)
+		}
+		roDB.Close()
+		held := wf.ValidFrames == len(wf.Frames) && rep.IgnoredFrameCount() == 0 && cmp.Equal &&
+			ghostRows == 0 && totalRows > 0 && v1v2Rows == totalRows && ic == "ok"
 		report("REP-05",
 			"committed transaction with cache_size=5 spills/in-place overwrites + SAVEPOINT/ROLLBACK TO/RELEASE",
-			"walRewriteChecksums keeps full WAL valid, walfile.Replay matches SQLite TRUNCATE E1 without savepoint ghost",
-			fmt.Sprintf("valid=%d/%d applied=%d E1_equal=%v savepoint_ghost=%v", wf.ValidFrames, len(wf.Frames), rep.AppliedFrames, cmp.Equal, hasSavepointGhost),
+			"walRewriteChecksums keeps full WAL valid, walfile.Replay matches SQLite TRUNCATE E1, 0 ghost SQL rows, all rows -v1-v2, integrity_check=ok",
+			fmt.Sprintf("valid=%d/%d applied=%d E1_equal=%v ghost_rows=%d v1v2_rows=%d/%d ic=%q",
+				wf.ValidFrames, len(wf.Frames), rep.AppliedFrames, cmp.Equal, ghostRows, v1v2Rows, totalRows, ic),
 			held)
 	}
 

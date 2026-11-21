@@ -1,9 +1,10 @@
 // Experiment 5.4 (checkpoint-modes) runs PASSIVE, FULL, RESTART, and TRUNCATE
 // checkpoints against three reader states (no reader, reader behind, reader
-// current), records (busy, log, checkpointed), busy-timeout waits, WAL size,
-// and salt changes right after the checkpoint and after the next write, and
-// contrasts TRUNCATE run by a third connection against TRUNCATE run by the
-// writer itself (src/wal.c:2199-2395, 3875-3915, 4088-4098, 4301-4432).
+// current), records (busy, log, checkpointed), WAL size, and salt changes
+// right after the checkpoint and after the next write (elapsed times appear on
+// INFO lines only), and contrasts TRUNCATE run by a third connection against
+// TRUNCATE run by the writer itself (src/wal.c:2199-2395, 3875-3915,
+// 4088-4098, 4301-4432).
 package main
 
 import (

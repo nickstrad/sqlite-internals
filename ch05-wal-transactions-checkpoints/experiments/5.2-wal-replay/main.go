@@ -207,6 +207,10 @@ func partBC(ctx context.Context, dir string) {
 	}
 	// Set cache_size=10 so the open transaction runs out of page-cache slots
 	// and spills dirty frames into -wal before COMMIT (src/wal.c:4140-4173).
+	// Updating documents once dirties each page at most once, so no spilled
+	// frame is overwritten in place and every spilled frame passes salt and
+	// checksum validation—exercising stopping at LastCommitFrame on valid
+	// uncommitted frames.
 	options := r.SQLiteOptions()
 	options.Conn.WALAutocheckpoint = 0
 	options.Conn.CacheSize = spillCacheSize

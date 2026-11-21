@@ -529,15 +529,16 @@ func doChildMmapWAL(dbPath string) {
 }
 
 type pathLenOut struct {
-	ShortLen   int
-	LongLen    int
-	ShortUsed  int
-	LongUsed   int
-	ShortPages int
-	LongPages  int
+	ShortLen     int
+	LongLen      int
+	ShortUsed    int
+	LongUsed     int
+	ShortPages   int
+	LongPages    int
+	OverMaxError bool
 }
 
-func doChildPathLen(shortPath, longPath string) {
+func doChildPathLen(shortPath, longPath, overMaxPath string) {
 	ctx := context.Background()
 	h1 := openHandle(ctx, shortPath, 100)
 	h1.scan(ctx)
@@ -549,13 +550,21 @@ func doChildPathLen(shortPath, longPath string) {
 	u2 := h2.cacheUsed(ctx)
 	h2.close()
 
+	overErr := false
+	if db, err := sqlitex.Open(ctx, overMaxPath, walOpts(100)); err != nil {
+		overErr = true
+	} else {
+		_ = db.Close()
+	}
+
 	enc, _ := json.Marshal(pathLenOut{
-		ShortLen:   len(shortPath),
-		LongLen:    len(longPath),
-		ShortUsed:  u1,
-		LongUsed:   u2,
-		ShortPages: cachedPages(u1),
-		LongPages:  cachedPages(u2),
+		ShortLen:     len(shortPath),
+		LongLen:      len(longPath),
+		ShortUsed:    u1,
+		LongUsed:     u2,
+		ShortPages:   cachedPages(u1),
+		LongPages:    cachedPages(u2),
+		OverMaxError: overErr,
 	})
 	fmt.Println(string(enc))
 }
@@ -566,30 +575,43 @@ func doChildPathLen(shortPath, longPath string) {
 func attackCAC01a(dbPath string) {
 	sizes := []int{0, 1, 2, 10, -1, -10, 1000000, -1000000}
 	var parts []string
-	var cs1, cs2, csHuge, csNegHuge scanOut
+	var cs0, cs1, cs2, cs10, csNeg1, csNeg10, csHuge, csNegHuge scanOut
 	for _, sz := range sizes {
 		var out scanOut
 		runSelfJSON(&out, childScanRole, dbPath, strconv.Itoa(sz))
 		parts = append(parts, fmt.Sprintf("%d->%dp(mid=%dp)", sz, out.Pages, out.MidPages))
 		switch sz {
+		case 0:
+			cs0 = out
 		case 1:
 			cs1 = out
 		case 2:
 			cs2 = out
+		case 10:
+			cs10 = out
+		case -1:
+			csNeg1 = out
+		case -10:
+			csNeg10 = out
 		case 1000000:
 			csHuge = out
 		case -1000000:
 			csNegHuge = out
 		}
 	}
-	// Check build-notes #8 ("A cache of N pages holds N-1") at N=1,2 AND lazy allocation for huge.
-	nMinusOneHolds := cs1.Pages == 0 && cs2.Pages == 1 && cs1.MidPages <= 1
+	// Narrowed/corrected claim (REPAIR-REPORT.md / build-notes.md:818-822):
+	// N -> N-1 holds for N >= 10 (10 -> 9); for N <= 2 the cache rests at N
+	// (0->0, 1->1, 2->2, -1->0, -10->2) and holds cursor-pinned pages (>=4) mid-scan;
+	// huge cache_size allocates lazily (1004 pages).
+	nMinusOneFor10 := cs10.Pages == 9 && cs10.MidPages <= 10
+	tinyRestAndPinned := cs0.Pages == 0 && cs1.Pages == 1 && cs2.Pages == 2 && csNeg1.Pages == 0 && csNeg10.Pages == 2 &&
+		cs0.MidPages >= 4 && cs1.MidPages >= 4 && cs2.MidPages >= 4
 	lazyHugeHolds := csHuge.Pages == 1004 && csNegHuge.Pages == 1004 && (csHuge.RSSEnd-csHuge.RSSStart) < 100<<20
-	held := nMinusOneHolds && lazyHugeHolds
+	held := nMinusOneFor10 && tinyRestAndPinned && lazyHugeHolds
 	report(
 		"CAC-01a",
 		"tiny (0, 1, 2, 10, -1, -10) and huge (1000000, -1000000) PRAGMA cache_size on 1004-page WAL DB",
-		"N-page cache holds N-1 pages (build-notes #8) including N=1,2 and never exceeds N during scan; huge cache_size allocates lazily (1004 pages)",
+		"per narrowed build-notes #8: N>=10 holds N-1 (10->9), N<=2 rests at N with >=4 cursor-pinned pages mid-scan, huge allocates lazily (1004 pages)",
 		fmt.Sprintf("lazyHuge=%v; %s", lazyHugeHolds, strings.Join(parts, " ")),
 		held,
 	)
@@ -643,40 +665,52 @@ func attackCAC01b(ctx context.Context, root, base string) {
 	)
 }
 
-// CAC-01c runs Experiment 4.2 itself with small negative -cache-size -50 (-n 16 -k 8 -rows 200),
-// exposing the pool-eviction nMax vs (nMax-1) jump that breaks Part D's +1% allowance.
+// CAC-01c checks the repaired 4.2 budget floor and Part D bound (REPAIR-REPORT.md /
+// build-notes.md:769-775, 785-789): tiny -cache-size -50 (< 1 MiB) is rejected cleanly
+// with FATAL flags, while the 1 MiB minimum budget (-cache-size -1024 -n 16 -k 8 -rows 320)
+// passes Part D's K*(full+1) pool bound and exits 0.
 func attackCAC01c(ctx context.Context, root, base string) {
-	wb := filepath.Join(base, "exp42-smallneg")
-	_ = os.MkdirAll(wb, 0o755)
-	code, out := runExp42(ctx, root, wb, "-n", "16", "-k", "8", "-cache-size", "-50", "-rows", "200")
-	held := code == 0
+	wbSmall := filepath.Join(base, "exp42-smallneg")
+	_ = os.MkdirAll(wbSmall, 0o755)
+	codeSmall, outSmall := runExp42(ctx, root, wbSmall, "-n", "16", "-k", "8", "-cache-size", "-50", "-rows", "300")
+	rejectedCleanly := codeSmall != 0 && strings.Contains(outSmall, "FATAL flags:") && !strings.Contains(outSmall, "panic:")
+
+	wbMin := filepath.Join(base, "exp42-min1m")
+	_ = os.MkdirAll(wbMin, 0o755)
+	codeMin, outMin := runExp42(ctx, root, wbMin, "-n", "16", "-k", "8", "-cache-size", "-1024", "-rows", "320")
+	minPassed := codeMin == 0 && strings.Contains(outMin, "CACHE BUDGET OK")
+
+	held := rejectedCleanly && minPassed
 	report(
 		"CAC-01c",
-		"run Experiment 4.2 with small negative -cache-size -50 (-n 16 -k 8 -rows 200)",
-		"Experiment 4.2 Part D bounded-pool check (<= K*full*1.01) holds for small cache_size",
-		fmt.Sprintf("exit=%d failed=%s", code, extractFailedChecks(out)),
+		"run Experiment 4.2 with sub-1MiB -cache-size -50 and minimum-budget -cache-size -1024 (-n 16 -k 8 -rows 320)",
+		"sub-1MiB budget rejected cleanly with FATAL flags; 1 MiB minimum budget passes Part D K*(full+1) check (exit 0)",
+		fmt.Sprintf("tiny(-50): exit=%d fatalFlags=%v; min(-1024): exit=%d ok=%v failed=%s",
+			codeSmall, strings.Contains(outSmall, "FATAL flags:"), codeMin, minPassed, extractFailedChecks(outMin)),
 		held,
 	)
 }
 
-// CAC-02a tests OUTLINE 4.2 bullet 2: PRAGMA shrink_memory on ONE idle connection
-// wipes the cache of ALL 15 OTHER connections under ENABLE_MEMORY_MANAGEMENT,
-// and measures whether RSS returns to the OS.
+// CAC-02a tests OUTLINE 4.2 bullet 2: under ENABLE_MEMORY_MANAGEMENT, PRAGMA shrink_memory
+// on ONE idle connection empties EVERY connection's clean cache in the shared PGroup
+// (pcache1Shrink, pcache1.c:839-851) and drops process RSS.
 func attackCAC02a(filesDir string) {
 	var out shrinkOut
 	runSelfJSON(&out, childShrink, filesDir, "16")
-	// If PRAGMA shrink_memory were connection-scoped (as SQLite's PRAGMA docs state),
-	// running it on connection 1 (which already holds 0 pages) would leave connection 16's 1004 pages intact!
-	perConnScoped := out.AfterC16Pages == out.BeforeC16Pages && out.AfterSumPages == out.BeforeSumPages
+	// Documented driver behavior (REPAIR-REPORT.md / build-notes.md:823-829):
+	// pcache1Shrink zeroes the process-wide PGroup.nMaxPage, so calling shrink_memory
+	// on idle connection 1 (0 pages) empties all 15 other connections and drops RSS.
+	processWideShrink := out.BeforeC1Pages == 0 && out.BeforeSumPages > 0 && out.AfterSumPages == 0 && out.AfterC16Pages == 0 &&
+		(out.RSSStart < 0 || out.RSSAfter < out.RSSBefore)
 	rssBeforeMiB := float64(out.RSSBefore-out.RSSStart) / (1 << 20)
 	rssAfterMiB := float64(out.RSSAfter-out.RSSStart) / (1 << 20)
 	report(
 		"CAC-02a",
 		"PRAGMA shrink_memory invoked ONLY on idle connection 1 (0 cached pages) while 15 other connections hold 7712 pages",
-		"per SQLite PRAGMA docs (connection-scoped): other connections' caches stay intact (conn16=1004, sum=7712)",
+		"per build-notes (ENABLE_MEMORY_MANAGEMENT=1, pcache1.c:839-851): shrink_memory on idle conn 1 empties all 16 connections' caches (7712->0) and drops RSS",
 		fmt.Sprintf("sumPages %d->%d conn16 %d->%d (conn1 was %d); RSS growth %.1f MiB->%.1f MiB",
 			out.BeforeSumPages, out.AfterSumPages, out.BeforeC16Pages, out.AfterC16Pages, out.BeforeC1Pages, rssBeforeMiB, rssAfterMiB),
-		perConnScoped,
+		processWideShrink,
 	)
 }
 
@@ -721,27 +755,31 @@ func attackCAC03(filesDir string) {
 	)
 }
 
-// CAC-04 attacks 4.2 Part E ("with mmap covering the file, the scan leaves CACHE_USED near zero")
-// when pages reside in an uncheckpointed -wal file.
+// CAC-04 verifies narrowed 4.2 Part E claim (REPAIR-REPORT.md / build-notes.md:830-834):
+// getPageMMap falls back to getPageNormal for pages present in -wal (pager.c:5719-5726),
+// so mmap bypasses the page cache only for checkpointed pages (no WAL frame).
 func attackCAC04(base string) {
 	dbPath := filepath.Join(base, "mmap-wal.db")
 	buildWALDB(context.Background(), dbPath, 500)
 	var out mmapWALOut
 	runSelfJSON(&out, childMmapWAL, dbPath)
-	// Part E expects mapped connection CACHE_USED < 5% of unmapped (< ~24 pages).
-	staysNearZeroWithWAL := out.MappedWithWALPages*20 < out.UnmappedPages
+	walBypassedMmap := out.MappedWithWALPages >= out.UnmappedPages*9/10
+	ckptNearZero := out.MappedAfterCkpt*20 < out.UnmappedPages
+	partialHalf := out.MappedPartialPages >= out.UnmappedPages*4/10 && out.MappedPartialPages <= out.UnmappedPages*6/10
+	held := walBypassedMmap && ckptNearZero && partialHalf
 	report(
 		"CAC-04",
 		"full-table scan with PRAGMA mmap_size=4x file size while all 500 leaf pages sit in uncheckpointed -wal",
-		"per unqualified 4.2 Part E: mmap covering the file keeps CACHE_USED near zero (<5% of unmapped)",
+		"per narrowed 4.2 Part E (pager.c:5719-5726): uncheckpointed WAL pages fill cache (>=90% of unmapped), checkpointed pages drop <5%, half-file mmap caches ~50%",
 		fmt.Sprintf("unmapped=%dp mappedWithUncheckpointedWAL=%dp mappedAfterCheckpoint=%dp partialHalfMmap=%dp",
 			out.UnmappedPages, out.MappedWithWALPages, out.MappedAfterCkpt, out.MappedPartialPages),
-		staysNearZeroWithWAL,
+		held,
 	)
 }
 
-// CAC-05 tests build-notes #7: CACHE_USED depends on file path length (3x pathLen in Pager),
-// causing 4.2's cachedPages=(cacheUsed-4096)/4352 formula to overcount on a valid ~1500B Linux path.
+// CAC-05 tests build-notes #7: CACHE_USED depends on file path length (3x pathLen in Pager,
+// pager.c:6881-6887), while 4.2's cachedPages=(CACHE_USED-4096)/4352 stays invariant up to
+// SQLite's unix VFS MAX_PATHNAME (512 bytes, os_unix.c:180).
 func attackCAC05(base, srcDB string) {
 	shortPath := filepath.Join(base, "s.db")
 	data, err := os.ReadFile(srcDB)
@@ -751,10 +789,11 @@ func attackCAC05(base, srcDB string) {
 	if err := os.WriteFile(shortPath, data, 0o644); err != nil {
 		fatal("write short", err)
 	}
-	// Build a valid ~1550-byte nested directory path (each component 100 chars, well under NAME_MAX=255 and PATH_MAX=4096).
+	// Build a valid ~460-byte nested path (under SQLite unix MAX_PATHNAME=512 including "-journal")
+	// plus a ~600-byte path to confirm unix MAX_PATHNAME rejection.
 	longDir := filepath.Join(base, "p")
 	seg := strings.Repeat("d", 100)
-	for len(longDir) < 1550 {
+	for len(longDir)+len(seg)+6 < 495 {
 		longDir = filepath.Join(longDir, seg)
 	}
 	if err := os.MkdirAll(longDir, 0o755); err != nil {
@@ -764,18 +803,30 @@ func attackCAC05(base, srcDB string) {
 	if err := os.WriteFile(longPath, data, 0o644); err != nil {
 		fatal("write long", err)
 	}
+	overDir := filepath.Join(longDir, seg, seg)
+	if err := os.MkdirAll(overDir, 0o755); err != nil {
+		fatal("mkdir over", err)
+	}
+	overPath := filepath.Join(overDir, "o.db")
+	if err := os.WriteFile(overPath, data, 0o644); err != nil {
+		fatal("write over", err)
+	}
 
 	var out pathLenOut
-	runSelfJSON(&out, childPathLen, shortPath, longPath)
-	// With cache_size=100, both connections actually hold 99 cached pages.
-	// Check whether 4.2's cachedPages formula agrees on both paths!
-	formulaPathIndependent := out.ShortPages == 99 && out.LongPages == 99
+	runSelfJSON(&out, childPathLen, shortPath, longPath, overPath)
+	// Raw CACHE_USED grows by ~3x path length delta (db + journal + wal paths in Pager),
+	// yet stays below perPage (4352 B) for every openable unix path (< 512 B), so cachedPages
+	// stays exact (99 == 99) and paths > 512 B fail to open in SQLite's unix VFS.
+	lenDelta := out.LongLen - out.ShortLen
+	usedDelta := out.LongUsed - out.ShortUsed
+	rawGrewByPath := usedDelta >= 2*lenDelta
+	formulaPathIndependent := out.ShortPages == 99 && out.LongPages == 99 && rawGrewByPath && out.OverMaxError
 	report(
 		"CAC-05",
-		fmt.Sprintf("open identical DB at cache_size=100 via short path (%dB) vs valid Linux long path (%dB)", out.ShortLen, out.LongLen),
-		"4.2's cachedPages=(CACHE_USED-4096)/4352 reports 99 pages on both paths",
-		fmt.Sprintf("short: CACHE_USED=%d -> %dp; long: CACHE_USED=%d (+%dB) -> %dp",
-			out.ShortUsed, out.ShortPages, out.LongUsed, out.LongUsed-out.ShortUsed, out.LongPages),
+		fmt.Sprintf("open identical DB at cache_size=100 via short (%dB), max-valid (%dB < 512B), and over-MAX_PATHNAME (%dB) paths", out.ShortLen, out.LongLen, len(overPath)),
+		"raw CACHE_USED grows with path length (>=2x delta), 4.2 cachedPages reports 99 on both valid paths, and >512B path fails unix MAX_PATHNAME",
+		fmt.Sprintf("short: CACHE_USED=%d->%dp; long: CACHE_USED=%d(+%dB)->%dp; over512Rejected=%v",
+			out.ShortUsed, out.ShortPages, out.LongUsed, usedDelta, out.LongPages, out.OverMaxError),
 		formulaPathIndependent,
 	)
 }
@@ -803,7 +854,7 @@ func main() {
 			doChildMmapWAL(os.Args[2])
 			return
 		case childPathLen:
-			doChildPathLen(os.Args[2], os.Args[3])
+			doChildPathLen(os.Args[2], os.Args[3], os.Args[4])
 			return
 		}
 	}

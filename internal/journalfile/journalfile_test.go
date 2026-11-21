@@ -278,6 +278,8 @@ func liveJournal(t *testing.T, synchronous string) (*Journal, []byte, uint32) {
 	if err := db.QueryRowContext(ctx, "PRAGMA page_count").Scan(&pages); err != nil {
 		t.Fatal(err)
 	}
+	// Close the SQLite connection before reading path directly so the test
+	// never opens and closes the database file while a connection holds it.
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -353,6 +355,7 @@ func syncedHeaderOnly(size int, magic bool) []byte {
 	return b.data[:size]
 }
 
+// TestJournalShorterThanItsFirstSector verifies journals shorter than one full sector are HeaderMissing with non-negative TrailingByte and no predicted truncation.
 func TestJournalShorterThanItsFirstSector(t *testing.T) {
 	for _, tc := range []struct {
 		size  int
@@ -373,6 +376,7 @@ func TestJournalShorterThanItsFirstSector(t *testing.T) {
 	}
 }
 
+// TestTrailingByteNeverNegative verifies Parse keeps 0 <= TrailingByte <= len(data) on every prefix of a two-segment journal.
 func TestTrailingByteNeverNegative(t *testing.T) {
 	b := &builder{}
 	b.header(0, true, 2, 9, 4)
@@ -408,6 +412,7 @@ func platformSum(name []byte) uint32 {
 	return superJournalChecksum(name, cCharIsSigned)
 }
 
+// TestSuperJournalChecksumFollowsCCharSignedness verifies non-ASCII super-journal checksums match the host platform's C char signedness and reject the opposite signedness.
 func TestSuperJournalChecksumFollowsCCharSignedness(t *testing.T) {
 	name := []byte("/tmp/caf\xc3\xa9/a.db-mjF47C1696E")
 	b := &builder{}
@@ -430,6 +435,7 @@ func TestSuperJournalChecksumFollowsCCharSignedness(t *testing.T) {
 	}
 }
 
+// TestSqliteWrittenSuperJournalChecksum checks Parse against a 45-byte non-ASCII super-journal footer captured from SQLite on signed-char amd64 (0x0d98).
 func TestSqliteWrittenSuperJournalChecksum(t *testing.T) {
 	name := []byte("/tmp/opencode/caf\xc3\xa9-f_6pfgpk/a.db-mjF47C1696E")
 	if !cCharIsSigned {
@@ -447,6 +453,7 @@ func TestSqliteWrittenSuperJournalChecksum(t *testing.T) {
 	}
 }
 
+// TestSuperJournalNameStartingWithNulIsIgnored verifies footers whose first name byte is NUL are rejected (src/pager.c:1337).
 func TestSuperJournalNameStartingWithNulIsIgnored(t *testing.T) {
 	name := []byte{0, 0, 0, 0}
 	b := &builder{}
@@ -460,6 +467,7 @@ func TestSuperJournalNameStartingWithNulIsIgnored(t *testing.T) {
 	}
 }
 
+// TestSuperJournalNameTooLongIsIgnored verifies footers longer than maxSuperJournalLen (512 bytes) are ignored while 512 bytes is accepted.
 func TestSuperJournalNameTooLongIsIgnored(t *testing.T) {
 	name := bytes.Repeat([]byte{'a'}, 513)
 	b := &builder{}
@@ -479,6 +487,7 @@ func TestSuperJournalNameTooLongIsIgnored(t *testing.T) {
 	}
 }
 
+// TestPlaybackWithSuperJournalIsConditional verifies Playback refuses unconditional rollback when SuperJournal is set while PlaybackIfSuperJournalExists predicts the restore.
 func TestPlaybackWithSuperJournalIsConditional(t *testing.T) {
 	name := []byte("db-mj0123")
 	b := &builder{}
@@ -495,6 +504,7 @@ func TestPlaybackWithSuperJournalIsConditional(t *testing.T) {
 	}
 }
 
+// TestSuperJournalChecksumWhereCCharIsUnsigned verifies the unsigned-char checksum path (used on Linux ARM64) by toggling cCharIsSigned.
 func TestSuperJournalChecksumWhereCCharIsUnsigned(t *testing.T) {
 	saved := cCharIsSigned
 	t.Cleanup(func() { cCharIsSigned = saved })

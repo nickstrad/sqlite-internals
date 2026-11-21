@@ -81,8 +81,11 @@ func parseShowwalFrame(line string) (ShowwalFrame, error) {
 }
 
 // CompareWithShowwal cross-checks f against a ShowwalListing from SQLite's
-// in-tree showwal tool, returning one description per discrepancy. Every frame
-// that walfile considers valid must also have a matching checksum in showwal.
+// in-tree showwal tool, returning one description per discrepancy. It checks
+// checksum agreement in both directions: every frame walfile accepts as valid
+// must also verify in showwal, and if walfile rejects the first invalid frame
+// with FrameChecksumMismatch while showwal reports the checksum agrees, that
+// disagreement is reported as well.
 func (f *File) CompareWithShowwal(listing ShowwalListing) []string {
 	var problems []string
 	if listing.PageSize != f.PageSize() {

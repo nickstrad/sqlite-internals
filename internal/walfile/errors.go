@@ -14,10 +14,12 @@ var (
 	// 3007000; SQLite returns SQLITE_CANTOPEN (src/wal.c:1472-1474).
 	ErrUnsupportedVersion = errors.New("unsupported WAL format version")
 	// ErrBaseNotDatabase reports a non-empty replay base missing the 100-byte
-	// "SQLite format 3\x00" database header.
+	// "SQLite format 3\x00" database header or carrying an invalid page-size
+	// field in bytes 16..17 (must be a power of two in 512..65536).
 	ErrBaseNotDatabase = errors.New("base is not an SQLite database file")
 	// ErrBaseSize reports a base database whose byte length is not a whole
-	// multiple of the WAL page size.
+	// multiple of the page size (the WAL page size, or the base's own page
+	// size when the WAL is empty).
 	ErrBaseSize = errors.New("base size is not a whole number of pages")
 	// ErrPageSizeMismatch reports that the base database header and WAL header
 	// disagree on page size (src/wal.c:4392, SQLITE_CORRUPT).
@@ -36,7 +38,7 @@ var (
 	// 3007000 in either little-endian or big-endian byte order.
 	ErrIndexVersion = errors.New("wal-index header version is not 3007000 in either byte order")
 	// ErrFrameNotIndexed reports a frame number outside the mapped -shm blocks
-	// or a lookup against an uninitialized wal-index.
+	// or a lookup against an uninitialized or torn wal-index.
 	ErrFrameNotIndexed = errors.New("frame is outside the wal-index")
 )
 

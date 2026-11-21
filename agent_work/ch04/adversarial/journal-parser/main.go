@@ -604,12 +604,16 @@ func attackJRN04(ctx context.Context, base string) {
 	}
 	dbModifiedBeforeCommit := !bytes.Equal(preBytes, midBytes)
 
-	// Claim under attack (build-notes Correction 3): "The -journal written before COMMIT is not hot."
-	held := !j.LooksHot() && !dbModifiedBeforeCommit
+	// Corrected/narrowed claim (REPAIR-REPORT.md / build-notes.md:795-802):
+	// Correction 3 ("-journal before COMMIT is not hot and DB untouched") holds only
+	// when the transaction fits in cache (spill=0). With pagerStress spills, syncJournal
+	// makes -journal hot (first byte 0xd9, multi-segment) and writes dirty pages to DB
+	// before COMMIT.
+	held := spills > 0 && j.LooksHot() && j.FirstByte == journalfile.Magic[0] && len(j.Segments) >= 2 && dbModifiedBeforeCommit
 	report(
 		"JRN-04",
 		"55-page UPDATE with cache_size=10 (synchronous=FULL), killed BEFORE COMMIT to trigger pagerStress spill",
-		"per build-notes #3: -journal written before COMMIT is not hot (first byte 0x00) and DB file untouched",
+		"per narrowed build-notes #3: spilling transaction calls syncJournal before COMMIT (hot 0xd9, >=2 segments) and modifies DB before COMMIT",
 		fmt.Sprintf("spills=%d LooksHot=%v firstByte=0x%02x segments=%v dbModifiedBeforeCommit=%v",
 			spills, j.LooksHot(), j.FirstByte, segStates, dbModifiedBeforeCommit),
 		held,

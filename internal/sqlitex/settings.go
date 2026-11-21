@@ -72,6 +72,7 @@ type Options struct {
 	SingleConnection bool
 	ImmediateTx      bool
 	ReadOnly         bool
+	VFS              string
 }
 
 // DefaultFileSettings returns the course's baseline persistent file settings:
