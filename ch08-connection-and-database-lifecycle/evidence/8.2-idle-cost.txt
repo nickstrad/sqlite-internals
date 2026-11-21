@@ -1,0 +1,55 @@
+sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
+descriptors counted from /proc/self/fd; process memory from /proc/self/status
+INFO: descriptor limit (RLIMIT_NOFILE as this Go process sees it): soft 1048576, hard 1048576
+
+== A. descriptors held by one connection, per state ==
+journal_mode=delete (file t.db)
+  opened, no statement yet             1 [t.db]  side files: none
+  idle after a read                    1 [t.db]  side files: none
+  inside a write transaction           2 [t.db t.db-journal]  side files: t.db-journal
+  idle after the commit                1 [t.db]  side files: none
+  after close                          0 []  side files: none
+check ok: journal_mode=delete: descriptors per state are [1 1 2 1 0]
+journal_mode=wal (file t.db)
+  opened, no statement yet             1 [t.db]  side files: none
+  idle after a read                    3 [t.db t.db-shm t.db-wal]  side files: t.db-wal t.db-shm
+  inside a write transaction           3 [t.db t.db-shm t.db-wal]  side files: t.db-wal t.db-shm
+  idle after the commit                3 [t.db t.db-shm t.db-wal]  side files: t.db-wal t.db-shm
+  after close                          0 []  side files: none
+check ok: journal_mode=wal: descriptors per state are [1 3 3 3 0]
+
+== B. 200 idle WAL connections, one database file each ==
+every file: a copy of recipe step 3 (159744 bytes, 39 pages); settings: sqlitex defaults (synchronous=FULL foreign_keys=ON secure_delete=OFF cache_size=-2000 wal_autocheckpoint=1000 busy_timeout=5000ms)
+per connection: one read of every documents row (SELECT count(*), sum(length(body)) FROM documents) and one prepared statement kept open
+descriptors held: 600 (3.00 per connection)
+check ok: 200 idle WAL connections hold exactly 3 x 200 = 600 descriptors
+descriptor targets: db=200 -wal=200 -shm=200
+SCHEMA_USED per connection: 1347 bytes (min 1347, max 1347)
+STMT_USED per connection: 5008 bytes (min 5008, max 5008)
+INFO: CACHE_USED per connection: min 52961 max 52961 bytes (includes the Pager allocation, whose size depends on the path length)
+INFO: sum over 200 connections: cache 10.1 MiB + schema 0.3 MiB + statements 1.0 MiB = 11.3 MiB
+INFO: process memory (/proc/self/status): before 9.8 MiB, after 54.0 MiB, growth 44.2 MiB = 3.91 x the summed counters
+check ok: every connection reports the same SCHEMA_USED and the same STMT_USED (same schema, same statement)
+INFO: memory the three counters do not report: 32.9 MiB in total, 168 KiB per connection
+check ok: process memory grew by at least the sum of CACHE_USED + SCHEMA_USED + STMT_USED
+check ok: process memory grew by at most that sum + 256 KiB per connection (the stated margin for memory the counters do not report)
+
+== C. PRAGMA shrink_memory ==
+INFO: after shrink_memory on connection 0: its CACHE_USED 52961 -> 5089; connection 1 52961 -> 5089
+check ok: shrink_memory on connection 0 alone lowered CACHE_USED on all 200 connections (this driver keeps every page cache in one shared group)
+INFO: after shrink_memory on every connection: cache 10.1 MiB -> 1.0 MiB, schema 0.3 MiB -> 0.3 MiB, statements 1.0 MiB -> 1.0 MiB
+INFO: process memory after shrink: 47.2 MiB (was 54.0 MiB)
+check ok: shrink_memory leaves SCHEMA_USED and STMT_USED unchanged on every connection
+check ok: running shrink_memory on the other connections afterwards released nothing more
+INFO: CACHE_USED per connection after shrink: min 5089 max 5089 bytes (was 52961)
+check ok: after shrink every connection's CACHE_USED is under 1/8 of what it was
+check ok: after closing all 200: 0 descriptors left and every file at rest (no -wal, -shm, -journal)
+
+== D. two connections to one WAL file in one process ==
+  connection 1 open, idle after a read         3 [t.db t.db-shm t.db-wal]  side files: t.db-wal t.db-shm
+  connection 2 open too, idle after a read     5 [t.db t.db t.db-shm t.db-wal t.db-wal]  side files: t.db-wal t.db-shm
+  connection 2 closed                          4 [t.db t.db t.db-shm t.db-wal]  side files: t.db-wal t.db-shm
+  connection 1 closed                          0 []  side files: none
+check ok: two connections share one -shm descriptor (5, not 6); the closed connection's database descriptor stays open (4, not 3) until the last connection to the file closes
+
+all checks passed
