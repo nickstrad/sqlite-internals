@@ -77,10 +77,11 @@ func (r Recipe) String() string {
 // SQLiteOptions returns the explicit file and connection settings used when
 // building or opening a recipe database.
 //
-// SecureDelete is always enabled so freed space inside B-tree pages and
-// freelist leaves is zeroed rather than keeping stale bytes from earlier
-// histories. SingleConnection pins the pool to one SQLite connection so step
-// execution never interleaves across connections.
+// SecureDelete is always enabled (strictly ON) so freed space inside B-tree
+// pages and on freed freelist pages is zeroed rather than keeping stale bytes
+// from earlier histories. SingleConnection pins the pool to one SQLite
+// connection so pool churn cannot open extra connections or shift the WAL
+// change counter.
 func (r Recipe) SQLiteOptions() sqlitex.Options {
 	options := sqlitex.DefaultOptions()
 	options.File.JournalMode = r.JournalMode

@@ -117,8 +117,8 @@ func (h Header) validate() error {
 	if h.PageSize < MinPageSize || h.PageSize > MaxPageSize || h.PageSize&(h.PageSize-1) != 0 {
 		return bad(16, "page size %d is not a power of two between %d and %d", h.PageSize, MinPageSize, MaxPageSize)
 	}
-	// Reject unknown format versions (> 2) on both read and write bytes; SQLite
-	// opens write version > 2 read-only (src/btree.c:3326-3331), which a
+	// Reject format versions other than 1 or 2 on both read and write bytes;
+	// SQLite opens write version > 2 read-only (src/btree.c:3326-3331), which a
 	// read-only inspector has no reason to distinguish.
 	if h.ReadVersion != 1 && h.ReadVersion != 2 {
 		return bad(19, "read version %d is not 1 (rollback) or 2 (WAL)", h.ReadVersion)

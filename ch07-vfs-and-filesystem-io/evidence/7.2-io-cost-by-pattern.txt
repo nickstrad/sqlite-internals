@@ -1,0 +1,56 @@
+sqlite_source_id: 2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc (pin 3.53.4 ok)
+INFO: work dir _work/7.2
+workload: 1000 rows (id INTEGER PRIMARY KEY, v BLOB of 100 bytes) into an empty table, Go driver, one connection
+settings: page_size 4096, cache_size -2000, wal_autocheckpoint 1000, secure_delete OFF; the table is created before measuring
+
+== totals while the rows were written (all commits; close not included) ==
+mode   sync   commits x rows | pwrite  bytes written | syncs total (by file)            | opens          | unlinks        | ftruncate
+delete NORMAL    1 x 1000 |     38        131612 |     3 (db:1 dir:1 journal:1)     | dir:1 journal:1 | journal:1      | -
+delete NORMAL   20 x 50   |    304        608968 |    60 (db:20 dir:20 journal:20)  | dir:20 journal:20 | journal:20     | -
+delete NORMAL 1000 x 1    |  10028      17038688 |  3000 (db:1000 dir:1000 journal:1000) | dir:1000 journal:1000 | journal:1000   | -
+delete FULL      1 x 1000 |     38        131612 |     4 (db:1 dir:1 journal:2)     | dir:1 journal:1 | journal:1      | -
+delete FULL     20 x 50   |    304        608968 |    80 (db:20 dir:20 journal:40)  | dir:20 journal:20 | journal:20     | -
+delete FULL   1000 x 1    |  10028      17038688 |  4000 (db:1000 dir:1000 journal:2000) | dir:1000 journal:1000 | journal:1000   | -
+wal    NORMAL    1 x 1000 |     60        123600 |     0 (-)                        | -              | -              | -
+wal    NORMAL   20 x 50   |    174        358440 |     0 (-)                        | -              | -              | -
+wal    NORMAL 1000 x 1    |   2139       4461320 |     3 (db:1 wal:2)               | -              | -              | db:1
+wal    FULL      1 x 1000 |     60        123600 |     1 (wal:1)                    | -              | -              | -
+wal    FULL     20 x 50   |    174        358440 |    20 (wal:20)                   | -              | -              | -
+wal    FULL   1000 x 1    |   2139       4461320 |  1003 (db:1 wal:1002)            | -              | -              | db:1
+
+== syncs per commit: how many commits had each sync pattern ==
+(db-writes = the commit also wrote database pages, i.e. an automatic checkpoint ran inside it in WAL mode)
+delete NORMAL    1 x 1000 | 1 commit(s): 3 sync(s) [db:1 dir:1 journal:1] +db-writes
+delete NORMAL   20 x 50   | 20 commit(s): 3 sync(s) [db:1 dir:1 journal:1] +db-writes
+delete NORMAL 1000 x 1    | 1000 commit(s): 3 sync(s) [db:1 dir:1 journal:1] +db-writes
+delete FULL      1 x 1000 | 1 commit(s): 4 sync(s) [db:1 dir:1 journal:2] +db-writes
+delete FULL     20 x 50   | 20 commit(s): 4 sync(s) [db:1 dir:1 journal:2] +db-writes
+delete FULL   1000 x 1    | 1000 commit(s): 4 sync(s) [db:1 dir:1 journal:2] +db-writes
+wal    NORMAL    1 x 1000 | 1 commit(s): 0 sync(s) [-]
+wal    NORMAL   20 x 50   | 20 commit(s): 0 sync(s) [-]
+wal    NORMAL 1000 x 1    | 998 commit(s): 0 sync(s) [-]; 1 commit(s): 2 sync(s) [db:1 wal:1] +db-writes; 1 commit(s): 1 sync(s) [wal:1]
+wal    FULL      1 x 1000 | 1 commit(s): 1 sync(s) [wal:1]
+wal    FULL     20 x 50   | 20 commit(s): 1 sync(s) [wal:1]
+wal    FULL   1000 x 1    | 998 commit(s): 1 sync(s) [wal:1]; 1 commit(s): 3 sync(s) [db:1 wal:2] +db-writes; 1 commit(s): 2 sync(s) [wal:2]
+
+== at close (after the last commit) ==
+delete NORMAL    1 x 1000 | pwrite 0 bytes 0 | syncs 0 (-) | unlinks - | ftruncate -
+delete NORMAL   20 x 50   | pwrite 0 bytes 0 | syncs 0 (-) | unlinks - | ftruncate -
+delete NORMAL 1000 x 1    | pwrite 0 bytes 0 | syncs 0 (-) | unlinks - | ftruncate -
+delete FULL      1 x 1000 | pwrite 0 bytes 0 | syncs 0 (-) | unlinks - | ftruncate -
+delete FULL     20 x 50   | pwrite 0 bytes 0 | syncs 0 (-) | unlinks - | ftruncate -
+delete FULL   1000 x 1    | pwrite 0 bytes 0 | syncs 0 (-) | unlinks - | ftruncate -
+wal    NORMAL    1 x 1000 | pwrite 30 bytes 122880 | syncs 2 (db:1 wal:1) | unlinks shm:1 wal:1 | ftruncate db:1
+wal    NORMAL   20 x 50   | pwrite 30 bytes 122880 | syncs 2 (db:1 wal:1) | unlinks shm:1 wal:1 | ftruncate db:1
+wal    NORMAL 1000 x 1    | pwrite 5 bytes 20480 | syncs 2 (db:1 wal:1) | unlinks shm:1 wal:1 | ftruncate db:1
+wal    FULL      1 x 1000 | pwrite 30 bytes 122880 | syncs 2 (db:1 wal:1) | unlinks shm:1 wal:1 | ftruncate db:1
+wal    FULL     20 x 50   | pwrite 30 bytes 122880 | syncs 2 (db:1 wal:1) | unlinks shm:1 wal:1 | ftruncate db:1
+wal    FULL   1000 x 1    | pwrite 5 bytes 20480 | syncs 2 (db:1 wal:1) | unlinks shm:1 wal:1 | ftruncate db:1
+
+check ok: rollback (DELETE) at NORMAL: every commit, at every batch size, makes 3 syncs [db:1 dir:1 journal:1]
+check ok: rollback (DELETE) at FULL: every commit, at every batch size, makes 4 syncs [db:1 dir:1 journal:2]
+check ok: WAL at NORMAL: a commit makes [-]; the commit that runs an automatic checkpoint makes [db:1 wal:1] (1 such), and the next commit, which restarts the WAL and writes a new WAL header, makes [wal:1] (1 such)
+check ok: WAL at FULL: a commit makes [wal:1]; the commit that runs an automatic checkpoint makes [db:1 wal:2] (1 such), and the next commit, which restarts the WAL and writes a new WAL header, makes [wal:2] (1 such)
+check ok: rollback FULL: 1000 one-row commits cost 4000 syncs, one 1000-row commit costs 4 (x1000)
+check ok: 1000 one-row commits at NORMAL: WAL 3 syncs and 4461320 bytes written, rollback 3000 syncs and 17038688 bytes
+ALL CHECKS PASSED
