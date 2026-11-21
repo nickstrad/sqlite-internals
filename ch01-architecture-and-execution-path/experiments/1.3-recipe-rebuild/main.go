@@ -736,7 +736,7 @@ const touchAccountSQL = "UPDATE accounts SET balance = balance + 1 WHERE id = 1"
 // secureDeleteFastVariant compares the one-transaction-per-step WAL build
 // under PRAGMA secure_delete=FAST against secure_delete=ON. FAST zeroes freed
 // cell space inside B-tree pages (BTS_OVERWRITE) but does not zero freed
-// freelist pages (src/btree.c:6865-6876).
+// freelist pages (src/btree.c:6864-6874).
 func secureDeleteFastVariant(ctx context.Context, r recipe.Recipe, dir string) (fileDiff, unusedReport) {
 	batchVariant(ctx, r, dir, "FAST")
 	on := filepath.Join(dir, "batches-"+r.JournalMode+"-secure-delete-on-one-per-step.db")
