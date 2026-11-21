@@ -10,7 +10,7 @@ Branch `chunk/pub`. Spec: OUTLINE.md §8 rows "A, B" and "C" plus the publishing
 | `internal/site/site.go` | page discovery, chapter/experiment/rung model, link resolution, `Build` |
 | `internal/site/markdown.go` | goldmark setup, GitHub-compatible heading ids, plain-text extraction, experiment "Code · Evidence" lines, include-marker rewriting, link rewriting |
 | `internal/site/page.go` | the UI label set `UILabels`, page view model, HTML rendering through `page.html` |
-| `internal/site/check.go` | `CheckSite`: scans the rendered HTML for every `href`/`src` and `id`, fails on broken internal links and missing anchors |
+| `internal/site/check.go` | `CheckSite`: scans the rendered HTML (HTML comments removed first) for every `href`/`src` and `id` attribute, double- or single-quoted; fails on broken internal links, missing anchors, and an `id` used twice on one page |
 | `internal/site/page.html` | the one HTML template (embedded) |
 | `internal/site/style.css` | the one stylesheet (embedded, copied to `style.css` in the output) |
 | `internal/site/site_test.go` | unit tests on a fixture repo |
@@ -68,14 +68,18 @@ on GitHub. A link to an ignored file is reported as a broken link.
 `-out` is wiped and rewritten on each build, but only if it is empty, does not exist, or holds a
 `.nojekyll` from an earlier build; any other non-empty directory is refused with
 `refusing to replace <dir>: it is not empty and holds no .nojekyll from an earlier site build`.
-A directory that contains the repository (e.g. `-out .`) is refused:
-`refusing to write the site into <dir>: it contains the repository`.
+A directory that contains the repository (e.g. `-out .`, `-out ..`) is refused:
+`refusing to write the site into <dir>: it contains the repository`. Symlinks are resolved before this
+test (the longest existing prefix of `-out` and the repository path both go through `filepath.EvalSymlinks`),
+and in addition `-out` is refused if it is the same directory (`os.SameFile`) as the repository or any of its
+parents. Before the repair, `-out <symlink-to-parent>/repo` passed the test and the repo was wiped
+(adversarial LIVE-06b).
 
 ### Determinism
 No timestamps, no map-order dependence (every list is sorted). Verified: two builds of the real
 repo with `-base /sqlite-internals/` compared with `diff -r` → identical. Unit test
 `TestDeterministicOutput` builds the fixture twice and compares every file byte for byte.
-Runtime of `site -check` on the current repo: ~0.6 s wall.
+Runtime of `site -check` on the current repo: ~0.6 s wall (14 pages); ~2.6 s after the main merge (23 pages).
 
 ## 3. Output layout
 
@@ -90,13 +94,14 @@ _site/
   knowledge/<file-stem>/index.html             each docs/knowledge/*.md
 ```
 
-Today: 14 pages (home, 2 chapters, 2 answers pages, outline, 8 knowledge pages) + `style.css` + `.nojekyll`.
+After the main merge: 23 pages (home, 5 chapters, 5 answers pages, outline, 11 knowledge pages) + `style.css` + `.nojekyll`.
 All internal links are absolute under the base (`/sqlite-internals/ch02-…/#anchor`).
 
 ### Page discovery rules
 - Chapters: top-level directories named `chNN-<slug>` (regex `^ch\d\d-[A-Za-z0-9._-]+$`) that contain `chNN-<slug>/chNN-<slug>.md`. Ordered by directory name. Title = text of the first `# ` heading.
 - Answers: `chNN-<slug>/answers.md` if it exists. Rendered as its own page, never inline.
-- Knowledge pages: every `docs/knowledge/*.md`. YAML front matter (`---` … `---` at the very top) is stripped. Title = first `# ` heading; if there is none, the front matter `title:` value; else the file name.
+- Knowledge pages: every `docs/knowledge/*.md`. YAML front matter (`---` … `---` at the very top) is stripped; the closing `---` is the first line that is exactly `---` (so empty front matter `---\n---\n` works, and a closing `---` at end of file without a newline works). Title = first `# ` heading; if there is none, the front matter `title:` value (one surrounding pair of `"…"` or `'…'` quotes removed, double-quoted values unescaped, `''` inside single quotes becomes `'`); else the file name.
+- Front matter is stripped **only** on knowledge pages. A README, chapter or outline that starts with `---` (a thematic break) is rendered as written.
 - `OUTLINE.md` → `outline/`.
 - Any other markdown file (e.g. `STATE.md`, `docs/course-source.md`, `agent_work/INDEX.md`) is not a page; links to it go to GitHub.
 
@@ -110,9 +115,13 @@ heading literally called "Reading path" would push the generated one to `reading
 than collide.
 
 ### Rung detection
-In the chapter markdown: the first match of `Rebuild Ladder (rung R<n>)` gives the rung id; then
-the first `**R<n> (<name>)**` gives its name. Today: ch01 → `R0 (Recipe)`, ch02 → `R1 (Pages)`.
-A chapter without the phrase `Rebuild Ladder (rung …)` shows no rung. (The first plain mention of
+In the chapter markdown, with code blocks, code spans and raw HTML blocks blanked out first: the
+first bold declaration `**The Rebuild Ladder (rung R<n>).**` gives the rung id (falling back to the
+first plain `Rebuild Ladder (rung R<n>)` if there is no bold declaration); then the first
+`**R<n> (<name>)**` gives its name. Today: ch01 → `R0 (Recipe)`, ch02 → `R1 (Pages)`, ch05 →
+`R3 (Redo log)`; ch04 and ch07 show none. A chapter without the phrase `Rebuild Ladder (rung …)`
+outside code shows no rung. A back-reference such as "Chapter 1 introduced the Rebuild Ladder
+(rung R0)" before the bold declaration no longer wins (adversarial MD-05a). (The first plain mention of
 "rung" in ch02 is R4, in a forward reference, which is why the id comes from the "Rebuild Ladder
 (rung …)" phrase and not from the first "rung".)
 
@@ -122,12 +131,12 @@ A chapter without the phrase `Rebuild Ladder (rung …)` shows no rung. (The fir
   experiment (`### Determinism rules verified by Experiment 1.3`) do not match. The first such
   heading per id wins.
 - The heading's directory is `chNN-…/experiments/N.M-*` (first match by name).
-- A directory `experiments/N.M-*` with no matching heading is still listed in the reading path, by directory name, linking to the top of the chapter page.
+- A directory `experiments/N.M-*` with no matching heading is still listed in the reading path, by directory name, linking to the top of the chapter page. Only directories whose name is `<digits>.<digits>-…` count; a helper directory such as `experiments/shared-helper/` is ignored.
 - Reading-path entries show the heading text from the word "Experiment" onward, code spans flattened to text (e.g. `Experiment 2.2 — Page census (2.2-page-census)`).
 - Right after each experiment heading the page gets a generated line `Code · Evidence` (`<p class="experiment-links">`): **Code** → GitHub `chNN-…/experiments/N.M-x/main.go`, **Evidence** → GitHub `chNN-…/evidence/N.M-x.txt`. Each link appears only if that file exists.
 
 ### Chapter page
-- Sidebar **Contents**: every level-2 and level-3 heading of the chapter (level 3 indented), linking to its anchor; below it an **Answers** link to the answers page if one exists. On screens narrower than 60rem the sidebar sits above the text.
+- Sidebar **Contents**: every level-2 and level-3 heading of the chapter (level 3 indented), linking to its anchor, shown when there are at least two such headings; below it an **Answers** link to the answers page if one exists. A chapter with fewer than two headings but an answers page still gets the sidebar, holding only the **Answers** link. On screens narrower than 60rem the sidebar sits above the text.
 - **Previous** / **Next** links (chapter titles) above and below the body.
 - The chapter body.
 - The chapter's own `[answers.md](answers.md)` link in section 8 becomes a link to the answers page.
@@ -144,6 +153,10 @@ GitHub-compatible (github-slugger algorithm): lower-case; keep letters, digits, 
 dropped; duplicates get `-1`, `-2`, … So anchors written for GitHub's renderer work unchanged:
 `#8-phase-2-rulings-nick-2026-11-20`, `chapter-1--architecture-and-execution-path`,
 `#51-the-internaldbfile-package`. Heading text is the plain text including code-span contents.
+Outside code spans, backslash escapes and HTML entities are decoded first (`**Bold** &amp; _italic_ — [link](…)`
+→ `bold--italic--link`, as on GitHub); inside a code span they are kept literally (`` `a &amp; b` `` → `a-amp-b`).
+A heading with no letters or digits at all (`## ???`) gets the id `section` (then `section-1`, …) instead of
+an empty id.
 
 ### Link rewriting (markdown links and images)
 | link in markdown | becomes |
@@ -152,14 +165,15 @@ dropped; duplicates get `-1`, `-2`, … So anchors written for GitHub's renderer
 | `#anchor` | unchanged (checked against the page's ids) |
 | relative path to a rendered page's source (`answers.md`, `../ch02-…/ch02-….md#x`, `../OUTLINE.md`, `../../README.md`, `docs/knowledge/x.md`) | site URL of that page + fragment |
 | relative path to a chapter directory (`../ch01-…/`) | that chapter's page |
-| relative path to any other existing file (`.go`, `.c`, `.h`, `.txt`, `SOURCES.sha256`, `STATE.md`, anything in `agent_work/`, `internal/`, `cmd/`, `docs/`) | `https://github.com/nickstrad/sqlite-internals/blob/main/<path>` + fragment |
+| relative path to any other existing file (`.go`, `.c`, `.h`, `.txt`, `SOURCES.sha256`, `STATE.md`, anything in `agent_work/`, `internal/`, `cmd/`, `docs/`) | `https://github.com/nickstrad/sqlite-internals/blob/main/<path>` + `?query` if any + fragment |
 | relative path to an existing directory (`../internal/trace/`) | `…/tree/main/<path>` |
 | absolute path (`/x`), path leaving the repo, path to a missing or ignored file | left unchanged and reported as a problem (WARN on build, FAIL on `-check`) |
 
 ### Include markers
 `<!-- include: path -->` lines (the markers `course inline` maintains) are replaced by a small
 line `<p class="include">` holding a link whose text is the repo-relative path
-(e.g. `internal/dbfile/errors.go`) and whose target is that file on GitHub. The code block that
+(e.g. `internal/dbfile/errors.go`) and whose target is that file on GitHub. The line-range form
+`<!-- include: path lines=A-B -->` gets the text `path:A-B` and the target `…#LA-LB`. The code block that
 follows the marker is rendered normally. Other HTML comments (e.g. `<!-- adversarial-results -->`)
 pass through as HTML comments, invisible.
 
@@ -271,17 +285,20 @@ ch02 = 20 → all converted; every experiment heading got its Code · Evidence l
 ## 8. `course check paths` (addendum C)
 
 ### Behaviour
-- Files examined: `git ls-files` (tracked files only; untracked files are never read, even if present). Paths under `agent_work/`, `kb/` and the file `STATE.md` are skipped (unchanged `PathSweepExclude`).
+- Files examined: `git ls-files` (tracked files only; untracked files are never read, even if present), minus tracked files that are missing on disk (deleted but not yet `git rm`'d). Those missing files are also not valid link targets, so a link to a deleted file fails (adversarial PATH-09b). Paths under `agent_work/`, `kb/` and the file `STATE.md` are skipped (unchanged `PathSweepExclude`).
+- Unmodified upstream SQLite copies are not scanned: every file named by a tracked `SOURCES.sha256` (chapter dir + base name of each entry) is listed as `INFO check paths: unmodified upstream copy listed in SOURCES.sha256, not scanned: <path>` and is neither checked for machine paths nor for external URLs (they are byte-identical to the pinned tree, enforced by `check sources`, so they cannot be edited; SQLite's own comments contain example paths such as `/home/drh/…`, `/Users/me/…`). They still count as files, so links to them resolve.
 - Binary files (a NUL byte in the first 8,000 bytes, git's own heuristic) are skipped and listed as `INFO check paths: binary file skipped: <path>`.
 - Tracked files that `.gitignore` also matches are listed as `INFO check paths: tracked although .gitignore matches it: <path>`.
-- **FAIL** on a machine path in any line of any text file: `/root/`, `/home/<name>/`, `/Users/<name>/` (name = `[A-Za-z0-9._-]+`), when not preceded by a letter, digit, `.`, `_`, `~` or `-` (so `https://example.org/root/x` and `a/root/b` do not match; `"/root/x"`, `` `/home/alice/` ``, `file:///root/x` do). `/home/<name>/` written literally with angle brackets does not match.
-- **FAIL** on a relative link in a markdown file that does not resolve to a tracked file or a directory holding tracked files: inline links `[t](path)`, `[t](<path with spaces>)`, links with a title, and reference definitions `[x]: path`. Links inside fenced code blocks (``` or ~~~, also inside `>` quotes) and inline code spans are ignored. Absolute paths (`/etc/hosts`) and paths leaving the repo fail.
+- **FAIL** on a machine path in any line of any text file (including code blocks): `/root`, `/home/<name>`, `/Users/<name>` or `/users/<name>` (name = `[A-Za-z0-9._-]+`), with or without a trailing `/`, when not preceded by a letter, digit, `.`, `_`, `~` or `-` (so `https://example.org/root/x` and `a/root/b` do not match; `"/root/x"`, `` `cd /root` ``, `HOME=/home/alice`, `/users/bob/src/`, `file:///root/x` do). `/root` directly followed by a letter, digit, `_` or `-` (`/roots`, `/rootfs`) does not match. `/home/<name>/` written literally with angle brackets does not match. One problem per line, listing every path found on that line; the reported path keeps its trailing `/` if it had one, and a sentence-final `.` is dropped (`/home/alice.` → `/home/alice`).
+- **FAIL** on a relative link in a markdown file that does not resolve to a tracked file or a directory holding tracked files. Links are found by parsing the whole file with goldmark (CommonMark + GFM, the same parser the site uses), not by line regexes: every link and image node, plus every reference definition `[x]: path` (used or not). So every CommonMark form counts — `[t](<path with spaces>)`, titles in `"…"`, `'…'` or `(…)`, a destination on its own line, reference definitions with `<…>` — and everything CommonMark treats as code is ignored: fenced blocks (``` or ~~~, also in `>` quotes, also in CRLF files), indented code blocks, inline code spans of any backtick length; a line such as ```` ```inline``` and [x](y.md) ```` is an inline code span followed by a real link, and `     ```` (5 spaces) is indented code, not a fence. Query strings (`?plain=1`) and fragments are ignored for resolution; backslash escapes and `%XX` are decoded. Each unresolved destination is reported once per file, at its first line (the problem line is the line of the link's text, or the reference definition's line). Absolute paths (`/etc/hosts`) and paths leaving the repo fail.
 - **Report, not fail**: every `http(s)://` URL in a reader-facing text file whose target is not one of: `github.com/nickstrad/sqlite-internals…`, `nickstrad.github.io/sqlite-internals…`, `sqlite.org` (+ subdomains), `github.com/sqlite/sqlite…`, `pkg.go.dev`, `go.dev`, `golang.org` (+ subdomains, e.g. `proxy.golang.org`), `modernc.org`, `gitlab.com/cznic/…` (the driver's source). Printed as `EXTERNAL <url> (<n> occurrence(s), first at <file>:<line>)`, sorted by URL. URLs inside `_test.go` files are not reported (test fixtures).
-- Summary line: `PASS check paths: <n> tracked text file(s) free of machine-local paths and unresolved relative links (<b> binary file(s) skipped, <e> external link(s) reported)`.
+- External-link allowlist matching cleans the URL path first (`path.Clean`), so `https://github.com/nickstrad/sqlite-internals/../../evil` is not treated as public (adversarial PATH-08a).
+- Summary line: `PASS check paths: <n> tracked text file(s) free of machine-local paths and unresolved relative links (<b> binary file(s) and <u> upstream SQLite copies skipped, <e> external link(s) reported)`.
+- CLI usage line: `check paths  verify no tracked file mentions a machine-local path or has an unresolved relative markdown link; list external links`.
 
-Exported API (new): `SweepPaths(root) (PathSweep, error)`, `PathSweep{Problems, Checked, Binary, External, IgnoredButTracked}`, `ExternalLink{URL, Where, Count}`, `PublicReferences`, `IsPublicReference(url)`, `MachinePaths(line)`, `MarkdownLinks(line)`, `ResolveRelativeLink(from, link, files, dirs)`. `CheckPaths(root)` keeps its old signature and returns the sweep's problems and checked count. The old doc comment on `CheckPaths` in `sweep.go` was removed (it described the old behaviour); the function now lives in `paths.go` and needs a new comment.
+Exported API (new): `SweepPaths(root) (PathSweep, error)`, `PathSweep{Problems, Checked, Binary, External, IgnoredButTracked, UpstreamCopies}`, `ExternalLink{URL, Where, Count}`, `MarkdownLink{Destination, Line}`, `PublicReferences`, `IsPublicReference(url)`, `MachinePaths(line)`, `MarkdownLinks(source []byte) []MarkdownLink` (whole file, sorted by line), `ResolveRelativeLink(from, link, files, dirs)`. The line-based `fenceState` helper is gone. `CheckPaths(root)` keeps its old signature and returns the sweep's problems and checked count. The old doc comment on `CheckPaths` in `sweep.go` was removed (it described the old behaviour); the function now lives in `paths.go` and needs a new comment.
 
-### Result on this branch
+### Result on this branch (build time, before the main merge; current result in section 9)
 ```text
 INFO check paths: binary file skipped: _tools/bin/kb
 INFO check paths: tracked although .gitignore matches it: _tools/bin/kb
@@ -299,10 +316,51 @@ comment in a copied SQLite source file, and cited prior art in a knowledge repor
 
 ## Corrections to the brief
 
-1. **"`check paths` walks the filesystem and trips on ignored binaries such as `_tools/bin/*`" — not so.** `CheckPaths` already used `git ls-files`. It failed because `_tools/bin/kb` (an 18.6 MB ELF binary) **is tracked**: committed in `c51ff44` ("infra: vendor kb, …") even though `.gitignore` has `/_tools/`. The binary happens to contain the bytes `/root/`. Fix made here: binary files are skipped (and listed), and tracked-but-ignored files are listed. **Open decision for Nick/Fable:** whether `_tools/bin/kb` should be untracked (`git rm --cached _tools/bin/kb`) — not done here because it was committed deliberately with the kb vendoring and `kb/` is out of bounds for builders. If it stays, every clone of the public repo downloads an 18.6 MB Linux binary.
+1. **"`check paths` walks the filesystem and trips on ignored binaries such as `_tools/bin/*`" — not so.** `CheckPaths` already used `git ls-files`. It failed because `_tools/bin/kb` (an 18.6 MB ELF binary) **is tracked**: committed in `c51ff44` ("infra: vendor kb, …") even though `.gitignore` has `/_tools/`. The binary happens to contain the bytes `/root/`. Fix made here: binary files are skipped (and listed), and tracked-but-ignored files are listed. **Resolved on main since** (`a15147b` "repo: stop tracking the built kb binary"); it was: whether `_tools/bin/kb` should be untracked (`git rm --cached _tools/bin/kb`) — not done here because it was committed deliberately with the kb vendoring and `kb/` is out of bounds for builders. If it stays, every clone of the public repo downloads an 18.6 MB Linux binary.
 2. Workflow step order: `configure-pages` moved before the site steps to obtain `base_path` (section 6).
 
 ## Surprises / notes
 - The README links to `agent_work/fetch-pinned-sqlite.sh` in text (code span, not a link) and says "no chapters exist yet"; see section 5.
 - `course check all` does not run `site -check`; the workflow runs it. Adding it to `check all` is a one-line change if wanted.
 - `docs/knowledge/*.md` pages are published; they contain build-machine-flavoured wording such as "the installed `/usr/local/bin/sqlite3` CLI" (not a home path, so not flagged). Whether knowledge reports belong on the public site at all is a content decision; the brief asked for them.
+
+## 9. Repair round (2026-11-21) — what changed, for Neon
+
+Commits `ef9d046` (repocheck) and `73a8a3d` (site, `course site`). Full table in `REPAIR-REPORT.md`.
+Sections 2, 3 and 8 above are already corrected in place; this section adds the facts that have no
+home there.
+
+### `site -check` (`CheckSite`) now also
+- reads `href`/`src`/`id` attributes written with single quotes (`<a href='…'>`), not only double quotes (adversarial LINK-04);
+- removes HTML comments before scanning, so `<!-- id="x" -->` defines no anchor (LINK-05) and `<!-- <a href="/b/todo/"> -->` is not a link (LINK-06);
+- fails on an `id` used twice on one page: `<page>: duplicate id "<id>"` (LINK-10b). The README-heading collision with the generated "Reading path"/"Reference" sections still resolves to `-1` ids, so it is not a duplicate;
+- ignores `?query` when locating the target file (LINK-07);
+- strips every leading `/` after the base, so `/book//ch01-a/#x` is checked against `ch01-a/index.html`'s ids (review finding 4).
+
+### Build (`site.Build`) now also
+- keeps `?query` on links rewritten to GitHub (`../internal/x.go?plain=1#L2` → `…/blob/main/internal/x.go?plain=1#L2`); drops it on links to rendered pages;
+- decodes backslash escapes in link paths (`a\_b.go` → `a_b.go`);
+- returns an error for an `Options.Files` entry that is absolute or leaves the root (review finding 7; it used to loop forever on `/x`).
+
+### Verified unchanged
+The real repository's site output is byte-identical before and after the repair (`diff -r` of a
+build by the pre-repair binary and the repaired one: no differences). Current numbers:
+`PASS site -check: 23 page(s), 1045 link(s) resolve` (both bases); two builds `diff -r` identical;
+`serve-check` fetched 24 URLs, all 200.
+
+### `course check paths` result now
+```text
+INFO check paths: unmodified upstream copy listed in SOURCES.sha256, not scanned: <17 lines, one per copied .c/.h file in ch01, ch02, ch04, ch05, ch07>
+EXTERNAL http://127.0.0.1:18333 (5 occurrence(s), first at ch07-vfs-and-filesystem-io/ch07-vfs-and-filesystem-io.md:4608)
+EXTERNAL http://seaweedfs:8333 (2 occurrence(s), first at ch07-vfs-and-filesystem-io/ch07-vfs-and-filesystem-io.md:41)
+EXTERNAL https://github.com/superfly/litefs/blob/main/docs/ARCHITECTURE.md (1 occurrence(s), first at docs/knowledge/determinism-and-rebuild.md:430)
+EXTERNAL https://github.com/superfly/ltx (1 occurrence(s), first at docs/knowledge/determinism-and-rebuild.md:425)
+EXTERNAL https://litestream.io/how-it-works/ (1 occurrence(s), first at docs/knowledge/determinism-and-rebuild.md:415)
+EXTERNAL https://rqlite.io/docs/api/non-deterministic/ (1 occurrence(s), first at docs/knowledge/determinism-and-rebuild.md:436)
+EXTERNAL https://rqlite.io/docs/design/ (1 occurrence(s), first at docs/knowledge/determinism-and-rebuild.md:435)
+PASS check paths: 184 tracked text file(s) free of machine-local paths and unresolved relative links (0 binary file(s) and 17 upstream SQLite copies skipped, 7 external link(s) reported)
+```
+Before the repair this failed with 5 problems in `pager.c`, `os_unix.c`, `vfstrace.c` (SQLite's own
+comments). `https://github.com/rsc/fpfmt` is no longer reported because it sits in the upstream copy
+`util.c`. The two local-address URLs (`127.0.0.1:18333`, `seaweedfs:8333`) are the lab's S3 endpoint
+in ch07 prose: reported, not failures.
