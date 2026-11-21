@@ -508,20 +508,35 @@ func EncodeValue(value any) []byte {
 // inside a single read transaction so concurrent writers cannot split the
 // snapshot.
 func LogicalHash(ctx context.Context, conn *sql.Conn) (Logical, error) {
-	if _, err := conn.ExecContext(ctx, "BEGIN"); err != nil {
+	// Check cancellation up front, then run deferred BEGIN without cancellation.
+	// modernc.org/sqlite can return ctx.Err() after a statement already succeeded
+	// (stmt.go checks its watcher flag before disarming it), which would leave an
+	// open transaction behind an error. A deferred BEGIN takes no locks.
+	if err := ctx.Err(); err != nil {
+		return Logical{}, fmt.Errorf("begin read transaction: %w", err)
+	}
+	uncancelable := context.WithoutCancel(ctx)
+	if _, err := conn.ExecContext(uncancelable, "BEGIN"); err != nil {
 		return Logical{}, fmt.Errorf("begin read transaction: %w", err)
 	}
 	result, err := logicalHashInTx(ctx, conn)
-	end := "COMMIT"
+	// End the transaction without cancellation so a canceled caller context never
+	// leaks an open read transaction or pins a WAL read mark on conn.
 	if err != nil {
-		end = "ROLLBACK"
+		if _, rollbackErr := conn.ExecContext(uncancelable, "ROLLBACK"); rollbackErr != nil {
+			return Logical{}, errors.Join(err, fmt.Errorf("end read transaction: %w", rollbackErr))
+		}
+		return Logical{}, err
 	}
-	// End the transaction with WithoutCancel so a canceled caller context
-	// never leaks an open read transaction (and pinned WAL read mark) on conn.
-	if _, endErr := conn.ExecContext(context.WithoutCancel(ctx), end); endErr != nil && err == nil {
-		err = fmt.Errorf("end read transaction: %w", endErr)
+	// If COMMIT fails, roll back before returning so conn never stays inside a
+	// transaction.
+	if _, commitErr := conn.ExecContext(uncancelable, "COMMIT"); commitErr != nil {
+		if _, rollbackErr := conn.ExecContext(uncancelable, "ROLLBACK"); rollbackErr != nil {
+			return Logical{}, fmt.Errorf("end read transaction: %w", errors.Join(commitErr, rollbackErr))
+		}
+		return Logical{}, fmt.Errorf("end read transaction: %w", commitErr)
 	}
-	return result, err
+	return result, nil
 }
 
 func logicalHashInTx(ctx context.Context, conn *sql.Conn) (Logical, error) {
