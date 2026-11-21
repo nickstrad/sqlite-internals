@@ -351,8 +351,12 @@ func main() {
 		f.shares[i%*writers] = append(f.shares[i%*writers], id)
 	}
 	fmt.Printf("INFO: store %s, work directory %s\n", store.Endpoint, env.ShownWork())
-	fmt.Printf("fleet: %d databases, %d writer processes (each owns %d and keeps at most %d open), one checker process; store: bucket %s, prefix %s\n",
-		*databases, *writers, len(f.shares[0]), process.Capacity, store.Bucket, store.Prefix)
+	owned := fmt.Sprint(len(f.shares[0]))
+	if fewest := len(f.shares[*writers-1]); fewest != len(f.shares[0]) {
+		owned = fmt.Sprintf("%d-%d", fewest, len(f.shares[0]))
+	}
+	fmt.Printf("fleet: %d databases, %d writer processes (each owns %s and keeps at most %d open), one checker process; store: bucket %s, prefix %s\n",
+		*databases, *writers, owned, process.Capacity, store.Bucket, store.Prefix)
 	for w := range *writers {
 		p, err := env.Start(env.Config(fmt.Sprintf("w%d", w+1), ""))
 		if err != nil {

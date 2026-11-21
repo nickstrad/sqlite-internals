@@ -139,12 +139,13 @@ func (x *experiment) traced(mode node.AckMode, kill *trace.KillAt) (*trace.Resul
 	return result, o
 }
 
-func (x *experiment) randomKill(mode node.AckMode, delay time.Duration) *outcome {
+func (x *experiment) randomKill(mode node.AckMode, delay time.Duration) (*outcome, time.Duration) {
 	x.setup()
 	p, err := x.env.Start(x.killedConfig())
 	if err != nil {
 		fatal("start node a", err)
 	}
+	writesStarted := time.Now()
 	timer := time.AfterFunc(delay, func() { p.Signal() })
 	var replies []string
 	for _, command := range x.script(mode) {
@@ -154,12 +155,13 @@ func (x *experiment) randomKill(mode node.AckMode, delay time.Duration) *outcome
 		}
 		replies = append(replies, reply.Line)
 	}
+	writeElapsed := time.Since(writesStarted)
 	timer.Stop()
 	p.Signal()
 	p.Reap()
 	o := newOutcome()
 	x.record(o, replies)
-	return o
+	return o, writeElapsed
 }
 
 func (x *experiment) recover(mode node.AckMode, o *outcome) {
@@ -276,25 +278,32 @@ func (x *experiment) syscallKills(mode node.AckMode) {
 	check(violations == 0, fmt.Sprintf("%s: after each kill at an fsync every database reopens (integrity ok, a recipe state) and holds at least every write acknowledged in this mode", mode))
 }
 
+const drawsPerRandomKill = 5
+
 func (x *experiment) randomTimeKills(mode node.AckMode, rng *rand.Rand) {
-	start := time.Now()
-	full := x.randomKill(mode, time.Hour)
-	elapsed := time.Since(start)
-	fmt.Printf("INFO: %s, an unkilled interactive run of %d writes took %s (%d acknowledged)\n", mode, *writes, elapsed.Round(time.Millisecond), full.acks)
-	violations := 0
+	full, elapsed := x.randomKill(mode, time.Hour)
+	fmt.Printf("INFO: %s, the write loop of an unkilled interactive run of %d writes took %s (%d acknowledged)\n", mode, *writes, elapsed.Round(time.Millisecond), full.acks)
+	violations, inFlight := 0, 0
 	for i := range *randomKills {
-		delay := time.Duration(rng.Int64N(int64(elapsed)))
-		o := x.randomKill(mode, delay)
-		x.recover(mode, o)
-		recovered, acked := x.versions(o)
-		fmt.Printf("INFO: %s, random kill %d after %s: %d acknowledged; reopened %d; recovered %s; acknowledged %s\n", mode, i+1, delay.Round(time.Millisecond), o.acks, o.reopened, recovered, acked)
-		for _, v := range o.violations {
-			fmt.Println("  violation: " + v)
+		for draw := 1; draw <= drawsPerRandomKill; draw++ {
+			delay := time.Duration(rng.Int64N(int64(elapsed)))
+			o, _ := x.randomKill(mode, delay)
+			x.recover(mode, o)
+			recovered, acked := x.versions(o)
+			fmt.Printf("INFO: %s, random kill %d (draw %d) after %s: %d acknowledged; reopened %d; recovered %s; acknowledged %s\n", mode, i+1, draw, delay.Round(time.Millisecond), o.acks, o.reopened, recovered, acked)
+			for _, v := range o.violations {
+				fmt.Println("  violation: " + v)
+			}
+			violations += len(o.violations)
+			if o.replies < *writes {
+				inFlight++
+				break
+			}
 		}
-		violations += len(o.violations)
 	}
 	check(full.acks == *writes, fmt.Sprintf("%s: an interactive run that is not killed acknowledges all %d writes", mode, *writes))
-	check(violations == 0, fmt.Sprintf("%s: after each of %d kills at a random time every database reopens (integrity ok, a recipe state) and holds at least every acknowledged write", mode, *randomKills))
+	check(inFlight == *randomKills, fmt.Sprintf("%s: each of the %d random kills landed while writes were in flight (a kill after the last reply is recovered and checked too, then redrawn, at most %d draws per kill)", mode, *randomKills, drawsPerRandomKill))
+	check(violations == 0, fmt.Sprintf("%s: after every kill at a random time every database reopens (integrity ok, a recipe state) and holds at least every acknowledged write", mode))
 }
 
 func (x *experiment) selfTest() {

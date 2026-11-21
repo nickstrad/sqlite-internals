@@ -24,16 +24,18 @@ check ok: store-durable: strace killed the node at each of the 4 fsync kill poin
 check ok: store-durable: after each kill at an fsync every database reopens (integrity ok, a recipe state) and holds at least every write acknowledged in this mode
 
 == B. kills at a random time (portable) ==
-INFO: local-durable, an unkilled interactive run of 12 writes took 2.256s (12 acknowledged)
-INFO: local-durable, random kill 1 after 1.404s: 10 acknowledged; reopened 4; recovered 3,3,2,2; acknowledged 3,3,2,2
-INFO: local-durable, random kill 2 after 1.269s: 11 acknowledged; reopened 4; recovered 3,3,3,2; acknowledged 3,3,3,2
+INFO: local-durable, the write loop of an unkilled interactive run of 12 writes took 875ms (12 acknowledged)
+INFO: local-durable, random kill 1 (draw 1) after 544ms: 8 acknowledged; reopened 4; recovered 2,2,2,2; acknowledged 2,2,2,2
+INFO: local-durable, random kill 2 (draw 1) after 492ms: 9 acknowledged; reopened 4; recovered 3,2,2,2; acknowledged 3,2,2,2
 check ok: local-durable: an interactive run that is not killed acknowledges all 12 writes
-check ok: local-durable: after each of 2 kills at a random time every database reopens (integrity ok, a recipe state) and holds at least every acknowledged write
-INFO: store-durable, an unkilled interactive run of 12 writes took 2.246s (12 acknowledged)
-INFO: store-durable, random kill 1 after 2.153s: 12 acknowledged; reopened 4; recovered 3,3,3,3; acknowledged 3,3,3,3
-INFO: store-durable, random kill 2 after 2.102s: 12 acknowledged; reopened 4; recovered 3,3,3,3; acknowledged 3,3,3,3
+check ok: local-durable: each of the 2 random kills landed while writes were in flight (a kill after the last reply is recovered and checked too, then redrawn, at most 5 draws per kill)
+check ok: local-durable: after every kill at a random time every database reopens (integrity ok, a recipe state) and holds at least every acknowledged write
+INFO: store-durable, the write loop of an unkilled interactive run of 12 writes took 826ms (12 acknowledged)
+INFO: store-durable, random kill 1 (draw 1) after 791ms: 9 acknowledged; reopened 4; recovered 3,3,2,2; acknowledged 3,2,2,2
+INFO: store-durable, random kill 2 (draw 1) after 773ms: 9 acknowledged; reopened 4; recovered 3,2,2,2; acknowledged 3,2,2,2
 check ok: store-durable: an interactive run that is not killed acknowledges all 12 writes
-check ok: store-durable: after each of 2 kills at a random time every database reopens (integrity ok, a recipe state) and holds at least every acknowledged write
+check ok: store-durable: each of the 2 random kills landed while writes were in flight (a kill after the last reply is recovered and checked too, then redrawn, at most 5 draws per kill)
+check ok: store-durable: after every kill at a random time every database reopens (integrity ok, a recipe state) and holds at least every acknowledged write
 
 == C. self-test: a node that acknowledges store-durable writes before the segment put ==
   ok write db-0001 store-durable: acknowledged at epoch 1, user_version 1, stored through position 0
@@ -42,6 +44,6 @@ check ok: self-test: the checker finds the store-durable acknowledgement the sto
 
 check ok: no node reported a problem
 check ok: after every command of every node process the descriptors and memory stayed within the standing bounds
-INFO: 316 node replies carried a bounds check
+INFO: 306 node replies carried a bounds check
 
 all checks passed

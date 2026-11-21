@@ -377,7 +377,23 @@ case 31: store fault crash-before-put:log/000000000006:1 on node b; recovery: ro
   final: catalog owner a epoch 3, newest slot epoch 3; 5 acknowledged (3 store-durable), 10 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
 check ok: case 31: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
 
-31 of 31 fault cases hold every invariant
+case 32: node b is killed after step 4 (rebuild at the destination from the store); recovery: roll back while node b stays down
+  run: step 6 failed: the node did not answer
+  node b is down and stays down during the recovery
+  recovery: the destination did not discard its staged copy: node process for "discard db-0001" is not running
+  node b restarted after the recovery
+  recovery: rolled back; relocation record: state rolled-back, step 5; fence point: position 5 sha256 d53fc07b1293, fence at position 6
+  after step 1: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, writable; b not owner
+  after step 2: catalog owner b epoch 2; store ends at position 3 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
+  after step 3: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
+  after step 4: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b not owner
+  after step 5: catalog owner b epoch 2; store ends at position 5 (epoch 1 segment); a owner at epoch 1, sealed; b down
+  after recovery: catalog owner a epoch 3; store ends at position 6 (epoch 3 snapshot); a owner at epoch 3, writable; b not owner
+  store: 1-1 e1 snapshot; 2-2 e1 segment; 3-3 e1 segment; 4-5 e1 segment; 6-6 e3 snapshot; 7-7 e3 segment
+  final: catalog owner a epoch 3, newest slot epoch 3; 5 acknowledged (3 store-durable), 10 refused; final user_version 5 (step 5 (equal except the change counter at bytes 24-27 and 92-95)); most writable nodes at any boundary 1
+check ok: case 32: one owner, at most one writable node at every boundary, the rebuilt copy equals the source at the fence, every acknowledged write kept and no refused write present
+
+32 of 32 fault cases hold every invariant
 
 == self-test: the same relocation without the seal and without the store fence ==
 
@@ -395,6 +411,7 @@ case 0: no fault; recovery: resume
   the store does not hold one lineage: slot chain is not one lineage: epoch 2 starts at position 4 with a segment, not a fence snapshot
 check ok: self-test: without the fence the boundary check finds two writable nodes
 check ok: after every command of every node process the descriptors and memory stayed within the standing bounds
-INFO: 1666 node replies carried a bounds check
+check ok: no node reported a problem
+INFO: 1726 node replies carried a bounds check
 
 all checks passed

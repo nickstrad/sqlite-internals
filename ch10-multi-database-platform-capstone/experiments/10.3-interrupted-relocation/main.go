@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"flag"
 	"fmt"
@@ -58,6 +59,7 @@ type faultCase struct {
 	faultNode  string
 	fault      string
 	rollback   bool
+	staysDown  bool
 }
 
 const finalSegment, fenceSlot = "log/000000000004", "log/000000000006"
@@ -82,6 +84,9 @@ func (c faultCase) String() string {
 	if c.rollback {
 		recovery = "roll back"
 	}
+	if c.staysDown {
+		recovery += fmt.Sprintf(" while node %s stays down", c.kill)
+	}
 	return what + "; recovery: " + recovery
 }
 
@@ -104,6 +109,7 @@ func cases() []faultCase {
 		list = append(list, faultCase{faultNode: "a", fault: f + ":" + finalSegment + ":1"}, faultCase{faultNode: "b", fault: f + ":" + fenceSlot + ":1"})
 	}
 	list = append(list, faultCase{faultNode: "a", fault: "fail-before-put:" + finalSegment + ":1", rollback: true}, faultCase{faultNode: "b", fault: "crash-before-put:" + fenceSlot + ":1", rollback: true})
+	list = append(list, faultCase{kill: "b", killAfter: relocate.Rebuild, rollback: true, staysDown: true})
 	return list
 }
 
@@ -242,6 +248,13 @@ func runCase(env *lab.Env, number int, c faultCase, skipFence bool) (bool, int) 
 		fatal("reset", err)
 	}
 	r := &run{env: env, nodes: map[string]*node.Process{}, skipFence: skipFence}
+	defer func() {
+		for name, p := range r.nodes {
+			if p != nil {
+				r.kill(name)
+			}
+		}
+	}()
 	for _, name := range []string{"a", "b"} {
 		fault := ""
 		if c.faultNode == name {
@@ -271,6 +284,11 @@ func runCase(env *lab.Env, number int, c faultCase, skipFence bool) (bool, int) 
 		fmt.Printf("  run: finished without interruption (%s)\n", result.Outcome)
 	}
 	for _, name := range []string{"a", "b"} {
+		if c.staysDown && name == c.kill {
+			r.kill(name)
+			fmt.Printf("  node %s is down and stays down during the recovery\n", name)
+			continue
+		}
 		if !r.alive(name) {
 			fmt.Printf("  node %s is down; restarted\n", name)
 			r.start(name, "")
@@ -285,6 +303,13 @@ func runCase(env *lab.Env, number int, c faultCase, skipFence bool) (bool, int) 
 	if err != nil && !errors.Is(err, relocate.ErrFenceInStore) {
 		fmt.Printf("  recovery: %v\n", err)
 		return false, r.mostWritable
+	}
+	if result.DiscardErr != nil {
+		fmt.Printf("  recovery: the destination did not discard its staged copy: %v\n", result.DiscardErr)
+	}
+	if c.staysDown {
+		fmt.Printf("  node %s restarted after the recovery\n", c.kill)
+		r.start(c.kill, "")
 	}
 	relocation, err := env.Catalog.GetRelocation(env.Ctx, id)
 	if err != nil {
@@ -304,6 +329,7 @@ func (r *run) verify(c faultCase, interrupted bool, result relocate.Result, relo
 		if _, err := env.Stop(p); err != nil {
 			fatal("stop node "+name, err)
 		}
+		r.nodes[name] = nil
 	}
 	record, err := env.Catalog.Get(env.Ctx, id)
 	if err != nil {
@@ -355,7 +381,7 @@ func (r *run) verify(c faultCase, interrupted bool, result relocate.Result, relo
 		storeDurable++
 		found := false
 		for _, slot := range chain {
-			if slot.Epoch == ack.Epoch && slot.First <= ack.Position && ack.Position <= slot.Last && int(restore(ack.Position)[63]) == ack.UserVersion {
+			if slot.Epoch == ack.Epoch && slot.First <= ack.Position && ack.Position <= slot.Last && int(binary.BigEndian.Uint32(restore(ack.Position)[60:64])) == ack.UserVersion {
 				found = true
 			}
 		}
@@ -377,6 +403,7 @@ func (r *run) verify(c faultCase, interrupted bool, result relocate.Result, relo
 		{walship.SHA256Hex(atFence) == fenceSHA && walship.SHA256Hex(fenced) == fenceSHA, "the rebuilt copy equals the source at the fenced commit"},
 		{acksInLineage && finalState.RecipeState && finalState.UserVersion == len(r.acks), "every acknowledged write is in the one lineage and no refused write is"},
 		{status == walship.SHA256Hex(final), "the owner's closed file equals the store's last state"},
+		{!c.staysDown || (result.Outcome == relocate.RolledBack && result.DiscardErr != nil), "a rollback while the destination is down finishes without the destination"},
 	}
 	ok := true
 	for _, part := range parts {
@@ -446,6 +473,7 @@ func main() {
 		fmt.Println("over bounds: " + line)
 	}
 	check(len(env.Tracker.OverBounds) == 0 && env.Tracker.Replies > 0, "after every command of every node process the descriptors and memory stayed within the standing bounds")
+	check(len(env.Tracker.Problems) == 0, "no node reported a problem")
 	fmt.Printf("INFO: %d node replies carried a bounds check\n", env.Tracker.Replies)
 	if len(failures) > 0 {
 		fmt.Printf("\n%d check(s) FAILED\n", len(failures))
