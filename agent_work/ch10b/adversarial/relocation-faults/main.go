@@ -66,8 +66,12 @@ func fatal(what string, err error) {
 	os.Exit(1)
 }
 
+func runPrefix(tag string) string {
+	return fmt.Sprintf("adv-ch10b-%s-%d", tag, os.Getpid())
+}
+
 func scratchDir(root, name string) string {
-	dir := filepath.Join(root, "_work", "adv-ch10b", "relocation-faults", name)
+	dir := filepath.Join(root, "_work", "adv-ch10b", fmt.Sprintf("relocation-faults-%d", os.Getpid()), name)
 	if err := os.RemoveAll(dir); err != nil {
 		fatal("clean scratch "+name, err)
 	}
@@ -161,7 +165,7 @@ func attackRel01(ctx context.Context, root string) {
 	binDir := scratchDir(root, "rel01-bin")
 	expWork := scratchDir(root, "rel01-work")
 	binPath := filepath.Join(binDir, "exp10.3")
-	prefix := "adv-ch10b-r01"
+	prefix := runPrefix("r01")
 	store := connectStore(ctx, prefix)
 	defer store.WipeInBatches(ctx)
 
@@ -202,7 +206,7 @@ func attackRel01(ctx context.Context, root string) {
 
 	// In-process SkipFence: confirm both a and b are writable and accept conflicting writes,
 	// breaking S3 lineage.
-	_, base, cat, a, b := setupInProc(ctx, root, "rel01-inproc", "adv-ch10b-r01-ip", nil, nil)
+	_, base, cat, a, b := setupInProc(ctx, root, "rel01-inproc", runPrefix("r01-ip"), nil, nil)
 	defer base.WipeInBatches(ctx)
 	defer cat.Close()
 	defer a.Close()
@@ -254,7 +258,7 @@ func attackRel02a(ctx context.Context, root string) {
 
 	var problems []string
 	for _, c := range cases {
-		prefix := "adv-ch10b-r02a-" + c.name
+		prefix := runPrefix("r02a-" + c.name)
 		base := connectStore(ctx, prefix)
 		defer base.WipeInBatches(ctx)
 		if _, err := base.WipeInBatches(ctx); err != nil {
@@ -327,7 +331,7 @@ func attackRel02a(ctx context.Context, root string) {
 // attackRel02b leaves a complete fence upload in S3 whose reply failed (fail-after-put
 // on slot 5), then runs Rollback through a stale-list coordinator store that hides slot 5.
 func attackRel02b(ctx context.Context, root string) {
-	prefix := "adv-ch10b-r02b"
+	prefix := runPrefix("r02b")
 	base := connectStore(ctx, prefix)
 	defer base.WipeInBatches(ctx)
 	if _, err := base.WipeInBatches(ctx); err != nil {
@@ -393,7 +397,7 @@ func attackRel02b(ctx context.Context, root string) {
 // holds an open read transaction (blocking WAL backfill and keeping -wal/-shm open),
 // then closing the long reader and resuming the relocation.
 func attackRel03(ctx context.Context, root string) {
-	prefix := "adv-ch10b-r03"
+	prefix := runPrefix("r03")
 	work, base, cat, a, b := setupInProc(ctx, root, "rel03", prefix, nil, nil)
 	defer base.WipeInBatches(ctx)
 	defer cat.Close()
@@ -510,7 +514,7 @@ func attackRel03(ctx context.Context, root string) {
 // node b is DOWN (not restarted before Rollback) — the canonical reason an
 // operator rolls back a migration. Uses real node child processes.
 func attackRel04(ctx context.Context, root string) {
-	prefix := "adv-ch10b-r04"
+	prefix := runPrefix("r04")
 	work := scratchDir(root, "rel04")
 	base := connectStore(ctx, prefix)
 	defer base.WipeInBatches(ctx)
@@ -607,7 +611,7 @@ func attackRel04(ctx context.Context, root string) {
 // attackRel05a removes a's .sealed file after b activates (simulating an
 // uncooperative source ignoring the courtesy seal) and proves S3 fencing stops a.
 func attackRel05a(ctx context.Context, root string) {
-	prefix := "adv-ch10b-r05a"
+	prefix := runPrefix("r05a")
 	work, base, cat, a, b := setupInProc(ctx, root, "rel05a", prefix, nil, nil)
 	defer base.WipeInBatches(ctx)
 	defer cat.Close()
@@ -635,7 +639,7 @@ func attackRel05a(ctx context.Context, root string) {
 	ackB, errB := b.Write(ctx, dbID, node.StoreDurable, nextStep)
 	chain, _, auditErr := fence.Audit(ctx, base, dbID)
 
-	held := aFenced && statusA == "fenced" && errB == nil && ackB.Epoch == 2 && auditErr == nil && chain[len(chain)-1].Epoch == 2
+	held := aFenced && statusA == "fenced" && errB == nil && ackB.Epoch == 2 && auditErr == nil && len(chain) > 0 && chain[len(chain)-1].Epoch == 2
 	report("REL-05a",
 		"delete a's .sealed file after b activates (uncooperative source) and attempt StoreDurable write on a",
 		"S3 fencing rejects a with ErrFenced, a becomes fenced, b writes cleanly at epoch 2, lineage unbroken",
@@ -650,7 +654,7 @@ func attackRel05a(ctx context.Context, root string) {
 func attackRel05b(ctx context.Context, root string) {
 	var problems []string
 	for _, crashStep := range []relocate.Step{relocate.ShipFinal, relocate.Activate} {
-		prefix := fmt.Sprintf("adv-ch10b-r05b-s%d", int(crashStep))
+		prefix := runPrefix(fmt.Sprintf("r05b-s%d", int(crashStep)))
 		work, base, cat, a, b := setupInProc(ctx, root, fmt.Sprintf("rel05b-s%d", int(crashStep)), prefix, nil, nil)
 		defer base.WipeInBatches(ctx)
 		c := newNode(ctx, work, "c", cat, base)
@@ -734,7 +738,7 @@ func (h *hookStore) PutIfAbsent(ctx context.Context, key string, data []byte) er
 // releases the catalog lock and calls Resume to check whether the catalog is
 // brought up to date (location, last_shipped, schema_version) when Resume finishes.
 func attackRel05c(ctx context.Context, root string) {
-	prefix := "adv-ch10b-r05c"
+	prefix := runPrefix("r05c")
 	work := scratchDir(root, "rel05c")
 	base := connectStore(ctx, prefix)
 	defer base.WipeInBatches(ctx)
@@ -845,6 +849,7 @@ func main() {
 	if err != nil {
 		fatal("repo root", err)
 	}
+	defer os.RemoveAll(filepath.Join(root, "_work", "adv-ch10b", fmt.Sprintf("relocation-faults-%d", os.Getpid())))
 
 	attackRel01(ctx, root)
 	attackRel02a(ctx, root)

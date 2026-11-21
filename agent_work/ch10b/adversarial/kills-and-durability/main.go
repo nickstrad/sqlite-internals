@@ -27,7 +27,6 @@ import (
 	"github.com/nickstrad/sqlite-internals/internal/recipe"
 	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
 	"github.com/nickstrad/sqlite-internals/internal/trace"
-	"github.com/nickstrad/sqlite-internals/internal/walship"
 )
 
 const s3Bucket = "course-ch10b"
@@ -60,8 +59,12 @@ func fatal(what string, err error) {
 	os.Exit(1)
 }
 
+func runPrefix(tag string) string {
+	return fmt.Sprintf("adv-ch10b-%s-%d", tag, os.Getpid())
+}
+
 func scratchDir(root, name string) string {
-	dir := filepath.Join(root, "_work", "adv-ch10b", "kills-and-durability", name)
+	dir := filepath.Join(root, "_work", "adv-ch10b", fmt.Sprintf("kills-and-durability-%d", os.Getpid()), name)
 	if err := os.RemoveAll(dir); err != nil {
 		fatal("clean scratch "+name, err)
 	}
@@ -226,7 +229,7 @@ func attackKill01(ctx context.Context, root string) {
 	binDir := scratchDir(root, "kill01-bin")
 	expWork := scratchDir(root, "kill01-work")
 	binPath := filepath.Join(binDir, "exp10.2")
-	prefix := "adv-ch10b-k01"
+	prefix := runPrefix("k01")
 	store := connectStore(ctx, prefix)
 	defer store.WipeInBatches(ctx)
 
@@ -285,7 +288,7 @@ func attackKill01(ctx context.Context, root string) {
 // attackKill02a injects crash-before-put and crash-after-put specifically during
 // LRU eviction's final ship in node.evicted() (Capacity=1, db-0002 evicts db-0001).
 func attackKill02a(ctx context.Context, root string, hashes []recipe.FileHashes) {
-	prefix := "adv-ch10b-k02a"
+	prefix := runPrefix("k02a")
 	store := connectStore(ctx, prefix)
 	defer store.WipeInBatches(ctx)
 	ids := []string{"db-0001", "db-0002"}
@@ -363,7 +366,7 @@ func attackKill02b(ctx context.Context, root string, hashes []recipe.FileHashes)
 		report("KILL-02b", "strace fsync kills during LRU eviction", "skipped on non-Linux", "non-Linux", true)
 		return
 	}
-	prefix := "adv-ch10b-k02b"
+	prefix := runPrefix("k02b")
 	store := connectStore(ctx, prefix)
 	defer store.WipeInBatches(ctx)
 	ids := []string{"db-0001", "db-0002"}
@@ -408,18 +411,20 @@ func attackKill02b(ctx context.Context, root string, hashes []recipe.FileHashes)
 	// First write (local-durable on db-0001) does ~2-3 fsyncs; eviction + db-0002 write does the rest.
 	// Target every fsync from index 3 onward (capped at 8 evenly spaced if more).
 	var killPoints []int
-	startIdx := 3
-	if startIdx > len(fsyncFiles) {
-		startIdx = 1
-	}
-	if len(fsyncFiles)-startIdx+1 <= 8 {
-		for k := startIdx; k <= len(fsyncFiles); k++ {
-			killPoints = append(killPoints, k)
+	if len(fsyncFiles) > 0 {
+		startIdx := 3
+		if startIdx > len(fsyncFiles) {
+			startIdx = 1
 		}
-	} else {
-		for i := range 8 {
-			k := startIdx + i*(len(fsyncFiles)-startIdx)/7
-			killPoints = append(killPoints, k)
+		if len(fsyncFiles)-startIdx+1 <= 8 {
+			for k := startIdx; k <= len(fsyncFiles); k++ {
+				killPoints = append(killPoints, k)
+			}
+		} else {
+			for i := range 8 {
+				k := startIdx + i*(len(fsyncFiles)-startIdx)/7
+				killPoints = append(killPoints, k)
+			}
 		}
 	}
 
@@ -464,7 +469,7 @@ func attackKill02b(ctx context.Context, root string, hashes []recipe.FileHashes)
 // attackKill03a kills a node before and after PutIfAbsent during Claim's fence
 // snapshot (both initial claim at slot 1 and recovery/takeover claim at slot 3).
 func attackKill03a(ctx context.Context, root string, hashes []recipe.FileHashes) {
-	prefix := "adv-ch10b-k03a"
+	prefix := runPrefix("k03a")
 	store := connectStore(ctx, prefix)
 	defer store.WipeInBatches(ctx)
 	ids := []string{"db-0001"}
@@ -541,7 +546,7 @@ func attackKill03a(ctx context.Context, root string, hashes []recipe.FileHashes)
 // attackKill03b kills a node before and after PutIfAbsent during a discontinuity
 // snapshot emitted by openDatabase() when recovering an unshipped post-crash WAL.
 func attackKill03b(ctx context.Context, root string, hashes []recipe.FileHashes) {
-	prefix := "adv-ch10b-k03b"
+	prefix := runPrefix("k03b")
 	store := connectStore(ctx, prefix)
 	defer store.WipeInBatches(ctx)
 	ids := []string{"db-0001"}
@@ -617,7 +622,7 @@ func attackKill03c(ctx context.Context, root string, hashes []recipe.FileHashes)
 		report("KILL-03c", "strace fsync kills inside Claim", "skipped on non-Linux", "non-Linux", true)
 		return
 	}
-	prefix := "adv-ch10b-k03c"
+	prefix := runPrefix("k03c")
 	store := connectStore(ctx, prefix)
 	defer store.WipeInBatches(ctx)
 	ids := []string{"db-0001"}
@@ -645,11 +650,13 @@ func attackKill03c(ctx context.Context, root string, hashes []recipe.FileHashes)
 			fsyncFiles = append(fsyncFiles, filepath.Base(call.Path))
 		}
 	}
-	killPoints := []int{1}
+	var killPoints []int
 	if len(fsyncFiles) >= 3 {
-		killPoints = append(killPoints, len(fsyncFiles)/2, len(fsyncFiles))
+		killPoints = []int{1, len(fsyncFiles) / 2, len(fsyncFiles)}
 	} else if len(fsyncFiles) == 2 {
-		killPoints = append(killPoints, 2)
+		killPoints = []int{1, 2}
+	} else if len(fsyncFiles) == 1 {
+		killPoints = []int{1}
 	}
 
 	var violations []string
@@ -696,7 +703,7 @@ func attackKill04(ctx context.Context, root string, hashes []recipe.FileHashes) 
 		report("KILL-04", "strace SIGKILL on every catalog.db fsync", "skipped on non-Linux", "non-Linux", true)
 		return
 	}
-	prefix := "adv-ch10b-k04"
+	prefix := runPrefix("k04")
 	store := connectStore(ctx, prefix)
 	defer store.WipeInBatches(ctx)
 	ids := []string{"db-0001", "db-0002"}
@@ -786,9 +793,13 @@ func attackKill04(ctx context.Context, root string, hashes []recipe.FileHashes) 
 			rec, err := cat.Get(ctx, "db-0001")
 			cat.Close()
 			chain, _, auditErr := fence.Audit(ctx, store, "db-0001")
-			if err != nil || auditErr != nil || len(chain) == 0 || rec.LastShipped != chain[len(chain)-1].Last {
+			s3End := int64(0)
+			if len(chain) > 0 {
+				s3End = chain[len(chain)-1].Last
+			}
+			if err != nil || auditErr != nil || len(chain) == 0 || rec.LastShipped != s3End {
 				violations = append(violations, fmt.Sprintf("when=%d(%s) catalog drift: lastShipped=%d s3End=%d err=%v/%v",
-					when, recMode, rec.LastShipped, chain[len(chain)-1].Last, err, auditErr))
+					when, recMode, rec.LastShipped, s3End, err, auditErr))
 			}
 		}
 	}
@@ -809,7 +820,7 @@ func attackKill05(ctx context.Context, root string, hashes []recipe.FileHashes) 
 		report("KILL-05", "strace SIGKILL at pwrite64 calls", "skipped on non-Linux", "non-Linux", true)
 		return
 	}
-	prefix := "adv-ch10b-k05"
+	prefix := runPrefix("k05")
 	store := connectStore(ctx, prefix)
 	defer store.WipeInBatches(ctx)
 	ids := []string{"db-0001", "db-0002"}
@@ -884,8 +895,6 @@ func attackKill05(ctx context.Context, root string, hashes []recipe.FileHashes) 
 		}
 	}
 
-	// Touch walship import check (used indirectly through fence/lab) - ensure clean compile.
-	_ = walship.ErrNotFound
 	held := totalKills == pointsPerMode*2 && killedCount == totalKills && len(violations) == 0
 	report("KILL-05",
 		fmt.Sprintf("strace SIGKILL at %d pwrite64 points across local-durable and store-durable (Capacity=1)", totalKills),
@@ -908,6 +917,7 @@ func main() {
 	if err != nil {
 		fatal("repo root", err)
 	}
+	defer os.RemoveAll(filepath.Join(root, "_work", "adv-ch10b", fmt.Sprintf("kills-and-durability-%d", os.Getpid())))
 	hashes, err := recipe.Default().StepHashes(ctx)
 	if err != nil {
 		fatal("recipe hashes", err)

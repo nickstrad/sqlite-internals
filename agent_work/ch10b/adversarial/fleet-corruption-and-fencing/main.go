@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/catalog"
 	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/faultstore"
@@ -63,8 +64,12 @@ func fatal(what string, err error) {
 	os.Exit(1)
 }
 
+func runPrefix(tag string) string {
+	return fmt.Sprintf("adv-ch10b-%s-%d", tag, os.Getpid())
+}
+
 func scratchDir(root, name string) string {
-	dir := filepath.Join(root, "_work", "adv-ch10b", "fleet-corruption-and-fencing", name)
+	dir := filepath.Join(root, "_work", "adv-ch10b", fmt.Sprintf("fleet-corruption-and-fencing-%d", os.Getpid()), name)
 	if err := os.RemoveAll(dir); err != nil {
 		fatal("clean scratch "+name, err)
 	}
@@ -152,7 +157,7 @@ func buildFleet(ctx context.Context, work string, store *s3store.Store, count in
 // and tests deleting a segment (01a), corrupting a segment in both envelope and
 // payload (01b), and deleting slot 1 (01c).
 func attackFleet01(ctx context.Context, root string, hashes []recipe.FileHashes) {
-	prefix := "adv-ch10b-f01"
+	prefix := runPrefix("f01")
 	work := scratchDir(root, "fleet01")
 	store := connectStore(ctx, prefix)
 	defer store.WipeInBatches(ctx)
@@ -251,6 +256,10 @@ func attackFleet01(ctx context.Context, root string, hashes []recipe.FileHashes)
 
 	// FLEET-01c: Delete slot 1 (opening fence snapshot) of db-0003.
 	slot1Key := fence.SlotKey("db-0003", 1)
+	origSlot1, err := store.Get(ctx, slot1Key)
+	if err != nil {
+		fatal("get orig slot 1", err)
+	}
 	if err := store.Delete(ctx, slot1Key); err != nil {
 		fatal("delete slot 1", err)
 	}
@@ -267,6 +276,48 @@ func attackFleet01(ctx context.Context, root string, hashes []recipe.FileHashes)
 		"InspectFleet isolates db-0003 with LastGood=0, RestorePoints=0 while 15 other DBs pass",
 		fmt.Sprintf("databases=%d failed=%d(%v)", repC.Databases, len(repC.Failed), repC.Failed),
 		heldC)
+
+	// Restore db-0003 slot 1 before FLEET-01d.
+	if err := store.PutIfAbsent(ctx, slot1Key, origSlot1); err != nil {
+		fatal("restore slot 1", err)
+	}
+
+	// FLEET-01d (must-be-able-to-fail on recipe-state check): ship a valid SQLite
+	// commit NOT in the recipe on db-0005. fence.Audit must pass (valid envelope,
+	// WAL checksums, segment SHA-256, and lineage), while lab.InspectFleet must
+	// still isolate db-0005 with LastGood equal to the last valid recipe position.
+	rogueID := "db-0005"
+	rogueNode := newNode(ctx, work, "rogue", cat, store, 2)
+	claimRes, err := rogueNode.Claim(ctx, rogueID)
+	if err != nil {
+		rogueNode.Close()
+		fatal("rogue claim "+rogueID, err)
+	}
+	wantGoodD := claimRes.Fence
+	_, rogueErr := rogueNode.Write(ctx, rogueID, node.StoreDurable, func(ctx context.Context, db *sqlitex.DB) error {
+		_, err := db.ExecContext(ctx, "CREATE TABLE rogue_non_recipe (x INTEGER); INSERT INTO rogue_non_recipe VALUES (1)")
+		return err
+	})
+	rogueNode.Close()
+	if rogueErr != nil {
+		fatal("rogue write "+rogueID, rogueErr)
+	}
+	_, _, auditErrD := fence.Audit(ctx, store, rogueID)
+	repD, err := lab.InspectFleet(ctx, store, hashes, 4)
+	if err != nil {
+		fatal("inspect fleet 01d", err)
+	}
+	heldD := auditErrD == nil &&
+		repD.Databases == 16 && len(repD.Failed) == 1 &&
+		repD.Failed[0].Database == rogueID &&
+		repD.Failed[0].LastGood == wantGoodD &&
+		int64(repD.Failed[0].RestorePoints) == wantGoodD &&
+		strings.Contains(repD.Failed[0].Problem, "not a recipe state")
+	report("FLEET-01d",
+		"ship a valid SQLite non-recipe commit on db-0005 in 16-DB fleet (valid envelope, WAL checksums, and lineage)",
+		fmt.Sprintf("fence.Audit succeeds, while InspectFleet isolates db-0005 with LastGood=%d (not a recipe state) and 15/15 others pass", wantGoodD),
+		fmt.Sprintf("auditErr=%v failed=%d(%v)", auditErrD, len(repD.Failed), repD.Failed),
+		heldD)
 }
 
 // attackFleet02 injects faultstore.PartialPut on a segment (db-0004 slot 3) and
@@ -275,7 +326,7 @@ func attackFleet01(ctx context.Context, root string, hashes []recipe.FileHashes)
 // puts are never listed as restore points and that a stray .part key under log/
 // is isolated to its database.
 func attackFleet02(ctx context.Context, root string, hashes []recipe.FileHashes) {
-	prefix := "adv-ch10b-f02"
+	prefix := runPrefix("f02")
 	work := scratchDir(root, "fleet02")
 	store := connectStore(ctx, prefix)
 	defer store.WipeInBatches(ctx)
@@ -372,7 +423,7 @@ func attackFleet02(ctx context.Context, root string, hashes []recipe.FileHashes)
 // processes (w1, w2) are STILL RUNNING with all 8 databases open in memory, then
 // proves fencing stops both StoreDurable writes and LocalDurable+ship on w1/w2.
 func attackFleet03a(ctx context.Context, root string, hashes []recipe.FileHashes) {
-	prefix := "adv-ch10b-f03a"
+	prefix := runPrefix("f03a")
 	work := scratchDir(root, "fleet03a")
 	store := connectStore(ctx, prefix)
 	defer store.WipeInBatches(ctx)
@@ -485,7 +536,7 @@ func attackFleet03a(ctx context.Context, root string, hashes []recipe.FileHashes
 // empty disks WHILE old writer processes w1/w2 actively hammer StoreDurable writes
 // across those same 16 databases (with LRU evictions, Capacity=4).
 func attackFleet03b(ctx context.Context, root string, hashes []recipe.FileHashes) {
-	prefix := "adv-ch10b-f03b"
+	prefix := runPrefix("f03b")
 	work := scratchDir(root, "fleet03b")
 	store := connectStore(ctx, prefix)
 	defer store.WipeInBatches(ctx)
@@ -541,9 +592,13 @@ func attackFleet03b(ctx context.Context, root string, hashes []recipe.FileHashes
 
 	// Concurrently: w1 and w2 each try 5 more rounds of StoreDurable writes across
 	// their 8 DBs WHILE fresh rebuilds all 16 DBs (4 concurrent rebuild workers).
+	// Wait until old writers land at least 2 live writes (or 500ms) before starting
+	// the rebuild workers so both sides collide mid-stream.
 	var writerWg sync.WaitGroup
 	fencedSeen := map[string]bool{}
 	oldExtraAcks := 0
+	writersActive := make(chan struct{})
+	var activeOnce sync.Once
 	for wi, p := range procs {
 		writerWg.Add(1)
 		go func(proc *node.Process, share []string) {
@@ -559,6 +614,9 @@ func attackFleet03b(ctx context.Context, root string, hashes []recipe.FileHashes
 						if _, ack, perr := node.ParseAck(r.Line); perr == nil {
 							ackedOld[id] = max(ackedOld[id], ack.UserVersion)
 							oldExtraAcks++
+							if oldExtraAcks >= 2 {
+								activeOnce.Do(func() { close(writersActive) })
+							}
 						}
 					} else if strings.Contains(r.Line, "fenced:") {
 						fencedSeen[id] = true
@@ -567,6 +625,11 @@ func attackFleet03b(ctx context.Context, root string, hashes []recipe.FileHashes
 				}
 			}
 		}(p, shares[wi])
+	}
+
+	select {
+	case <-writersActive:
+	case <-time.After(500 * time.Millisecond):
 	}
 
 	// Start 4 concurrent fresh rebuilders claiming all 16 DBs while old writers hammer them.
@@ -655,7 +718,7 @@ func attackFleet04(ctx context.Context, root string) {
 	binDir := scratchDir(root, "fleet04-bin")
 	expWork := scratchDir(root, "fleet04-work")
 	binPath := filepath.Join(binDir, "exp10.4")
-	prefix := "adv-ch10b-f04"
+	prefix := runPrefix("f04")
 	store := connectStore(ctx, prefix)
 	defer store.WipeInBatches(ctx)
 
@@ -697,8 +760,6 @@ func attackFleet04(ctx context.Context, root string) {
 	codeLim, outLim := run("-capacity", "200000", "-prefix", prefix+"-lim")
 	limOK := codeLim != 0 && strings.Contains(outLim, "FATAL descriptor limit:")
 
-	// Touch walship import check.
-	_ = walship.ErrNotFound
 	held := run32OK && limOK
 	report("FLEET-04",
 		"run 10.4 at scaled size (32 DBs, 4 writers, capacity 8) and test descriptor-limit guard (-capacity 200000)",
@@ -730,6 +791,7 @@ func main() {
 	if err != nil {
 		fatal("repo root", err)
 	}
+	defer os.RemoveAll(filepath.Join(root, "_work", "adv-ch10b", fmt.Sprintf("fleet-corruption-and-fencing-%d", os.Getpid())))
 	hashes, err := recipe.Default().StepHashes(ctx)
 	if err != nil {
 		fatal("recipe hashes", err)
