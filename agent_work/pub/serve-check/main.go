@@ -1,3 +1,6 @@
+// Command serve-check serves a built static site directory over loopback HTTP
+// under a configured base path and crawls every same-site href and src link to
+// confirm every reachable URL returns HTTP 200.
 package main
 
 import (
@@ -23,6 +26,7 @@ func main() {
 		fmt.Println("FAIL:", err)
 		os.Exit(1)
 	}
+	// Mount the site behind StripPrefix to match GitHub Pages subpath serving.
 	mux := http.NewServeMux()
 	mux.Handle(*base, http.StripPrefix(strings.TrimSuffix(*base, "/"), http.FileServer(http.Dir(*dir))))
 	go http.Serve(listener, mux)
@@ -38,6 +42,7 @@ func main() {
 	}
 	seen := map[string]int{}
 	failed := false
+	// Breadth-first crawl of same-site links; external URLs such as GitHub are skipped.
 	for len(queue) > 0 {
 		target := queue[0]
 		queue = queue[1:]

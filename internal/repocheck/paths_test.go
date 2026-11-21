@@ -8,6 +8,7 @@ import (
 	"testing"
 )
 
+// TestSweepPathsReaderFacingRules verifies machine-path detection, relative link checks, binary/exclude handling, and external URL reporting.
 func TestSweepPathsReaderFacingRules(t *testing.T) {
 	home := "/" + "home" + "/" + "alice" + "/"
 	mac := "/" + "Users" + "/" + "bob" + "/"
@@ -78,6 +79,7 @@ func TestSweepPathsReaderFacingRules(t *testing.T) {
 	}
 }
 
+// TestIsPublicReference verifies host, subdomain, and path-prefix matching for allowlisted URLs.
 func TestIsPublicReference(t *testing.T) {
 	cases := map[string]bool{
 		"https://sqlite.org/wal.html":                                  true,
@@ -102,6 +104,7 @@ func TestIsPublicReference(t *testing.T) {
 	}
 }
 
+// TestMarkdownLinksAndFences verifies CommonMark link extraction across CRLF fences, code spans, indented code, titles, and reference definitions.
 func TestMarkdownLinksAndFences(t *testing.T) {
 	source := "a [x](one.md) `[y](two.md)` [z](<three four.md>) [w](f(1).md) [v](five.md \"t\")\n" +
 		"```go\r\n[in](fence.md)\r\n```\r\n\r\n[after](crlf.md)\n\n" +
@@ -121,6 +124,7 @@ func TestMarkdownLinksAndFences(t *testing.T) {
 	}
 }
 
+// TestIsPublicReferenceRejectsDotDot verifies dot-dot path traversal cannot bypass path-restricted allowlist entries.
 func TestIsPublicReferenceRejectsDotDot(t *testing.T) {
 	for _, link := range []string{
 		"https://github.com/nickstrad/sqlite-internals/../../evil/malware",
@@ -134,6 +138,7 @@ func TestIsPublicReferenceRejectsDotDot(t *testing.T) {
 	}
 }
 
+// TestMachinePathsWithoutTrailingSlash verifies bare home-directory paths and lowercase /users/<name>/ are caught without false positives on placeholders.
 func TestMachinePathsWithoutTrailingSlash(t *testing.T) {
 	root := strings.TrimSuffix(ForbiddenPathFragment, "/")
 	line := "cd " + root + " or HOME=/" + "home/alice or DIR=/" + "Users/bob or /" + "users/carol/src/ but not " + root + "s, a" + root + " or /home/<name>/"
@@ -144,6 +149,7 @@ func TestMachinePathsWithoutTrailingSlash(t *testing.T) {
 	}
 }
 
+// TestSweepPathsSkipsUpstreamCopiesAndDeletedFiles verifies SOURCES.sha256 copies are skipped as targets only and deleted tracked files fail link resolution.
 func TestSweepPathsSkipsUpstreamCopiesAndDeletedFiles(t *testing.T) {
 	home := "/" + "home" + "/" + "drh" + "/"
 	repo := newGitRepo(t)

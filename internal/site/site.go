@@ -1,3 +1,6 @@
+// Package site renders the book repository into a self-contained static HTML
+// site for GitHub Pages and verifies every internal link, anchor, and DOM id in
+// the generated output.
 package site
 
 import (
@@ -16,6 +19,7 @@ import (
 	"github.com/yuin/goldmark/util"
 )
 
+// Options configures a static site build for a repository checkout.
 type Options struct {
 	Root    string
 	Files   []string
@@ -24,11 +28,14 @@ type Options struct {
 	Branch  string
 }
 
+// Problem describes a single link, anchor, or HTML check failure tied to a
+// source markdown file or generated HTML page.
 type Problem struct {
 	Where   string
 	Message string
 }
 
+// String formats p as "Where: Message", or just Message when Where is empty.
 func (p Problem) String() string {
 	if p.Where == "" {
 		return p.Message
@@ -36,6 +43,7 @@ func (p Problem) String() string {
 	return p.Where + ": " + p.Message
 }
 
+// Result summarizes the HTML pages written and link problems found by Build.
 type Result struct {
 	Pages    []string
 	Problems []Problem
@@ -91,6 +99,8 @@ type builder struct {
 
 var chapterDirPattern = regexp.MustCompile(`^ch\d\d-[A-Za-z0-9._-]+$`)
 
+// NormalizeBase converts a URL base path into canonical leading-and-trailing
+// slash form ("/" for root, "/name/" for a subpath).
 func NormalizeBase(base string) string {
 	base = strings.Trim(base, "/")
 	if base == "" {
@@ -99,6 +109,9 @@ func NormalizeBase(base string) string {
 	return "/" + base + "/"
 }
 
+// Build renders README.md, every chNN-* chapter and its optional answers.md,
+// OUTLINE.md, and docs/knowledge/*.md into outDir along with style.css and an
+// empty .nojekyll marker for GitHub Pages.
 func Build(opts Options, outDir string) (Result, error) {
 	opts.Base = NormalizeBase(opts.Base)
 	opts.RepoURL = strings.TrimRight(opts.RepoURL, "/")
@@ -114,6 +127,8 @@ func Build(opts Options, outDir string) (Result, error) {
 	}
 	for _, name := range opts.Files {
 		name = path.Clean(filepath.ToSlash(name))
+		// Reject absolute or parent-escaping entries so the path.Dir walk below
+		// always terminates at "." and every link target stays inside opts.Root.
 		if path.IsAbs(name) || name == ".." || strings.HasPrefix(name, "../") {
 			return Result{}, fmt.Errorf("file %s is not a path relative to the repository root", name)
 		}
@@ -157,6 +172,8 @@ func Build(opts Options, outDir string) (Result, error) {
 	if err := os.WriteFile(filepath.Join(outDir, "style.css"), styleCSS, 0o644); err != nil {
 		return Result{}, err
 	}
+	// .nojekyll tells GitHub Pages to serve the static tree verbatim and also
+	// marks outDir as a prior site build for cmd/course's directory safety check.
 	if err := os.WriteFile(filepath.Join(outDir, ".nojekyll"), nil, 0o644); err != nil {
 		return Result{}, err
 	}
@@ -220,6 +237,8 @@ func (b *builder) load(p *page) error {
 	}
 	body := bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n"))
 	frontTitle := ""
+	// Only knowledge notes carry YAML front matter; stripping "---" on README,
+	// outline, or chapter pages would discard text after a leading thematic break.
 	if p.kind == knowledgePage {
 		body, frontTitle = stripFrontMatter(body)
 	}
@@ -239,6 +258,9 @@ func (b *builder) load(p *page) error {
 
 var frontTitlePattern = regexp.MustCompile(`(?m)^title:\s*(.*?)\s*$`)
 
+// stripFrontMatter removes a leading YAML block delimited by "---" lines
+// (including empty front matter or a closing "---" at EOF) and returns any
+// title field from it.
 func stripFrontMatter(normalized []byte) ([]byte, string) {
 	if !bytes.HasPrefix(normalized, []byte("---\n")) {
 		return normalized, ""
@@ -285,6 +307,9 @@ var (
 	rungIDPattern          = regexp.MustCompile(`Rebuild Ladder \(rung (R\d+)\)`)
 )
 
+// findRung extracts a chapter's Rebuild Ladder rung from code-stripped prose.
+// It prefers the bold rung declaration over an unbolded mention so a chapter
+// referencing an earlier rung first still gets its own rung.
 func findRung(body []byte) string {
 	m := rungDeclarationPattern.FindSubmatch(body)
 	if m == nil {
@@ -305,6 +330,9 @@ var experimentIDPattern = regexp.MustCompile(`^\d+\.\d+$`)
 
 var experimentHeadingPattern = regexp.MustCompile(`^(?:[\d.]+\s+)?(Experiment (\d+\.\d+)\b.*)$`)
 
+// findExperiments pairs level-3 experiment headings with their N.M-* directory
+// and appends any numbered experiment directory that has no heading yet,
+// ignoring non-numbered helper directories under experiments/.
 func (b *builder) findExperiments(c *chapter) {
 	seen := map[string]bool{}
 	for _, h := range c.page.doc.headings {
@@ -382,6 +410,9 @@ func (b *builder) githubURL(repoPath string, isDir bool) string {
 
 var schemePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*:`)
 
+// resolve rewrites a markdown destination relative to source into a site page
+// URL or a GitHub blob/tree URL. Query strings are ignored when locating a
+// target and preserved only on links rewritten to GitHub.
 func (b *builder) resolve(source, dest string) (string, string, bool) {
 	if dest == "" || schemePattern.MatchString(dest) || strings.HasPrefix(dest, "//") || strings.HasPrefix(dest, "#") {
 		return dest, "", true

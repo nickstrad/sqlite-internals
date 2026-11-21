@@ -6,6 +6,8 @@ import (
 	"html/template"
 )
 
+// Labels holds every fixed UI string rendered in the HTML chrome and generated
+// sections of the static site.
 type Labels struct {
 	Contents    string
 	Previous    string
@@ -19,6 +21,7 @@ type Labels struct {
 	Planned     string
 }
 
+// UILabels defines the default English labels used when rendering site pages.
 var UILabels = Labels{
 	Contents:    "Contents",
 	Previous:    "Previous",
@@ -92,6 +95,8 @@ func (b *builder) renderPage(p *page, body []byte) ([]byte, error) {
 	switch p.kind {
 	case homePage:
 		view.Home = true
+		// Allocate generated section IDs from README's slugger so a README
+		// heading named "Reading path" or "Reference" does not create duplicates.
 		view.ReadingID = p.doc.ids.slug(UILabels.ReadingPath)
 		view.ReferenceID = p.doc.ids.slug(UILabels.Reference)
 		view.ReadingPath = b.readingPath()
@@ -131,6 +136,8 @@ func (b *builder) chapterIndex(c *chapter) int {
 	return -1
 }
 
+// tableOfContents collects level-2 and level-3 headings for the sidebar and
+// omits the list when fewer than two entries exist.
 func tableOfContents(doc *document) []tocEntry {
 	var entries []tocEntry
 	for _, h := range doc.headings {

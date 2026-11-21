@@ -84,6 +84,7 @@ func mustContain(t *testing.T, page, haystack string, needles ...string) {
 	}
 }
 
+// TestBuildLayoutAndCheck verifies Build writes the expected page tree and passes CheckSite.
 func TestBuildLayoutAndCheck(t *testing.T) {
 	out, result := build(t, fixture(), "/book/")
 	if len(result.Problems) != 0 {
@@ -118,6 +119,7 @@ func TestBuildLayoutAndCheck(t *testing.T) {
 	}
 }
 
+// TestHomePage verifies rendered README links, Reading path ordering, rung badge, and Reference links.
 func TestHomePage(t *testing.T) {
 	out, _ := build(t, fixture(), "/book/")
 	home := read(t, out, "index.html")
@@ -145,6 +147,7 @@ func TestHomePage(t *testing.T) {
 	}
 }
 
+// TestChapterPage verifies chapter TOC, Previous/Next links, experiment links, include rewriting, and separate answers page.
 func TestChapterPage(t *testing.T) {
 	out, _ := build(t, fixture(), "/book/")
 	page := read(t, out, "ch01-alpha/index.html")
@@ -185,6 +188,7 @@ func TestChapterPage(t *testing.T) {
 	mustContain(t, "answers", answers, `<p class="chapter-link"><a href="/book/ch01-alpha/">Chapter 1 — Alpha</a></p>`, "Yes.")
 }
 
+// TestKnowledgeAndOutlinePages verifies front-matter stripping, title fallback, and outline anchor rendering.
 func TestKnowledgeAndOutlinePages(t *testing.T) {
 	out, _ := build(t, fixture(), "/")
 	note := read(t, out, "knowledge/note/index.html")
@@ -198,6 +202,7 @@ func TestKnowledgeAndOutlinePages(t *testing.T) {
 	mustContain(t, "outline", outline, `<a href="#2-rulings-x-2026">rulings</a>`, `<h2 id="2-rulings-x-2026">`)
 }
 
+// TestDeterministicOutput verifies two independent builds of the same fixture produce identical bytes.
 func TestDeterministicOutput(t *testing.T) {
 	root, names := writeFixture(t, fixture())
 	opts := Options{Root: root, Files: names, Base: "/book/", RepoURL: testRepoURL, Branch: "main"}
@@ -228,6 +233,7 @@ func TestDeterministicOutput(t *testing.T) {
 	}
 }
 
+// TestBrokenLinksReported verifies Build flags missing, repo-escaping, and absolute links and CheckSite catches bad anchors.
 func TestBrokenLinksReported(t *testing.T) {
 	files := fixture()
 	files["ch02-beta/ch02-beta.md"] += "\n[gone](missing.go) [out](../../etc/passwd) [abs](/x) [anchor](../ch01-alpha/ch01-alpha.md#no-such-anchor)\n"
@@ -257,6 +263,7 @@ func TestBrokenLinksReported(t *testing.T) {
 	}
 }
 
+// TestCheckSiteFlagsBrokenPagesAndBase verifies CheckSite reports base-path escapes, missing pages, and missing anchors.
 func TestCheckSiteFlagsBrokenPagesAndBase(t *testing.T) {
 	dir := t.TempDir()
 	pages := map[string]string{
@@ -291,6 +298,7 @@ func TestCheckSiteFlagsBrokenPagesAndBase(t *testing.T) {
 	}
 }
 
+// TestGithubSlugs verifies heading slug generation matches GitHub across punctuation, Unicode, and duplicates.
 func TestGithubSlugs(t *testing.T) {
 	s := newSlugger()
 	cases := []struct{ in, want string }{
@@ -310,6 +318,7 @@ func TestGithubSlugs(t *testing.T) {
 	}
 }
 
+// TestNormalizeBaseAndFindRung verifies base-path normalization and Rebuild Ladder rung extraction.
 func TestNormalizeBaseAndFindRung(t *testing.T) {
 	for in, want := range map[string]string{"": "/", "/": "/", "x": "/x/", "/x": "/x/", "/x/": "/x/", "a/b": "/a/b/"} {
 		if got := NormalizeBase(in); got != want {
@@ -327,6 +336,7 @@ func TestNormalizeBaseAndFindRung(t *testing.T) {
 	}
 }
 
+// TestStripFrontMatter verifies basic YAML front-matter removal and unterminated header passthrough.
 func TestStripFrontMatter(t *testing.T) {
 	body, title := stripFrontMatter([]byte("---\ntitle: 'Quoted'\n---\n# H\n"))
 	if string(body) != "# H\n" || title != "Quoted" {
@@ -338,6 +348,7 @@ func TestStripFrontMatter(t *testing.T) {
 	}
 }
 
+// TestStripFrontMatterEdges verifies empty front matter, EOF closing fences, and quoted title unescaping.
 func TestStripFrontMatterEdges(t *testing.T) {
 	cases := []struct{ in, body, title string }{
 		{"---\n---\n# Real\n\nPara.\n\n---\n\nAfter.\n", "# Real\n\nPara.\n\n---\n\nAfter.\n", ""},
@@ -353,11 +364,13 @@ func TestStripFrontMatterEdges(t *testing.T) {
 	}
 }
 
+// TestFrontMatterOnlyOnKnowledgePages verifies leading thematic breaks in README.md are not stripped as front matter.
 func TestFrontMatterOnlyOnKnowledgePages(t *testing.T) {
 	out, _ := build(t, map[string]string{"README.md": "---\n# Book Title\n\nSome intro\n---\n\nBody after rule\n"}, "/")
 	mustContain(t, "index.html", read(t, out, "index.html"), "Book Title", "Some intro", "Body after rule")
 }
 
+// TestRungIgnoresCodeAndPrefersDeclaration verifies rung detection skips code blocks and prefers the bold declaration.
 func TestRungIgnoresCodeAndPrefersDeclaration(t *testing.T) {
 	out, _ := build(t, map[string]string{
 		"README.md": "# Book\n",
@@ -372,6 +385,7 @@ func TestRungIgnoresCodeAndPrefersDeclaration(t *testing.T) {
 	}
 }
 
+// TestOnlyNumberedExperimentDirectoriesAreListed verifies non-numbered helper directories under experiments/ are ignored.
 func TestOnlyNumberedExperimentDirectoriesAreListed(t *testing.T) {
 	out, _ := build(t, map[string]string{
 		"README.md":                         "# Book\n",
@@ -387,6 +401,7 @@ func TestOnlyNumberedExperimentDirectoriesAreListed(t *testing.T) {
 	}
 }
 
+// TestAnswersLinkWithoutTableOfContents verifies a chapter with fewer than two headings still renders its sidebar Answers link.
 func TestAnswersLinkWithoutTableOfContents(t *testing.T) {
 	out, _ := build(t, map[string]string{
 		"README.md":         "# Book\n",
@@ -400,6 +415,7 @@ func TestAnswersLinkWithoutTableOfContents(t *testing.T) {
 	}
 }
 
+// TestHeadingIDsFromEntitiesAndPunctuation verifies entity decoding outside code spans and fallback IDs for punctuation-only headings.
 func TestHeadingIDsFromEntitiesAndPunctuation(t *testing.T) {
 	out, result := build(t, map[string]string{
 		"README.md": "# Book\n",
@@ -422,6 +438,7 @@ func TestHeadingIDsFromEntitiesAndPunctuation(t *testing.T) {
 	}
 }
 
+// TestIncludeMarkerWithLineRange verifies line-range include markers rewrite to GitHub line-anchored links.
 func TestIncludeMarkerWithLineRange(t *testing.T) {
 	out, _ := build(t, map[string]string{
 		"README.md":        "# Book\n",
@@ -432,6 +449,7 @@ func TestIncludeMarkerWithLineRange(t *testing.T) {
 		`<p class="include"><a href="`+testRepoURL+`/blob/main/ch01-a/foo.go#L3-L7">ch01-a/foo.go:3-7</a></p>`)
 }
 
+// TestQueryStringsAndEscapesInRelativeLinks verifies query stripping for site pages, query preservation on GitHub links, and backslash unescaping.
 func TestQueryStringsAndEscapesInRelativeLinks(t *testing.T) {
 	out, result := build(t, map[string]string{
 		"README.md":        "# Book\n",
@@ -447,12 +465,14 @@ func TestQueryStringsAndEscapesInRelativeLinks(t *testing.T) {
 		`href="/ch01-a/#1-model"`, `href="`+testRepoURL+`/blob/main/internal/x.go?plain=1#L2"`, `href="`+testRepoURL+`/blob/main/internal/a_b.go"`)
 }
 
+// TestBuildRejectsAbsoluteFiles verifies Build returns an error when Options.Files contains an absolute path.
 func TestBuildRejectsAbsoluteFiles(t *testing.T) {
 	if _, err := Build(Options{Root: t.TempDir(), Files: []string{"/etc/README.md"}}, t.TempDir()); err == nil {
 		t.Fatal("absolute file accepted")
 	}
 }
 
+// TestCheckSiteHTMLEdges verifies single-quoted links, HTML comment ignoring, repeated slashes, query stripping, and duplicate ids.
 func TestCheckSiteHTMLEdges(t *testing.T) {
 	dir := t.TempDir()
 	pages := map[string]string{
@@ -514,6 +534,7 @@ func checkSiteProblems(t *testing.T, base string, pages map[string]string) []str
 	return got
 }
 
+// TestCheckSiteIgnoresAttributeTextInCode verifies SQL id literals and escaped HTML links inside code blocks do not trigger false failures.
 func TestCheckSiteIgnoresAttributeTextInCode(t *testing.T) {
 	got := checkSiteProblems(t, "/b/", map[string]string{
 		"index.html": `<h2 id="top">t</h2>` +
@@ -528,6 +549,7 @@ func TestCheckSiteIgnoresAttributeTextInCode(t *testing.T) {
 	}
 }
 
+// TestCheckSiteBrokenAnchorBesideSQLText verifies SQL id text cannot satisfy a broken anchor link.
 func TestCheckSiteBrokenAnchorBesideSQLText(t *testing.T) {
 	got := checkSiteProblems(t, "/b/", map[string]string{
 		"index.html": `<pre><code>SELECT 1 WHERE id = 'alpha';</code></pre>` +
@@ -539,6 +561,7 @@ func TestCheckSiteBrokenAnchorBesideSQLText(t *testing.T) {
 	}
 }
 
+// TestCheckSiteIgnoresAttributeTextInProseAndInlineCode verifies attribute-like text in paragraphs, inline code, script, and style bodies is ignored.
 func TestCheckSiteIgnoresAttributeTextInProseAndInlineCode(t *testing.T) {
 	got := checkSiteProblems(t, "/b/", map[string]string{
 		"index.html": `<p>prose id = 'alpha' and id = 'alpha' then href='/b/prose-missing/'</p>` +
@@ -553,6 +576,7 @@ func TestCheckSiteIgnoresAttributeTextInProseAndInlineCode(t *testing.T) {
 	}
 }
 
+// TestCheckSiteTagScanner verifies quoted '>' characters, uppercase tag/attribute names, unquoted values, and case-insensitive duplicate ids.
 func TestCheckSiteTagScanner(t *testing.T) {
 	got := checkSiteProblems(t, "/b/", map[string]string{
 		"index.html": `<a title="a>b" href='/b/missing-after-gt/'>x</a>` +

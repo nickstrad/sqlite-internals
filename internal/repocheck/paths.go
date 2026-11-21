@@ -19,12 +19,17 @@ import (
 	"github.com/yuin/goldmark/util"
 )
 
+// ExternalLink records a non-allowlisted HTTP(S) URL found in reader-facing
+// tracked text files along with its first location and total occurrence count.
 type ExternalLink struct {
 	URL   string
 	Where string
 	Count int
 }
 
+// PathSweep holds the full output of SweepPaths: blocking path and link
+// problems, scanned file count, skipped binary and upstream SQLite files,
+// ignored-but-tracked files, and reported external URLs.
 type PathSweep struct {
 	Problems          []Problem
 	Checked           int
@@ -34,6 +39,8 @@ type PathSweep struct {
 	UpstreamCopies    []string
 }
 
+// MarkdownLink is a link, image, or reference definition destination extracted
+// from a markdown file along with its 1-based line number.
 type MarkdownLink struct {
 	Destination string
 	Line        int
@@ -53,6 +60,9 @@ type publicReference struct {
 	pathPrefix string
 }
 
+// PublicReferences lists the allowlisted hosts and optional path prefixes that
+// SweepPaths treats as expected project, SQLite, or Go references rather than
+// external links to report.
 var PublicReferences = []publicReference{
 	{"github.com", "/nickstrad/sqlite-internals"},
 	{"nickstrad.github.io", "/sqlite-internals"},
@@ -65,6 +75,9 @@ var PublicReferences = []publicReference{
 	{"gitlab.com", "/cznic/"},
 }
 
+// IsPublicReference reports whether raw matches an entry in PublicReferences.
+// The URL path is cleaned before prefix matching so ".." segments cannot bypass
+// a path-restricted allowlist entry.
 func IsPublicReference(raw string) bool {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -88,6 +101,7 @@ func IsPublicReference(raw string) bool {
 	return false
 }
 
+// isBinary matches git's binary heuristic: a NUL byte in the first 8,000 bytes.
 func isBinary(data []byte) bool {
 	head := data
 	if len(head) > 8000 {
@@ -100,11 +114,16 @@ func trimURL(raw string) string {
 	return strings.TrimRight(raw, ".,;:!?*_")
 }
 
+// MachinePaths returns any machine-local home directory prefixes (the superuser
+// home prefix ForbiddenPathFragment, /home/<name>, or /Users/<name> in either
+// case) appearing on line outside URLs or longer path tokens.
 func MachinePaths(line string) []string {
 	var found []string
 	for _, loc := range machinePathPattern.FindAllStringSubmatchIndex(line, -1) {
 		name, slash := line[loc[2]:loc[3]], line[loc[4]:loc[5]]
 		if slash == "" {
+			// Skip bare matches followed immediately by identifier characters so
+			// longer single-segment names are not mistaken for home directories.
 			if loc[5] < len(line) && isPathNameByte(line[loc[5]]) {
 				continue
 			}
@@ -123,6 +142,10 @@ func lineAt(starts []int, offset int) int {
 	return sort.Search(len(starts), func(i int) bool { return starts[i] > offset })
 }
 
+// MarkdownLinks parses source with goldmark (CommonMark + GFM) and returns all
+// link, image, and reference-definition destinations sorted by 1-based line
+// number. Using the full markdown parser ignores fenced blocks, indented code,
+// and inline code spans of arbitrary backtick length.
 func MarkdownLinks(source []byte) []MarkdownLink {
 	var starts []int
 	starts = append(starts, 0)
@@ -158,6 +181,10 @@ func MarkdownLinks(source []byte) []MarkdownLink {
 	return links
 }
 
+// ResolveRelativeLink checks whether link from markdown file from points to an
+// entry in files or dirs. External schemes, protocol-relative URLs, and pure
+// fragments are accepted; query strings and fragments are ignored for lookup;
+// absolute paths and paths escaping the repository root fail.
 func ResolveRelativeLink(from, link string, files, dirs map[string]bool) (string, bool) {
 	if link == "" || strings.HasPrefix(link, "#") || urlSchemePattern.MatchString(link) || strings.HasPrefix(link, "//") {
 		return "", true
@@ -181,6 +208,10 @@ func ResolveRelativeLink(from, link string, files, dirs map[string]bool) (string
 	return target, target == "." || files[target] || dirs[target]
 }
 
+// upstreamCopies collects every verbatim upstream SQLite C file declared in a
+// tracked SOURCES.sha256 manifest. Those copies must match the pinned SQLite
+// tree byte for byte and cannot be edited, so SweepPaths keeps them as valid
+// link targets while skipping them from machine-path and URL scanning.
 func upstreamCopies(root string, files []string) map[string]bool {
 	copies := map[string]bool{}
 	for _, name := range files {
@@ -204,6 +235,10 @@ type numberedProblem struct {
 	problem Problem
 }
 
+// SweepPaths inspects every tracked file present on disk under root outside
+// PathSweepExclude. It fails on machine-local paths and unresolved relative
+// markdown links, skips binary files and SOURCES.sha256 upstream SQLite copies,
+// notes tracked-but-gitignored files, and lists non-allowlisted external URLs.
 func SweepPaths(root string) (PathSweep, error) {
 	var sweep PathSweep
 	tracked, err := TrackedFiles(root)
@@ -214,6 +249,7 @@ func SweepPaths(root string) (PathSweep, error) {
 	fileSet := map[string]bool{}
 	dirSet := map[string]bool{}
 	for _, name := range tracked {
+		// Drop tracked files deleted from the working tree so links to them fail.
 		if _, err := os.Lstat(filepath.Join(root, filepath.FromSlash(name))); err != nil {
 			continue
 		}
@@ -249,6 +285,7 @@ func SweepPaths(root string) (PathSweep, error) {
 			continue
 		}
 		sweep.Checked++
+		// Test files carry synthetic fixture URLs that should not pollute the external link report.
 		reportExternal := !strings.HasSuffix(name, "_test.go")
 		var found []numberedProblem
 		for i, line := range strings.Split(string(data), "\n") {
@@ -293,6 +330,7 @@ func SweepPaths(root string) (PathSweep, error) {
 	return sweep, nil
 }
 
+// CheckPaths runs SweepPaths and returns its blocking problems and checked file count.
 func CheckPaths(root string) ([]Problem, int, error) {
 	sweep, err := SweepPaths(root)
 	return sweep.Problems, sweep.Checked, err

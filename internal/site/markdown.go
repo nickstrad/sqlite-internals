@@ -31,11 +31,15 @@ type document struct {
 	ids      *slugger
 }
 
+// markdown configures goldmark with GitHub Flavored Markdown extensions and raw
+// HTML passthrough so chapter markdown renders the same way it does on GitHub.
 var markdown = goldmark.New(
 	goldmark.WithExtensions(extension.GFM),
 	goldmark.WithRendererOptions(html.WithUnsafe()),
 )
 
+// parseMarkdown parses source into an AST, stamps GitHub-compatible id
+// attributes onto every heading, and records the document's first H1 as title.
 func parseMarkdown(source []byte) *document {
 	doc := &document{source: source, ids: newSlugger()}
 	doc.root = markdown.Parser().Parse(text.NewReader(source))
@@ -56,6 +60,9 @@ func parseMarkdown(source []byte) *document {
 	return doc
 }
 
+// plainText extracts visible heading text for slugging and TOC labels. Code
+// spans stay literal while prose text decodes backslash escapes and HTML
+// entities to match GitHub's heading anchor generation.
 func plainText(n ast.Node, source []byte) string {
 	var b strings.Builder
 	ast.Walk(n, func(c ast.Node, entering bool) (ast.WalkStatus, error) {
@@ -95,6 +102,9 @@ func newSlugger() *slugger {
 	return &slugger{occurrences: map[string]int{}}
 }
 
+// githubSlug reproduces github-slugger: lowercase, keep letters, digits,
+// combining marks, underscores, and hyphens, replace spaces with hyphens, and
+// drop all other punctuation.
 func githubSlug(label string) string {
 	var b strings.Builder
 	for _, r := range strings.ToLower(label) {
@@ -108,6 +118,8 @@ func githubSlug(label string) string {
 	return b.String()
 }
 
+// slug assigns a unique anchor id for label within a document, falling back to
+// "section" for punctuation-only headings and appending -1, -2, ... on repeats.
 func (s *slugger) slug(label string) string {
 	original := githubSlug(label)
 	if original == "" {
@@ -132,6 +144,9 @@ func newLink(dest, label string) *ast.Link {
 	return link
 }
 
+// addExperimentLinks inserts a "Code · Evidence" paragraph directly after each
+// experiment heading in a chapter using repo-relative paths that rewriteLinks
+// later turns into GitHub URLs.
 func (b *builder) addExperimentLinks(p *page) {
 	if p.kind != chapterPage {
 		return
@@ -168,6 +183,9 @@ func (b *builder) addExperimentLinks(p *page) {
 
 var includeMarkerPattern = regexp.MustCompile(`^<!--\s*include:\s*(\S+)(?:\s+lines=(\d+)-(\d+))?\s*-->\s*$`)
 
+// rewriteLinks resolves every markdown link and image destination in p and
+// replaces "<!-- include: path [lines=A-B] -->" markers with visible links to
+// the inlined file on GitHub while leaving other HTML comments intact.
 func (b *builder) rewriteLinks(p *page) {
 	source := p.doc.source
 	var includes []*ast.HTMLBlock
@@ -209,6 +227,8 @@ func (b *builder) rewriteLinks(p *page) {
 	}
 }
 
+// proseOnly returns a copy of doc.source with code blocks, HTML blocks, and
+// inline code spans overwritten by spaces so rung detection inspects prose only.
 func proseOnly(doc *document) []byte {
 	prose := bytes.Clone(doc.source)
 	blank := func(start, stop int) {

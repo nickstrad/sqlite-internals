@@ -18,6 +18,8 @@ const (
 	defaultBranch  = "main"
 )
 
+// runSite implements "course site" to render the static book site or run the
+// temporary-directory link and anchor check with -check.
 func runSite(root string, args []string) error {
 	flags := flag.NewFlagSet("site", flag.ContinueOnError)
 	out := flags.String("out", "_site", "output directory")
@@ -54,6 +56,9 @@ func runSite(root string, args []string) error {
 	return nil
 }
 
+// checkSite builds the site into a disposable temporary directory, runs
+// site.CheckSite over the rendered HTML, and reports combined build and HTML
+// link problems.
 func checkSite(opts site.Options) error {
 	dir, err := os.MkdirTemp("", "course-site-")
 	if err != nil {
@@ -77,6 +82,9 @@ func checkSite(opts site.Options) error {
 	return r.exit()
 }
 
+// siteFiles returns tracked and untracked non-ignored paths that exist on disk
+// under root, matching the file set visible on GitHub while omitting ignored
+// directories such as _src/ and _work/.
 func siteFiles(root string) ([]string, error) {
 	out, err := repocheck.Git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
 	if err != nil {
@@ -98,6 +106,10 @@ func siteFiles(root string) ([]string, error) {
 	return files, nil
 }
 
+// prepareSiteDir validates and prepares out as the site build destination.
+// It refuses to overwrite any directory containing root (including through a
+// symlink) and refuses to replace a non-empty directory that lacks a .nojekyll
+// marker from a previous site build.
 func prepareSiteDir(root, out string) (string, error) {
 	dir, err := filepath.Abs(out)
 	if err != nil {
@@ -107,6 +119,8 @@ func prepareSiteDir(root, out string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Resolve symlinks on the longest existing prefix and compare against root's
+	// ancestors by inode so a symlinked -out path cannot wipe the repository.
 	if containsPath(resolveExisting(dir), resolveExisting(absRoot)) || sameFileAsAncestor(dir, absRoot) {
 		return "", fmt.Errorf("refusing to write the site into %s: it contains the repository", dir)
 	}
@@ -128,6 +142,8 @@ func prepareSiteDir(root, out string) (string, error) {
 	return dir, os.MkdirAll(dir, 0o755)
 }
 
+// resolveExisting resolves symlinks on the longest existing ancestor of name
+// and reattaches any not-yet-created trailing path segments.
 func resolveExisting(name string) string {
 	var missing []string
 	for {

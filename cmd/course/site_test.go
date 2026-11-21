@@ -7,6 +7,7 @@ import (
 	"testing"
 )
 
+// TestPrepareSiteDirRefusesRepositoryThroughSymlink verifies prepareSiteDir refuses paths reaching the repository or its parent through symlinks while allowing subdirectories and sibling names starting with "..".
 func TestPrepareSiteDirRefusesRepositoryThroughSymlink(t *testing.T) {
 	base := t.TempDir()
 	repo := filepath.Join(base, "real-parent", "repo")

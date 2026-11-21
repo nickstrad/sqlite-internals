@@ -18,6 +18,8 @@ type tagAttribute struct {
 	value string
 }
 
+// rawTextElements names HTML elements whose bodies are scanned only for their
+// closing tag so text inside them is never mistaken for opening tags.
 var rawTextElements = map[string]bool{"script": true, "style": true, "textarea": true, "title": true}
 
 func isASCIILetter(c byte) bool {
@@ -28,6 +30,10 @@ func isHTMLSpace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'
 }
 
+// openingTagAttributes walks rendered HTML and returns attributes only from
+// real opening tags. Scanning tags rather than raw bytes prevents text nodes
+// and code blocks (where goldmark leaves single quotes unescaped, as in SQL
+// "WHERE id = 'alpha'") and HTML comments from producing false ids or links.
 func openingTagAttributes(data []byte) []tagAttribute {
 	var attributes []tagAttribute
 	n := len(data)
@@ -65,6 +71,8 @@ func openingTagAttributes(data []byte) []tagAttribute {
 		tagName := strings.ToLower(string(data[i+1 : j]))
 		var tagAttributes []tagAttribute
 		closed := false
+		// Parse attributes with quote-aware boundaries so '>' inside a quoted
+		// value does not close the tag early, and decode entities in values.
 		for j < n {
 			for j < n && (isHTMLSpace(data[j]) || data[j] == '/') {
 				j++
@@ -128,12 +136,17 @@ func openingTagAttributes(data []byte) []tagAttribute {
 	return attributes
 }
 
+// CheckResult summarizes the HTML pages and links inspected by CheckSite and
+// any broken links, missing anchors, or duplicate DOM ids found.
 type CheckResult struct {
 	Problems []Problem
 	Pages    int
 	Links    int
 }
 
+// CheckSite walks every rendered HTML file under dir served at base and reports
+// duplicate DOM ids, links leaving base, missing target files, and missing
+// fragment anchors.
 func CheckSite(dir, base string) (CheckResult, error) {
 	base = NormalizeBase(base)
 	ids := map[string]map[string]bool{}
@@ -190,6 +203,10 @@ func CheckSite(dir, base string) (CheckResult, error) {
 	return result, nil
 }
 
+// checkLink validates one href or src value from page against the built site
+// rooted at dir under base. External schemes are skipped; internal paths ignore
+// query strings, normalize repeated leading slashes after base, resolve
+// directories to index.html, and verify non-empty fragments against ids.
 func checkLink(dir, base, page, link string, ids map[string]map[string]bool) string {
 	if link == "" {
 		return "empty link"
