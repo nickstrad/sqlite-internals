@@ -1,5 +1,5 @@
 # Publishing chunk (pub) adversarial suite (Gemini 4 Neon)
-# Started: 2026-11-21T02:51:29Z
+# Started: 2026-11-21T03:21:06Z
 # Scratch: _work/adv-pub/
 
 ## group: site-live-and-determinism
@@ -11,7 +11,7 @@ ATTACK LIVE-05 | Run course site -check and -out with SQLITE_SRC=/nonexistent an
 ATTACK LIVE-06a | Test -out safety guards: '.', '..', non-empty dir without .nojekyll, regular file, and overwrite of previous .nojekyll build | EXPECT '.', '..', non-empty dir, and regular file refused without data loss; previous .nojekyll dir cleanly replaced with stale.html removed | GOT all 5 core -out guard cases behaved safely | HELD
 ATTACK LIVE-06b | Pass -out <symlink-to-parent>/repo pointing to a disposable scratch repo that contains .nojekyll | EXPECT prepareSiteDir resolves symlinks and refuses because -out is the repository itself | GOT exit=1, repo .git intact=true, output="FAIL: refusing to write the site into /root/Software/sqlite-internals-work/pub/_work/adv-pub/site-live-and-determinism/sym-attack/link-to-parent/repo: it contains the repository" | HELD
 ATTACK LIVE-07 | Inspect .github/workflows/pages.yml structure and simulate configure-pages base_path outputs ('', '/sqlite-internals', '/sqlite-internals/') | EXPECT workflow meets all publishing spec requirements and handles custom-domain and project-pages base_path outputs cleanly | GOT pages.yml contains all required triggers, permissions, concurrency, actions, step order, and base_path normalization holds for empty/single/double slashes | HELD
-# site-live-and-determinism finished in 14s
+# site-live-and-determinism finished in 13s
 
 ## group: site-link-and-check
 ATTACK LINK-01 | Must-be-able-to-fail: inject missing file, gitignored file (present on disk), repo escape, absolute link, and broken include marker | EXPECT course site -check exits 1 and reports all 5 broken targets | GOT exit=1; all 5 violations reported | HELD
@@ -25,7 +25,9 @@ ATTACK LINK-08 | Test CheckSite base='/book/' with /book, /book/, /book2/ (prefi
 ATTACK LINK-09 | Build with -repo https://github.com/fork/book/ (trailing slash), -branch release/v1.0, spaced filenames, dir, and repo root (..) | EXPECT all links emit clean blob/tree URLs without //, spaces encoded as %20, dir and root use /tree/ | GOT spacedCount=2, hasDir=true, hasRoot=true, hasDoubleSlash=false | HELD
 ATTACK LINK-10a | Put literal '## Reading path' and '## Reference' headings inside README.md | EXPECT generated sections share README's slugger and become reading-path-1 and reference-1 with no ID collision | GOT exit=0, disambiguated=true (PASS site: 6 page(s) written to /root/Software/sqlite-internals-work/pub/_work/adv-pub/site-link-and-check/dup-ids-out (base /book/)) | HELD
 ATTACK LINK-10b | Collide raw HTML <div id="1-overview"> with markdown heading ## 1. Overview on the same page | EXPECT site -check detects duplicate DOM id="1-overview" on a page | GOT exit=1; out=FAIL site -check: 1 problem(s) ;   ch02-beta/index.html: duplicate id "1-overview" | HELD
-# site-link-and-check finished in 3s
+ATTACK LINK-11a | Include SQL code repeating WHERE id = 'alpha' and fenced HTML showing <a href='/book/single-in-code/'> on a valid page | EXPECT site -check ignores text inside <pre><code> blocks and passes (exit 0) | GOT exit=1; out=FAIL site -check: 2 problem(s) ;   ch02-beta/index.html: duplicate id "alpha" ;   ch02-beta/index.html: broken link /book/single-in-code/ | BROKEN
+ATTACK LINK-11b | Link to [broken](#alpha) on a page whose only id = 'alpha' appears inside a fenced SQL code block | EXPECT site -check rejects #alpha because text inside <pre><code> does not define a DOM anchor | GOT exit=0; out=PASS site -check: 6 page(s), 36 link(s) resolve | BROKEN
+# site-link-and-check finished in 4s
 
 ## group: site-markdown-edges
 ATTACK MD-01a | YAML front matter title: "SQLite's 'WAL'" (inner single quote before closing double quote) and bare note fallback to filename stem | EXPECT title preserves inner quote ('SQLite's 'WAL'') and bare note falls back to 'stem' | GOT wal <title>="SQLite&#39;s &#39;WAL&#39; · Book", stemFallbackOK=true | HELD
@@ -42,12 +44,12 @@ ATTACK MD-06 | Render GFM tables, strikethrough, task lists, autolinks, and HTML
 ATTACK MD-07a | Build a chapter with only 1 H2 heading plus answers.md | EXPECT chapter page still surfaces the sidebar Answers link and never renders answers inline | GOT hasAnswersLinkInChapterHTML=true, answersLeakedInline=false | HELD
 ATTACK MD-07b | Build a 10-chapter book (ch01..ch10) to verify Previous/Next chain & numeric order, plus missing README.md handling | EXPECT ch01..ch10 link in exact sequence with no Previous on ch01 / Next on ch10; missing README.md returns error | GOT all 10 chapters chained cleanly; missing README.md returned error: README.md is not in the file set | HELD
 ATTACK MD-07c | Build via cmd/course site with tracked ch01, untracked non-ignored ch02, tracked-but-deleted-on-disk ch03, and gitignored ch99 | EXPECT ch01 and ch02 are rendered; deleted ch03 and gitignored ch99 are excluded | GOT exit=0, ch01=true, ch02=true, ch03Absent=true, ch99Absent=true (PASS site: 3 page(s) written to /root/Software/sqlite-internals-work/pub/_work/adv-pub/site-markdown-edges/git-view-out (base /book/)) | HELD
-# site-markdown-edges finished in 3s
+# site-markdown-edges finished in 2s
 
 ## group: repocheck-paths-sweep
 ATTACK PATH-01 | Run `course check paths` on the actual repository checkout (which includes verbatim SOURCES.sha256 SQLite C copies from ch04/ch05/ch07) | EXPECT check paths passes (exit 0) on the clean repository without false-failing on unmodified pinned upstream SQLite C comments | GOT exit=0 PASS | HELD
 ATTACK PATH-02 | Must-be-able-to-fail: inject /root/, /home/alice/, /Users/bob/ across .md (prose+fence), .go, _test.go, .yaml plus safe URLs, excluded paths, and untracked/ignored files | EXPECT course check paths exits 1, flags all 5 reader-facing hits, and ignores safe URLs, agent_work/, kb/, STATE.md, untracked, and ignored files | GOT exit=1; caught all 5 machine paths across md/code-fence/go/test.go/yaml and ignored safe/excluded/untracked files | HELD
-ATTACK PATH-03 | Place home-directory paths without trailing slash ('cd /root', 'HOME=/home/alice', 'DIR=/Users/bob') and lowercase macOS '/users/bob/src/' in a tracked .md file | EXPECT all 4 machine-local home directory references are detected | GOT problems=1 ([docs/bare.md:1: mentions a machine-local path /root, /home/alice, /Users/bob, /users/bob/: Run `cd /root` or set `HOME=/home/alice` or `DIR=/Users/bob` or macOS lowercase `/users/bob/src/`.]) | BROKEN
+ATTACK PATH-03 | Place home-directory paths without trailing slash ('cd /root', 'HOME=/home/alice', 'DIR=/Users/bob') and lowercase macOS '/users/bob/src/' in a tracked .md file | EXPECT all 4 machine-local home directory references are detected (reported together on that line) | GOT problems=1, matched=[/root /home/alice /Users/bob /users/bob/] ([docs/bare.md:1: mentions a machine-local path /root, /home/alice, /Users/bob, /users/bob/: Run `cd /root` or set `HOME=/home/alice` or `DIR=/Users/bob` or macOS lowercase `/users/bob/src/`.]) | HELD
 ATTACK PATH-04 | Must-be-able-to-fail: inject 7 broken relative link kinds plus valid links, inline code, and ``` / ~~~ / quoted fences | EXPECT course check paths exits 1, catches all 7 broken links, and produces 0 false positives | GOT exit=1; caught all 7 broken relative links (missing, escape, abs, untracked, ignored, image, ref) and ignored fenced/inline-code links | HELD
 ATTACK PATH-05a | Line with CommonMark double-backtick span holding a literal backtick (`` ` ``) followed by real broken link [broken](missing-swallowed.md) and `ok` | EXPECT SweepPaths catches [broken](missing-swallowed.md) outside the inline code spans | GOT problems=1 ([README.md:1: relative link missing-swallowed.md does not resolve in the repository (missing-swallowed.md)]) | HELD
 ATTACK PATH-05b | Line with CommonMark double-backtick code span wrapping single backticks and link syntax: ``use `[not-a-link](fake-inside-code.md)` here`` | EXPECT SweepPaths ignores text inside the double-backtick inline code span (0 problems) | GOT problems=0 ([]) | HELD
@@ -58,6 +60,6 @@ ATTACK PATH-08a | Pass dot-dot path-traversal URLs under allowlisted prefixes (e
 ATTACK PATH-08b | Run `course check paths` on repo with public refs, duplicate external URLs, and a _test.go external URL | EXPECT exits 0; prints sorted deduplicated EXTERNAL lines with counts; hides public refs and _test.go URLs | GOT exit=0, sortedDedupOK=true, testURLHidden=true, publicHidden=true | HELD
 ATTACK PATH-09a | Test tracked-but-ignored ELF binary containing /root/ (NUL at byte 3) plus >8KB file with NUL at byte 8050 and /root/ at line 2 | EXPECT binary skipped with both INFO lines; >8KB file past git's 8000-byte binary window is scanned and flags /root/ | GOT exit=1, skippedBin=true, flaggedIgnored=true, caughtLate=true | HELD
 ATTACK PATH-09b | Delete tracked file gone.md from working tree without git rm while README.md links to [gone](gone.md) | EXPECT course check paths detects that gone.md is missing on disk and fails the broken link | GOT exit=1; out=FAIL check paths: 1 problem(s) ;   README.md:3: relative link gone.md does not resolve in the repository (gone.md) | HELD
-# repocheck-paths-sweep finished in 3s
+# repocheck-paths-sweep finished in 4s
 
 # Total elapsed: 23s

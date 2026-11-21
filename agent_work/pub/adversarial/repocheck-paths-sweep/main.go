@@ -216,18 +216,26 @@ func attackMachinePathsMustFail(courseBin, workDir string) {
 
 func attackMachinePathsBareAndCase(workDir string) {
 	dir := filepath.Join(workDir, "machine-bare")
+	line := "Run `cd /" + "root` or set `HOME=/" + "home/alice` or `DIR=/" + "Users/bob` or macOS lowercase `/" + "users/bob/src/`."
 	initGitRepo(dir, map[string]string{
-		"docs/bare.md": "Run `cd /" + "root` or set `HOME=/" + "home/alice` or `DIR=/" + "Users/bob` or macOS lowercase `/" + "users/bob/src/`.\n",
+		"docs/bare.md": line + "\n",
 	})
 	sweep, err := repocheck.SweepPaths(dir)
 	if err != nil {
 		fatal("SweepPaths bare", err)
 	}
-	held := len(sweep.Problems) >= 4
+	wantPaths := []string{"/" + "root", "/" + "home/alice", "/" + "Users/bob", "/" + "users/bob/"}
+	gotPaths := repocheck.MachinePaths(line)
+	matchedPrefix := ""
+	if len(sweep.Problems) == 1 {
+		matchedPrefix, _, _ = strings.Cut(sweep.Problems[0].Message, ": ")
+	}
+	allInSweep := len(sweep.Problems) == 1 && matchedPrefix == "mentions a machine-local path "+strings.Join(wantPaths, ", ")
+	held := allInSweep && strings.Join(gotPaths, ",") == strings.Join(wantPaths, ",")
 	report("PATH-03",
 		"Place home-directory paths without trailing slash ('cd /root', 'HOME=/home/alice', 'DIR=/Users/bob') and lowercase macOS '/users/bob/src/' in a tracked .md file",
-		"all 4 machine-local home directory references are detected",
-		fmt.Sprintf("problems=%d (%v)", len(sweep.Problems), sweep.Problems),
+		"all 4 machine-local home directory references are detected (reported together on that line)",
+		fmt.Sprintf("problems=%d, matched=%v (%v)", len(sweep.Problems), gotPaths, sweep.Problems),
 		held)
 }
 

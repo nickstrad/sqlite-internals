@@ -133,6 +133,7 @@ func main() {
 	attackBasePrefixAndTraversal(workDir)
 	attackRepoBranchAndSpaces(courseBin, workDir)
 	attackDuplicateIDs(courseBin, workDir)
+	attackCodeBlockSingleQuotedAttrs(courseBin, workDir)
 }
 
 func attackBrokenRelativeLinks(courseBin, workDir string) {
@@ -398,6 +399,38 @@ func attackDuplicateIDs(courseBin, workDir string) {
 	report("LINK-10b",
 		"Collide raw HTML <div id=\"1-overview\"> with markdown heading ## 1. Overview on the same page",
 		"site -check detects duplicate DOM id=\"1-overview\" on a page",
+		fmt.Sprintf("exit=%d; out=%s", codeB, strings.TrimSpace(outB)),
+		heldB)
+}
+
+func attackCodeBlockSingleQuotedAttrs(courseBin, workDir string) {
+	// Part A: Single-quoted id='...' (routine SQL) and href='...' inside fenced code blocks
+	// are rendered as text inside <pre><code> (where goldmark escapes < and " but leaves ' raw).
+	dirA := filepath.Join(workDir, "code-single-quotes-fp")
+	makeScratchRepo(dirA, map[string]string{
+		"ch02-beta/ch02-beta.md": "# Chapter 2 — Beta\n\n## 1. Overview\n\n" +
+			"```sql\nSELECT * FROM items WHERE id = 'alpha';\nUPDATE items SET v = 2 WHERE id = 'alpha';\n```\n\n" +
+			"```html\n<a href='/book/single-in-code/'>example</a>\n```\n",
+	})
+	codeA, outA, _ := runCmd(dirA, courseBin, "site", "-check", "-base", "/book/")
+	report("LINK-11a",
+		"Include SQL code repeating WHERE id = 'alpha' and fenced HTML showing <a href='/book/single-in-code/'> on a valid page",
+		"site -check ignores text inside <pre><code> blocks and passes (exit 0)",
+		fmt.Sprintf("exit=%d; out=%s", codeA, strings.TrimSpace(outA)),
+		codeA == 0)
+
+	// Part B: SQL WHERE id = 'alpha' inside a code block must NOT satisfy a broken #alpha anchor link.
+	dirB := filepath.Join(workDir, "code-single-quotes-fn")
+	makeScratchRepo(dirB, map[string]string{
+		"ch02-beta/ch02-beta.md": "# Chapter 2 — Beta\n\n## 1. Overview\n\n" +
+			"See [broken](#alpha).\n\n" +
+			"```sql\nSELECT * FROM items WHERE id = 'alpha';\n```\n",
+	})
+	codeB, outB, _ := runCmd(dirB, courseBin, "site", "-check", "-base", "/book/")
+	heldB := codeB == 1 && strings.Contains(outB, "#alpha")
+	report("LINK-11b",
+		"Link to [broken](#alpha) on a page whose only id = 'alpha' appears inside a fenced SQL code block",
+		"site -check rejects #alpha because text inside <pre><code> does not define a DOM anchor",
 		fmt.Sprintf("exit=%d; out=%s", codeB, strings.TrimSpace(outB)),
 		heldB)
 }
