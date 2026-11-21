@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 // Execer is the minimal subset of *sql.Tx, *sql.Conn, and *sql.DB needed to

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/nickstrad/sqlite-internals/internal/walfile"
+	"github.com/nickstrad/walfleet/internal/walfile"
 )
 
 // ErrChecksumChain reports that a segment's raw WAL frames do not match its

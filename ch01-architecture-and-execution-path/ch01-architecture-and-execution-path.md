@@ -142,8 +142,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
-	"github.com/nickstrad/sqlite-internals/sqlite"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
+	"github.com/nickstrad/walfleet/sqlite"
 )
 
 // requiredOptions lists the compile options later labs depend on: sqlite_dbpage
@@ -608,9 +608,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
-	"github.com/nickstrad/sqlite-internals/internal/trace"
+	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/trace"
 )
 
 const packagePath = "ch01-architecture-and-execution-path/experiments/1.2-one-insert"
@@ -1944,7 +1944,7 @@ import (
 	"math/rand/v2"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 // Default recipe parameters and bounds.
@@ -2268,7 +2268,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 // Execer is the minimal subset of *sql.Tx, *sql.Conn, and *sql.DB needed to
@@ -2478,8 +2478,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
-	"github.com/nickstrad/sqlite-internals/sqlite"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
+	"github.com/nickstrad/walfleet/sqlite"
 )
 
 // FileSHA256 returns the lowercase hex SHA-256 digest of the file at path.
@@ -2911,8 +2911,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 const (

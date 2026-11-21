@@ -290,11 +290,11 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/nickstrad/sqlite-internals/internal/dbfile"
-	"github.com/nickstrad/sqlite-internals/internal/journalfile"
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
-	"github.com/nickstrad/sqlite-internals/internal/trace"
+	"github.com/nickstrad/walfleet/internal/dbfile"
+	"github.com/nickstrad/walfleet/internal/journalfile"
+	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/trace"
 )
 
 const packagePath = "ch04-pager-and-page-cache/experiments/4.1-atomic-commit-and-hot-journal"
@@ -3927,8 +3927,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 const (

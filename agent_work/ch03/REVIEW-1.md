@@ -75,7 +75,7 @@ All 6 corrections recorded in `agent_work/ch03/build-notes.md` were independentl
 - `gofmt -l internal/equal ch03-btrees-and-page-management` — empty (pass).
 - `GOOS=darwin GOARCH=arm64 go build ./... && GOOS=darwin GOARCH=arm64 go vet ./...` — pass.
 - `go build ./... && go vet ./...` — pass.
-- `go test -count=1 -race ./internal/equal/...` — `ok github.com/nickstrad/sqlite-internals/internal/equal 28.803s` (all 14 tests including all 6 blind-spot subtests pass with `-race`).
+- `go test -count=1 -race ./internal/equal/...` — `ok github.com/nickstrad/walfleet/internal/equal 28.803s` (all 14 tests including all 6 blind-spot subtests pass with `-race`).
 - `go test ./...` — all packages pass.
 - `export SQLITE_SRC=/root/Software/sqlite-src/3.53.4 && go run ./cmd/course check sources ch03` — `PASS check sources ch03-btrees-and-page-management: 2 copied file(s) match the pin`.
 - `export SQLITE_SRC=/root/Software/sqlite-src/3.53.4 && go run ./cmd/course check spans ch03` — `PASS check spans ch03-btrees-and-page-management: 22 span(s) start at their symbol`.

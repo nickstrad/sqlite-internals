@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nickstrad/sqlite-internals/internal/rangefs"
-	"github.com/nickstrad/sqlite-internals/internal/walship"
+	"github.com/nickstrad/walfleet/internal/rangefs"
+	"github.com/nickstrad/walfleet/internal/walship"
 )
 
 // TestS3StoreSemantics exercises PutIfAbsent, Get, List, Delete, Wipe, key validation, and ErrUnreachable against live SeaweedFS.

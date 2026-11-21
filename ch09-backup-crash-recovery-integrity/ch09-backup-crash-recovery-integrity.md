@@ -227,12 +227,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nickstrad/sqlite-internals/internal/equal"
-	"github.com/nickstrad/sqlite-internals/internal/procs"
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
-	"github.com/nickstrad/sqlite-internals/internal/walfile"
-	"github.com/nickstrad/sqlite-internals/internal/walship"
+	"github.com/nickstrad/walfleet/internal/equal"
+	"github.com/nickstrad/walfleet/internal/procs"
+	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/walfile"
+	"github.com/nickstrad/walfleet/internal/walship"
 )
 
 const (
@@ -987,11 +987,11 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/procs"
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
-	"github.com/nickstrad/sqlite-internals/internal/trace"
-	"github.com/nickstrad/sqlite-internals/internal/walfile"
+	"github.com/nickstrad/walfleet/internal/procs"
+	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/trace"
+	"github.com/nickstrad/walfleet/internal/walfile"
 )
 
 const (
@@ -1882,7 +1882,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/walfile"
+	"github.com/nickstrad/walfleet/internal/walfile"
 )
 
 // Object key prefixes and wire-format constants. Every snapshot and segment is
@@ -2252,7 +2252,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/nickstrad/sqlite-internals/internal/walfile"
+	"github.com/nickstrad/walfleet/internal/walfile"
 )
 
 // ErrChecksumChain reports that a segment's raw WAL frames do not match its
@@ -2795,8 +2795,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
-	"github.com/nickstrad/sqlite-internals/internal/walfile"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/walfile"
 )
 
 // Sentinel errors returned by Shipper operations.
@@ -3410,12 +3410,12 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/nickstrad/sqlite-internals/internal/capture"
-	"github.com/nickstrad/sqlite-internals/internal/dbfile"
-	"github.com/nickstrad/sqlite-internals/internal/equal"
-	"github.com/nickstrad/sqlite-internals/internal/procs"
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/capture"
+	"github.com/nickstrad/walfleet/internal/dbfile"
+	"github.com/nickstrad/walfleet/internal/equal"
+	"github.com/nickstrad/walfleet/internal/procs"
+	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 const (
@@ -3689,10 +3689,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/nickstrad/sqlite-internals/internal/procs"
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
-	"github.com/nickstrad/sqlite-internals/internal/walship"
+	"github.com/nickstrad/walfleet/internal/procs"
+	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/walship"
 )
 
 const (

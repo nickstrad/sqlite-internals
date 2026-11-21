@@ -10,7 +10,7 @@ verified: 2026-11-21 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sql
 
 VFS facts for a platform builder: WAL NORMAL is not zero syncs on every commit, rollback sync counts are syscalls not VFS calls, xAccess maps to stat, the Go driver and C CLI make the same VFS calls, a custom VFS needs io_methods v2 for WAL.
 
-Source: the `sqlite-internals` course repo (github.com/nickstrad/sqlite-internals), chunk `ch07`. Working notes: `agent_work/ch07/build-notes.md`; review and adversarial records in the same directory.
+Source: the `sqlite-internals` course repo (github.com/nickstrad/walfleet), chunk `ch07`. Working notes: `agent_work/ch07/build-notes.md`; review and adversarial records in the same directory.
 
 ## Corrections to the outline
 

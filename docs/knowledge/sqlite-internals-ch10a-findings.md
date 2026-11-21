@@ -10,7 +10,7 @@ verified: 2026-11-21 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sql
 
 Ownership facts for a multi-database SQLite platform: the store only enforces write-once positions so fencing needs a writer rule too, ownership is lost when the new owner's fence lands in the store, a takeover can lose local-durable acknowledgements but not store-durable ones, each open database costs 7 descriptors in the service.
 
-Source: the `sqlite-internals` course repo (github.com/nickstrad/sqlite-internals), chunk `ch10a`. Working notes: `agent_work/ch10a/build-notes.md`; review and adversarial records in the same directory.
+Source: the `sqlite-internals` course repo (github.com/nickstrad/walfleet), chunk `ch10a`. Working notes: `agent_work/ch10a/build-notes.md`; review and adversarial records in the same directory.
 
 ## Corrections to the outline
 

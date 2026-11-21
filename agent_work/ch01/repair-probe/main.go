@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 func buildWithCache(ctx context.Context, r recipe.Recipe, path string, cacheSize int) ([]recipe.FileHashes, error) {

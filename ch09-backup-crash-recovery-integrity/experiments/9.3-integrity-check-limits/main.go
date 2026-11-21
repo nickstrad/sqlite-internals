@@ -14,12 +14,12 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/nickstrad/sqlite-internals/internal/capture"
-	"github.com/nickstrad/sqlite-internals/internal/dbfile"
-	"github.com/nickstrad/sqlite-internals/internal/equal"
-	"github.com/nickstrad/sqlite-internals/internal/procs"
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/capture"
+	"github.com/nickstrad/walfleet/internal/dbfile"
+	"github.com/nickstrad/walfleet/internal/equal"
+	"github.com/nickstrad/walfleet/internal/procs"
+	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 const (

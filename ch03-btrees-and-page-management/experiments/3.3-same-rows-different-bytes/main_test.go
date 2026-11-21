@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nickstrad/sqlite-internals/internal/equal"
+	"github.com/nickstrad/walfleet/internal/equal"
 )
 
 // TestDumpReplaysOddValuesAndNames verifies R2 dump/replay/VACUUM INTO on embedded NULs, ? identifiers, IPK rowid, and creation order.

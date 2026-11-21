@@ -12,9 +12,9 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/repocheck"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
-	"github.com/nickstrad/sqlite-internals/sqlite"
+	"github.com/nickstrad/walfleet/internal/repocheck"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
+	"github.com/nickstrad/walfleet/sqlite"
 )
 
 func runCommand(ctx context.Context, dir string, log io.Writer, name string, args ...string) error {

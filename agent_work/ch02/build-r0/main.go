@@ -6,7 +6,7 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/recipe"
 )
 
 func main() {

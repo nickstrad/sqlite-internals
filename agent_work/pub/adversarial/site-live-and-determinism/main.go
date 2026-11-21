@@ -26,9 +26,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/nickstrad/sqlite-internals/internal/repocheck"
-	"github.com/nickstrad/sqlite-internals/internal/site"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/repocheck"
+	"github.com/nickstrad/walfleet/internal/site"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 func sanitize(s string) string {
@@ -278,8 +278,8 @@ func attackLiveReachability(repoRoot, siteDir string) {
 			} else if !strings.Contains(chHTML, `id="`+m[1]+`"`) {
 				issues = append(issues, ch.Dir+" missing anchor id "+m[1]+" for "+expName)
 			}
-			codeURL := "https://github.com/nickstrad/sqlite-internals/blob/main/" + ch.Dir + "/experiments/" + expName + "/main.go"
-			evURL := "https://github.com/nickstrad/sqlite-internals/blob/main/" + ch.Dir + "/evidence/" + expName + ".txt"
+			codeURL := "https://github.com/nickstrad/walfleet/blob/main/" + ch.Dir + "/experiments/" + expName + "/main.go"
+			evURL := "https://github.com/nickstrad/walfleet/blob/main/" + ch.Dir + "/evidence/" + expName + ".txt"
 			if !strings.Contains(chHTML, `class="experiment-links"><a href="`+codeURL+`">Code</a>`) {
 				issues = append(issues, ch.Dir+" missing Code link for "+expName)
 			}

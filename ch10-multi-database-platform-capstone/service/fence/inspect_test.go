@@ -8,12 +8,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/catalog"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/fence"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/node"
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
-	"github.com/nickstrad/sqlite-internals/internal/walship"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/catalog"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/fence"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/node"
+	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/walship"
 )
 
 func shippedStore(t *testing.T, writes int) *walship.DirStore {

@@ -9,8 +9,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
-	"github.com/nickstrad/sqlite-internals/internal/trace"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/trace"
 )
 
 const packagePath = "agent_work/ch00/smoke"

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/nickstrad/sqlite-internals/agent_work/probes/vfs-viability/shim"
+	"github.com/nickstrad/walfleet/agent_work/probes/vfs-viability/shim"
 	_ "modernc.org/sqlite"
 )
 

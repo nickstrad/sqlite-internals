@@ -11,8 +11,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/nickstrad/sqlite-internals/internal/dbfile"
-	"github.com/nickstrad/sqlite-internals/internal/equal"
+	"github.com/nickstrad/walfleet/internal/dbfile"
+	"github.com/nickstrad/walfleet/internal/equal"
 )
 
 // Standard file names written inside a rung R1 capture directory.

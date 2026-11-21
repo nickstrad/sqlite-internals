@@ -29,10 +29,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/lab"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/node"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
-	"github.com/nickstrad/sqlite-internals/internal/trace"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/lab"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/node"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/trace"
 )
 
 const packagePath = "ch10-multi-database-platform-capstone/experiments/10.2-acknowledged-writes-survive"

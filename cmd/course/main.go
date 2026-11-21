@@ -13,7 +13,7 @@ import (
 	"os/signal"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 const usage = `usage: go run ./cmd/course <command> [arguments]

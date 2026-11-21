@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nickstrad/sqlite-internals/sqlite"
+	"github.com/nickstrad/walfleet/sqlite"
 )
 
 func openTest(t *testing.T, options Options) *DB {

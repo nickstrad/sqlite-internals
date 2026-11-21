@@ -18,7 +18,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 // LogicalFormat is written at the start of the E3Logical SHA-256 stream so

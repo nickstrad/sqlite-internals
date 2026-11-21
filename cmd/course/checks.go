@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/repocheck"
+	"github.com/nickstrad/walfleet/internal/repocheck"
 )
 
 // report collects PASS/FAIL output across one or more repository checks so

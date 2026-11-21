@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 // TestRelocationRecordMovesForwardOnly exercises BeginRelocation guards, monotonic and idempotent AdvanceRelocation rules, FinishRelocation terminal states, and starting a follow-up relocation.

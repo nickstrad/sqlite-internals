@@ -8,12 +8,12 @@ import (
 	"runtime/pprof"
 	"time"
 
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/catalog"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/node"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/s3store"
-	"github.com/nickstrad/sqlite-internals/internal/rangefs"
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/catalog"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/node"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/s3store"
+	"github.com/nickstrad/walfleet/internal/rangefs"
+	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 func main() {

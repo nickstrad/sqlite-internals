@@ -14,8 +14,8 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
-	"github.com/nickstrad/sqlite-internals/sqlite"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
+	"github.com/nickstrad/walfleet/sqlite"
 )
 
 func sanitize(s string) string {
@@ -78,7 +78,7 @@ func runScratchDriverPin(repoRoot, scratchDir, driverVersion string) (exitCode i
 	if err := copyDirNoTests(filepath.Join(repoRoot, "internal", "sqlitex"), filepath.Join(scratchDir, "internal", "sqlitex")); err != nil {
 		return 0, "", "", err
 	}
-	goMod := fmt.Sprintf("module github.com/nickstrad/sqlite-internals\n\ngo 1.26.0\n\nrequire modernc.org/sqlite %s\n", driverVersion)
+	goMod := fmt.Sprintf("module github.com/nickstrad/walfleet\n\ngo 1.26.0\n\nrequire modernc.org/sqlite %s\n", driverVersion)
 	if err := os.WriteFile(filepath.Join(scratchDir, "go.mod"), []byte(goMod), 0o644); err != nil {
 		return 0, "", "", err
 	}
@@ -87,7 +87,7 @@ func runScratchDriverPin(repoRoot, scratchDir, driverVersion string) (exitCode i
 import (
 	"context"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 func main() {

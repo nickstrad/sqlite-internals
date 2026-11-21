@@ -16,8 +16,8 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/nickstrad/sqlite-internals/internal/connmgr"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/connmgr"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 	_ "modernc.org/sqlite"
 )
 

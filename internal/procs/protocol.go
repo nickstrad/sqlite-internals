@@ -15,7 +15,7 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 // ChildMarker is the os.Args[1] sentinel that switches a re-executed binary

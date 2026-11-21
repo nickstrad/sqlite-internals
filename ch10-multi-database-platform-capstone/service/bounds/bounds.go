@@ -15,7 +15,7 @@ import (
 	"runtime"
 	"runtime/debug"
 
-	"github.com/nickstrad/sqlite-internals/internal/procstat"
+	"github.com/nickstrad/walfleet/internal/procstat"
 )
 
 // Per-connection upper-bound constants carried forward from Chapters 4 and 8.

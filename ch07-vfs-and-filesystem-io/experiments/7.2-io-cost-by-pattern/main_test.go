@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/nickstrad/sqlite-internals/internal/trace"
+	"github.com/nickstrad/walfleet/internal/trace"
 )
 
 // TestCountsSkipFailedSyscalls verifies that failed syscalls (such as ENOENT on

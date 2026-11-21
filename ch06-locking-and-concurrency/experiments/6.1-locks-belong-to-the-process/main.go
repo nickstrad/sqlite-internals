@@ -21,9 +21,9 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/nickstrad/sqlite-internals/internal/procs"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
-	"github.com/nickstrad/sqlite-internals/internal/trace"
+	"github.com/nickstrad/walfleet/internal/procs"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/trace"
 )
 
 const packagePath = "ch06-locking-and-concurrency/experiments/6.1-locks-belong-to-the-process"

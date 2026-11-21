@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nickstrad/sqlite-internals/internal/walship"
+	"github.com/nickstrad/walfleet/internal/walship"
 )
 
 func snapshotObject(t *testing.T, position int64) []byte {

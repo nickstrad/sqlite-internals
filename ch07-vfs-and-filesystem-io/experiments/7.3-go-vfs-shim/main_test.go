@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/recipe"
 )
 
 func rolledBackOutcome() outcome {

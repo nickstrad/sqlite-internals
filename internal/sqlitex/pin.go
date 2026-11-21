@@ -8,7 +8,7 @@ import (
 	"os"
 	"runtime/debug"
 
-	"github.com/nickstrad/sqlite-internals/sqlite"
+	"github.com/nickstrad/walfleet/sqlite"
 )
 
 // PinMismatchError reports that a Go driver or sqlite3 CLI binary reported a

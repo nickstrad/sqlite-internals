@@ -16,9 +16,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/procstat"
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/procstat"
+	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 	_ "modernc.org/sqlite"
 )
 

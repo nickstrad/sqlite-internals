@@ -229,10 +229,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/capture"
-	"github.com/nickstrad/sqlite-internals/internal/dbfile"
-	"github.com/nickstrad/sqlite-internals/internal/equal"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/capture"
+	"github.com/nickstrad/walfleet/internal/dbfile"
+	"github.com/nickstrad/walfleet/internal/equal"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 const (
@@ -1649,7 +1649,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 // LogicalFormat is written at the start of the E3Logical SHA-256 stream so
@@ -2496,7 +2496,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 // ErrNoDBHash is returned by LocateDBHash when the pinned dbhash binary is not
@@ -2570,9 +2570,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/dbfile"
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/dbfile"
+	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 const (
@@ -3355,9 +3355,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/equal"
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/equal"
+	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 const (

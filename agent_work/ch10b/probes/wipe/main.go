@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/s3store"
-	"github.com/nickstrad/sqlite-internals/internal/rangefs"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/s3store"
+	"github.com/nickstrad/walfleet/internal/rangefs"
 )
 
 func main() {

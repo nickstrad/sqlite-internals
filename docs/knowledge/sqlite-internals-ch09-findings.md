@@ -10,7 +10,7 @@ verified: 2026-11-21 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sql
 
 Backup facts for a platform builder: backup remaining-count is not monotonic, VACUUM INTO of a WAL database yields a rollback-mode file, a killed process loses nothing at any synchronous level while a power cut at NORMAL loses commits since the last checkpoint, integrity_check misses changed unindexed values, WAL salts cannot count restarts.
 
-Source: the `sqlite-internals` course repo (github.com/nickstrad/sqlite-internals), chunk `ch09`. Working notes: `agent_work/ch09/build-notes.md`; review and adversarial records in the same directory.
+Source: the `sqlite-internals` course repo (github.com/nickstrad/walfleet), chunk `ch09`. Working notes: `agent_work/ch09/build-notes.md`; review and adversarial records in the same directory.
 
 ## Corrections to the outline
 

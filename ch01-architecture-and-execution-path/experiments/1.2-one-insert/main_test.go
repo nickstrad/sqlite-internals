@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/nickstrad/sqlite-internals/internal/trace"
+	"github.com/nickstrad/walfleet/internal/trace"
 )
 
 // TestNormalizedKeepsErrorsLengthsAndShortTransfers checks that normalized

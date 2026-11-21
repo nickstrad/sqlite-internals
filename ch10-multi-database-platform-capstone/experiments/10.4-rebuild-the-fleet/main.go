@@ -28,13 +28,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/bounds"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/catalog"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/lab"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/node"
-	"github.com/nickstrad/sqlite-internals/internal/procstat"
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/bounds"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/catalog"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/lab"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/node"
+	"github.com/nickstrad/walfleet/internal/procstat"
+	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 const stepsBeforeRollout = recipe.IndexStep - 1

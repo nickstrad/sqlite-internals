@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/bounds"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/fence"
-	"github.com/nickstrad/sqlite-internals/internal/walship"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/bounds"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/fence"
+	"github.com/nickstrad/walfleet/internal/walship"
 )
 
 // TestSealDrainStageActivateRetire walks all participant steps of a clean relocation and checks guards, idempotency, sidecar cleanup, and catalog state.

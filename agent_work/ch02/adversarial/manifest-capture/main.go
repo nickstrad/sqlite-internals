@@ -15,11 +15,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nickstrad/sqlite-internals/internal/capture"
-	"github.com/nickstrad/sqlite-internals/internal/equal"
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
-	"github.com/nickstrad/sqlite-internals/internal/trace"
+	"github.com/nickstrad/walfleet/internal/capture"
+	"github.com/nickstrad/walfleet/internal/equal"
+	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/trace"
 	_ "modernc.org/sqlite"
 )
 

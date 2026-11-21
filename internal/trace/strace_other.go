@@ -5,7 +5,7 @@ package trace
 import (
 	"context"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 // Supported is false outside Linux, where strace is not available.

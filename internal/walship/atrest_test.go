@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/recipe"
 )
 
 func openShipper(t *testing.T, path string, store Store) *Shipper {

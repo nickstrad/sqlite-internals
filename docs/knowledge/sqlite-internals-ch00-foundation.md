@@ -10,7 +10,7 @@ verified: 2026-11-20 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sql
 
 What building the course foundation established: CLI -vfstrace goes to stdout, fsync vs fdatasync differs by build, the 3.53.4 shell probe-opens databases, a writable Go VFS works on modernc without cgo, SeaweedFS S3 quirks.
 
-Source: the `sqlite-internals` course repo (github.com/nickstrad/sqlite-internals), chunk `ch00`. Working notes: `agent_work/ch00/build-notes.md`; review and adversarial records in the same directory.
+Source: the `sqlite-internals` course repo (github.com/nickstrad/walfleet), chunk `ch00`. Working notes: `agent_work/ch00/build-notes.md`; review and adversarial records in the same directory.
 
 ## Corrections to the outline
 

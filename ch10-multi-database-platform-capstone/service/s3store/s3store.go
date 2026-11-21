@@ -21,8 +21,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
 
-	"github.com/nickstrad/sqlite-internals/internal/rangefs"
-	"github.com/nickstrad/sqlite-internals/internal/walship"
+	"github.com/nickstrad/walfleet/internal/rangefs"
+	"github.com/nickstrad/walfleet/internal/walship"
 )
 
 // ErrUnreachable reports that the configured S3 endpoint did not answer the

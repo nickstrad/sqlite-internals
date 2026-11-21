@@ -21,8 +21,8 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
-	"github.com/nickstrad/sqlite-internals/internal/trace"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/trace"
 	_ "modernc.org/sqlite"
 )
 

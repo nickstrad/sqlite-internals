@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 // TestEncodeValueKeepsTypesWithoutAStorageClassApart checks that unsupported Go types encode non-empty and distinct under tag 'U'.

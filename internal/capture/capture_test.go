@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nickstrad/sqlite-internals/internal/equal"
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/equal"
+	"github.com/nickstrad/walfleet/internal/recipe"
 )
 
 func buildRecipe(t *testing.T, dir string, steps int) string {

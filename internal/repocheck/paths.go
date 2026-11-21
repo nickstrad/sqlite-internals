@@ -64,8 +64,8 @@ type publicReference struct {
 // SweepPaths treats as expected project, SQLite, or Go references rather than
 // external links to report.
 var PublicReferences = []publicReference{
-	{"github.com", "/nickstrad/sqlite-internals"},
-	{"nickstrad.github.io", "/sqlite-internals"},
+	{"github.com", "/nickstrad/walfleet"},
+	{"nickstrad.github.io", "/walfleet"},
 	{"sqlite.org", ""},
 	{"github.com", "/sqlite/sqlite"},
 	{"pkg.go.dev", ""},

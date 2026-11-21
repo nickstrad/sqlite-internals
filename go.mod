@@ -1,4 +1,4 @@
-module github.com/nickstrad/sqlite-internals
+module github.com/nickstrad/walfleet
 
 go 1.26.0
 

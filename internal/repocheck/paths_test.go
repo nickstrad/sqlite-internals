@@ -19,7 +19,7 @@ func TestSweepPathsReaderFacingRules(t *testing.T) {
 		"OUTLINE.md":            "[ref]: ./docs/a.md\n[bad]: nowhere.md\n",
 		"ch01-a/ch01-a.md":      "Up: [readme](../README.md). Out: [x](../../outside.md). Abs: [y](/etc/hosts).\n```go\n[z](inside-fence.md)\n```\nCode `[w](in-code.md)` ok.\n",
 		"docs/a.md":             "cd " + home + "src and " + mac + "x and " + ForbiddenPathFragment + "y\nnot flagged: /home/<name>/ or https://example.org" + ForbiddenPathFragment + "z or a" + ForbiddenPathFragment + "b\n",
-		"docs/links.md":         "[s](https://sqlite.org/fileformat.html) [g](https://github.com/nickstrad/sqlite-internals/blob/main/x) [p](https://nickstrad.github.io/sqlite-internals/) <https://proxy.golang.org/> https://github.com/sqlite/sqlite/blob/x.\nhttps://github.com/other/repo, https://github.com/other/repo and https://github.com/nickstrad/other-repo\n",
+		"docs/links.md":         "[s](https://sqlite.org/fileformat.html) [g](https://github.com/nickstrad/walfleet/blob/main/x) [p](https://nickstrad.github.io/walfleet/) <https://proxy.golang.org/> https://github.com/sqlite/sqlite/blob/x.\nhttps://github.com/other/repo, https://github.com/other/repo and https://github.com/nickstrad/other-repo\n",
 		"agent_work/notes.md":   ForbiddenPathFragment + "fine [broken](nope.md)\n",
 		"kb/vendored.md":        mac + "fine\n",
 		"STATE.md":              home + "fine\n",
@@ -86,9 +86,9 @@ func TestIsPublicReference(t *testing.T) {
 		"https://www.sqlite.org/wal.html":                              true,
 		"https://github.com/sqlite/sqlite/blob/version-3.53.4/src/x.c": true,
 		"https://github.com/sqlite/sqlite-other":                       false,
-		"https://github.com/nickstrad/sqlite-internals":                true,
-		"https://github.com/nickstrad/sqlite-internals-fork":           false,
-		"https://nickstrad.github.io/sqlite-internals/ch01/":           true,
+		"https://github.com/nickstrad/walfleet":                        true,
+		"https://github.com/nickstrad/walfleet-fork":                   false,
+		"https://nickstrad.github.io/walfleet/ch01/":                   true,
 		"https://nickstrad.github.io/other/":                           false,
 		"https://pkg.go.dev/modernc.org/sqlite":                        true,
 		"https://proxy.golang.org/":                                    true,
@@ -127,9 +127,9 @@ func TestMarkdownLinksAndFences(t *testing.T) {
 // TestIsPublicReferenceRejectsDotDot verifies dot-dot path traversal cannot bypass path-restricted allowlist entries.
 func TestIsPublicReferenceRejectsDotDot(t *testing.T) {
 	for _, link := range []string{
-		"https://github.com/nickstrad/sqlite-internals/../../evil/malware",
+		"https://github.com/nickstrad/walfleet/../../evil/malware",
 		"https://github.com/sqlite/sqlite/../evil/repo",
-		"https://nickstrad.github.io/sqlite-internals/../other-site/",
+		"https://nickstrad.github.io/walfleet/../other-site/",
 		"https://gitlab.com/cznic/../evil/project",
 	} {
 		if IsPublicReference(link) {

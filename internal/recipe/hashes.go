@@ -14,8 +14,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
-	"github.com/nickstrad/sqlite-internals/sqlite"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
+	"github.com/nickstrad/walfleet/sqlite"
 )
 
 // FileSHA256 returns the lowercase hex SHA-256 digest of the file at path.

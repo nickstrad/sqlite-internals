@@ -15,7 +15,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/sqlite"
+	"github.com/nickstrad/walfleet/sqlite"
 )
 
 // Problem records a single check failure with an optional "file:line" location.

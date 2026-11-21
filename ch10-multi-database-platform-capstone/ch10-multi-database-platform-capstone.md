@@ -396,8 +396,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
 
-	"github.com/nickstrad/sqlite-internals/internal/rangefs"
-	"github.com/nickstrad/sqlite-internals/internal/walship"
+	"github.com/nickstrad/walfleet/internal/rangefs"
+	"github.com/nickstrad/walfleet/internal/walship"
 )
 
 // ErrUnreachable reports that the configured S3 endpoint did not answer the
@@ -612,7 +612,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/nickstrad/sqlite-internals/internal/walship"
+	"github.com/nickstrad/walfleet/internal/walship"
 )
 
 // ErrInjected is returned whenever a fault rule fires on PutIfAbsent.
@@ -801,7 +801,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/nickstrad/sqlite-internals/internal/walship"
+	"github.com/nickstrad/walfleet/internal/walship"
 )
 
 // Envelope constants identifying slot object kinds and the wire header tag.
@@ -1198,7 +1198,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/walship"
+	"github.com/nickstrad/walfleet/internal/walship"
 )
 
 // Inspection summarizes a read-only audit of one database's slot chain in the
@@ -1360,7 +1360,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 // Sentinel errors returned by Catalog lookups and epoch-checked updates.
@@ -1500,7 +1500,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 // RegisterAll validates settings once and inserts every id into databases in a
@@ -1785,7 +1785,7 @@ import (
 	"runtime"
 	"runtime/debug"
 
-	"github.com/nickstrad/sqlite-internals/internal/procstat"
+	"github.com/nickstrad/walfleet/internal/procstat"
 )
 
 // Per-connection upper-bound constants carried forward from Chapters 4 and 8.
@@ -2474,12 +2474,12 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/catalog"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/fence"
-	"github.com/nickstrad/sqlite-internals/internal/connmgr"
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
-	"github.com/nickstrad/sqlite-internals/internal/walship"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/catalog"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/fence"
+	"github.com/nickstrad/walfleet/internal/connmgr"
+	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/walship"
 )
 
 // AckMode selects when Node.Write acknowledges a committed transaction.
@@ -3105,10 +3105,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/fence"
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
-	"github.com/nickstrad/sqlite-internals/internal/walship"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/fence"
+	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/walship"
 )
 
 // Sentinel errors returned by relocation participant operations on a Node.
@@ -3482,9 +3482,9 @@ import (
 	"io"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/bounds"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/fence"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/bounds"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/fence"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 // Explain formats err into stable, reader-facing text for line-protocol
@@ -3657,14 +3657,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/bounds"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/catalog"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/faultstore"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/s3store"
-	"github.com/nickstrad/sqlite-internals/internal/rangefs"
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
-	"github.com/nickstrad/sqlite-internals/internal/walship"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/bounds"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/catalog"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/faultstore"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/s3store"
+	"github.com/nickstrad/walfleet/internal/rangefs"
+	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/walship"
 )
 
 // Standing-bound constants used by RunProcess for each node child process.
@@ -4085,10 +4085,10 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/catalog"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/fence"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/node"
-	"github.com/nickstrad/sqlite-internals/internal/walship"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/catalog"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/fence"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/node"
+	"github.com/nickstrad/walfleet/internal/walship"
 )
 
 // Step numbers the seven phases of a relocation so progress can be persisted in
@@ -4470,13 +4470,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/catalog"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/node"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/s3store"
-	"github.com/nickstrad/sqlite-internals/internal/connmgr"
-	"github.com/nickstrad/sqlite-internals/internal/rangefs"
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/catalog"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/node"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/s3store"
+	"github.com/nickstrad/walfleet/internal/connmgr"
+	"github.com/nickstrad/walfleet/internal/rangefs"
+	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 // Env bundles one experiment's scratch work directory, S3 store, shared
@@ -4722,13 +4722,13 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/bounds"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/fence"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/node"
-	"github.com/nickstrad/sqlite-internals/internal/connmgr"
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
-	"github.com/nickstrad/sqlite-internals/internal/walship"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/bounds"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/fence"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/node"
+	"github.com/nickstrad/walfleet/internal/connmgr"
+	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/walship"
 )
 
 // MatchImage hashes raw SQLite database bytes image against hashes, decodes
@@ -5032,16 +5032,16 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/catalog"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/fence"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/model"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/node"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/s3store"
-	"github.com/nickstrad/sqlite-internals/internal/connmgr"
-	"github.com/nickstrad/sqlite-internals/internal/rangefs"
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
-	"github.com/nickstrad/sqlite-internals/internal/walship"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/catalog"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/fence"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/model"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/node"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/s3store"
+	"github.com/nickstrad/walfleet/internal/connmgr"
+	"github.com/nickstrad/walfleet/internal/rangefs"
+	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/walship"
 )
 
 var (
@@ -5600,10 +5600,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/lab"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/node"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
-	"github.com/nickstrad/sqlite-internals/internal/trace"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/lab"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/node"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/trace"
 )
 
 const packagePath = "ch10-multi-database-platform-capstone/experiments/10.2-acknowledged-writes-survive"
@@ -6106,13 +6106,13 @@ import (
 	"os"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/catalog"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/fence"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/lab"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/node"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/relocate"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
-	"github.com/nickstrad/sqlite-internals/internal/walship"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/catalog"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/fence"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/lab"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/node"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/relocate"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/walship"
 )
 
 const id = "db-0001"
@@ -7075,13 +7075,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/bounds"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/catalog"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/lab"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/node"
-	"github.com/nickstrad/sqlite-internals/internal/procstat"
-	"github.com/nickstrad/sqlite-internals/internal/recipe"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/bounds"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/catalog"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/lab"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/node"
+	"github.com/nickstrad/walfleet/internal/procstat"
+	"github.com/nickstrad/walfleet/internal/recipe"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 const stepsBeforeRollout = recipe.IndexStep - 1

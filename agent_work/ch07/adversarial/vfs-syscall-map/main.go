@@ -27,9 +27,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/govfs"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
-	"github.com/nickstrad/sqlite-internals/internal/trace"
+	"github.com/nickstrad/walfleet/internal/govfs"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/trace"
 	_ "modernc.org/sqlite"
 )
 

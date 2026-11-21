@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/nickstrad/sqlite-internals/internal/trace"
+	"github.com/nickstrad/walfleet/internal/trace"
 )
 
 func parsed(t *testing.T, lines ...string) []trace.VFSCall {

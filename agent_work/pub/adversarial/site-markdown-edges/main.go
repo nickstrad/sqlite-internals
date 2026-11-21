@@ -14,8 +14,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/site"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/site"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 func sanitize(s string) string {

@@ -10,7 +10,7 @@ verified: 2026-11-21 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sql
 
 Pager facts for a platform builder: a journal written before COMMIT is not hot, a WAL database is still born through a -journal, cache_size is a share of a group limit in the modernc build, process memory is about twice CACHE_USED, a cache of N pages holds N-1.
 
-Source: the `sqlite-internals` course repo (github.com/nickstrad/sqlite-internals), chunk `ch04`. Working notes: `agent_work/ch04/build-notes.md`; review and adversarial records in the same directory.
+Source: the `sqlite-internals` course repo (github.com/nickstrad/walfleet), chunk `ch04`. Working notes: `agent_work/ch04/build-notes.md`; review and adversarial records in the same directory.
 
 ## Corrections to the outline
 

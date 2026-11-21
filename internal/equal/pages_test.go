@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 // TestComparePagesIgnoresOnlyTheDeclaredHeaderBytes verifies E2 ignore boundaries, page-2 sensitivity, and argument validation.

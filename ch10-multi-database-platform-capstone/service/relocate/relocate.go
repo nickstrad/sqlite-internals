@@ -21,10 +21,10 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/catalog"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/fence"
-	"github.com/nickstrad/sqlite-internals/ch10-multi-database-platform-capstone/service/node"
-	"github.com/nickstrad/sqlite-internals/internal/walship"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/catalog"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/fence"
+	"github.com/nickstrad/walfleet/ch10-multi-database-platform-capstone/service/node"
+	"github.com/nickstrad/walfleet/internal/walship"
 )
 
 // Step numbers the seven phases of a relocation so progress can be persisted in

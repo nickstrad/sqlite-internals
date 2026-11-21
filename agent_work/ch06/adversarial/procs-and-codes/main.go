@@ -15,8 +15,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/nickstrad/sqlite-internals/internal/procs"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/procs"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 const roleSleeper = "sleeper"

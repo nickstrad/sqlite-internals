@@ -10,7 +10,7 @@ verified: 2026-11-21 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sql
 
 Lifecycle facts for a platform builder: 3 descriptors per idle WAL connection opened at the first statement, process memory is about 4x the db_status counters, shrink_memory releases every connection's cache in the modernc build, a closed WAL database is not a single file at rest in five cases, default_cache_size travels in the file.
 
-Source: the `sqlite-internals` course repo (github.com/nickstrad/sqlite-internals), chunk `ch08`. Working notes: `agent_work/ch08/build-notes.md`; review and adversarial records in the same directory.
+Source: the `sqlite-internals` course repo (github.com/nickstrad/walfleet), chunk `ch08`. Working notes: `agent_work/ch08/build-notes.md`; review and adversarial records in the same directory.
 
 ## Corrections to the outline
 

@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 var idPattern = regexp.MustCompile(`^[a-z0-9-]+$`)

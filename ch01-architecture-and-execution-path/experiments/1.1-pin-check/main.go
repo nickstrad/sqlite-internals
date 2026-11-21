@@ -17,8 +17,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
-	"github.com/nickstrad/sqlite-internals/sqlite"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
+	"github.com/nickstrad/walfleet/sqlite"
 )
 
 // requiredOptions lists the compile options later labs depend on: sqlite_dbpage

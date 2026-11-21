@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/walfile"
+	"github.com/nickstrad/walfleet/internal/walfile"
 )
 
 // Object key prefixes and wire-format constants. Every snapshot and segment is

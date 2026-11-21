@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nickstrad/sqlite-internals/internal/walfile"
+	"github.com/nickstrad/walfleet/internal/walfile"
 )
 
 // TestResumeWithNoWALSeesOfflineCommits verifies that resuming with no WAL detects offline commits whose -wal was deleted by checking the full page hash.

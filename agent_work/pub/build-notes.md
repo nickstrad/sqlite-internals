@@ -48,7 +48,7 @@ Flags of `course site`:
 | --- | --- | --- |
 | `-out DIR` | `_site` | output directory (relative to the current directory) |
 | `-base PATH` | `/` | URL path the site is served under; normalized to `/x/` form (`sqlite-internals`, `/sqlite-internals`, `/sqlite-internals/` are the same) |
-| `-repo URL` | `https://github.com/nickstrad/sqlite-internals` | repository used for code/evidence links |
+| `-repo URL` | `https://github.com/nickstrad/walfleet` | repository used for code/evidence links |
 | `-branch NAME` | `main` | branch used in those links |
 | `-check` | off | render into a temporary directory, run the link check, delete the directory; exit 1 on any problem |
 
@@ -165,7 +165,7 @@ an empty id.
 | `#anchor` | unchanged (checked against the page's ids) |
 | relative path to a rendered page's source (`answers.md`, `../ch02-…/ch02-….md#x`, `../OUTLINE.md`, `../../README.md`, `docs/knowledge/x.md`) | site URL of that page + fragment |
 | relative path to a chapter directory (`../ch01-…/`) | that chapter's page |
-| relative path to any other existing file (`.go`, `.c`, `.h`, `.txt`, `SOURCES.sha256`, `STATE.md`, anything in `agent_work/`, `internal/`, `cmd/`, `docs/`) | `https://github.com/nickstrad/sqlite-internals/blob/main/<path>` + `?query` if any + fragment |
+| relative path to any other existing file (`.go`, `.c`, `.h`, `.txt`, `SOURCES.sha256`, `STATE.md`, anything in `agent_work/`, `internal/`, `cmd/`, `docs/`) | `https://github.com/nickstrad/walfleet/blob/main/<path>` + `?query` if any + fragment |
 | relative path to an existing directory (`../internal/trace/`) | `…/tree/main/<path>` |
 | absolute path (`/x`), path leaving the repo, path to a missing or ignored file | left unchanged and reported as a problem (WARN on build, FAIL on `-check`) |
 
@@ -291,8 +291,8 @@ ch02 = 20 → all converted; every experiment heading got its Code · Evidence l
 - Tracked files that `.gitignore` also matches are listed as `INFO check paths: tracked although .gitignore matches it: <path>`.
 - **FAIL** on a machine path in any line of any text file (including code blocks): `/root`, `/home/<name>`, `/Users/<name>` or `/users/<name>` (name = `[A-Za-z0-9._-]+`), with or without a trailing `/`, when not preceded by a letter, digit, `.`, `_`, `~` or `-` (so `https://example.org/root/x` and `a/root/b` do not match; `"/root/x"`, `` `cd /root` ``, `HOME=/home/alice`, `/users/bob/src/`, `file:///root/x` do). `/root` directly followed by a letter, digit, `_` or `-` (`/roots`, `/rootfs`) does not match. `/home/<name>/` written literally with angle brackets does not match. One problem per line, listing every path found on that line; the reported path keeps its trailing `/` if it had one, and a sentence-final `.` is dropped (`/home/alice.` → `/home/alice`).
 - **FAIL** on a relative link in a markdown file that does not resolve to a tracked file or a directory holding tracked files. Links are found by parsing the whole file with goldmark (CommonMark + GFM, the same parser the site uses), not by line regexes: every link and image node, plus every reference definition `[x]: path` (used or not). So every CommonMark form counts — `[t](<path with spaces>)`, titles in `"…"`, `'…'` or `(…)`, a destination on its own line, reference definitions with `<…>` — and everything CommonMark treats as code is ignored: fenced blocks (``` or ~~~, also in `>` quotes, also in CRLF files), indented code blocks, inline code spans of any backtick length; a line such as ```` ```inline``` and [x](y.md) ```` is an inline code span followed by a real link, and `     ```` (5 spaces) is indented code, not a fence. Query strings (`?plain=1`) and fragments are ignored for resolution; backslash escapes and `%XX` are decoded. Each unresolved destination is reported once per file, at its first line (the problem line is the line of the link's text, or the reference definition's line). Absolute paths (`/etc/hosts`) and paths leaving the repo fail.
-- **Report, not fail**: every `http(s)://` URL in a reader-facing text file whose target is not one of: `github.com/nickstrad/sqlite-internals…`, `nickstrad.github.io/sqlite-internals…`, `sqlite.org` (+ subdomains), `github.com/sqlite/sqlite…`, `pkg.go.dev`, `go.dev`, `golang.org` (+ subdomains, e.g. `proxy.golang.org`), `modernc.org`, `gitlab.com/cznic/…` (the driver's source). Printed as `EXTERNAL <url> (<n> occurrence(s), first at <file>:<line>)`, sorted by URL. URLs inside `_test.go` files are not reported (test fixtures).
-- External-link allowlist matching cleans the URL path first (`path.Clean`), so `https://github.com/nickstrad/sqlite-internals/../../evil` is not treated as public (adversarial PATH-08a).
+- **Report, not fail**: every `http(s)://` URL in a reader-facing text file whose target is not one of: `github.com/nickstrad/walfleet…`, `nickstrad.github.io/walfleet…`, `sqlite.org` (+ subdomains), `github.com/sqlite/sqlite…`, `pkg.go.dev`, `go.dev`, `golang.org` (+ subdomains, e.g. `proxy.golang.org`), `modernc.org`, `gitlab.com/cznic/…` (the driver's source). Printed as `EXTERNAL <url> (<n> occurrence(s), first at <file>:<line>)`, sorted by URL. URLs inside `_test.go` files are not reported (test fixtures).
+- External-link allowlist matching cleans the URL path first (`path.Clean`), so `https://github.com/nickstrad/walfleet/../../evil` is not treated as public (adversarial PATH-08a).
 - Summary line: `PASS check paths: <n> tracked text file(s) free of machine-local paths and unresolved relative links (<b> binary file(s) and <u> upstream SQLite copies skipped, <e> external link(s) reported)`.
 - CLI usage line: `check paths  verify no tracked file mentions a machine-local path or has an unresolved relative markdown link; list external links`.
 

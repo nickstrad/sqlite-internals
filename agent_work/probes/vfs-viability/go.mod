@@ -1,4 +1,4 @@
-module github.com/nickstrad/sqlite-internals/agent_work/probes/vfs-viability
+module github.com/nickstrad/walfleet/agent_work/probes/vfs-viability
 
 go 1.26.0
 

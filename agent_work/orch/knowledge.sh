@@ -10,7 +10,7 @@ repo=$(cd "$(dirname "$0")/../.." && pwd); out=$repo/docs/knowledge/$slug.md
 today=$(date +%F)
 {
   printf -- '---\ntitle: "%s"\nsummary: "%s"\ntags: [%s]\nupdated: %s\nverified: %s — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sqlite v1.60.1; evidence in the sqlite-internals repo\n---\n\n' "$title" "$summary" "$tags" "$today" "$today"
-  printf '# %s\n\n%s\n\nSource: the `sqlite-internals` course repo (github.com/nickstrad/sqlite-internals), chunk `%s`. Working notes: `agent_work/%s/build-notes.md`; review and adversarial records in the same directory.\n\n' "$title" "$summary" "$ch" "$ch"
+  printf '# %s\n\n%s\n\nSource: the `sqlite-internals` course repo (github.com/nickstrad/walfleet), chunk `%s`. Working notes: `agent_work/%s/build-notes.md`; review and adversarial records in the same directory.\n\n' "$title" "$summary" "$ch" "$ch"
   awk '/^## Corrections to the outline/{p=1} p&&/^## /&&!/Corrections to the outline/{p=0} p' "$repo/agent_work/$ch/build-notes.md" | awk '/^[0-9]+\. /{n=$1; sub(/\.$/,"",n); print "\n### Correction " n "\n"} {print}'
   [ -f "$repo/agent_work/$ch/knowledge-extra.md" ] && cat "$repo/agent_work/$ch/knowledge-extra.md"
 } | sed 's|/root/Software/sqlite-src/3.53.4|$SQLITE_SRC|g; s|/root/Software/sqlite-internals[-a-z0-9/]*/||g' > "$out"

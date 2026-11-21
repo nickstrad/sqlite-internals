@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/nickstrad/sqlite-internals/internal/repocheck"
+	"github.com/nickstrad/walfleet/internal/repocheck"
 )
 
 // TestInlineCheckFromAnotherDirectory verifies inlineOne reads the chapter file by full path even when run outside the repo root.

@@ -11,7 +11,7 @@ import (
 	"math/rand/v2"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 // Default recipe parameters and bounds.

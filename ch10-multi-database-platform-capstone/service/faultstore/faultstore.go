@@ -18,7 +18,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/nickstrad/sqlite-internals/internal/walship"
+	"github.com/nickstrad/walfleet/internal/walship"
 )
 
 // ErrInjected is returned whenever a fault rule fires on PutIfAbsent.

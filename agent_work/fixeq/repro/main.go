@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/nickstrad/sqlite-internals/internal/equal"
+	"github.com/nickstrad/walfleet/internal/equal"
 	_ "modernc.org/sqlite"
 )
 

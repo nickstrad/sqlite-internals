@@ -2,7 +2,7 @@
 
 An experiment-driven book on how SQLite `3.53.4` stores, locks, caches, commits, and recovers data, written for engineers building platforms that hold thousands of SQLite database files. Each of the ten chapters pairs annotated SQLite C source code with runnable Go experiments inlined directly in the text and checked against stored evidence files.
 
-The published book is at [https://nickstrad.github.io/sqlite-internals/](https://nickstrad.github.io/sqlite-internals/). The GitHub Actions workflow [.github/workflows/pages.yml](.github/workflows/pages.yml) builds and verifies the static site on every push to `main` by running `go run ./cmd/course site`.
+The published book is at [https://nickstrad.github.io/walfleet/](https://nickstrad.github.io/walfleet/). The GitHub Actions workflow [.github/workflows/pages.yml](.github/workflows/pages.yml) builds and verifies the static site on every push to `main` by running `go run ./cmd/course site`.
 
 ## The through-line: the Rebuild Ladder
 
@@ -98,4 +98,4 @@ docker compose run --rm lab go run ./ch04-pager-and-page-cache/experiments/4.1-a
 - **Course outline and specification:** [OUTLINE.md](OUTLINE.md) records the chapter plan, technical decisions, and build rulings; [docs/course-source.md](docs/course-source.md) holds the original course specification.
 - **Research reports and chapter findings:** [docs/knowledge/](docs/knowledge/) holds the source inventories, feasibility probes, and per-chapter verified findings.
 - **Working and adversarial scripts:** [agent_work/INDEX.md](agent_work/INDEX.md) indexes every probe, build note, and adversarial falsification script under `agent_work/`.
-- **Course CLI and checks:** [cmd/course/](cmd/course/) builds the site (`go run ./cmd/course site -check -base /sqlite-internals/`), synchronizes inlined code (`inline`), and checks copied sources, line spans, formatting, evidence, and paths (`check all`).
+- **Course CLI and checks:** [cmd/course/](cmd/course/) builds the site (`go run ./cmd/course site -check -base /walfleet/`), synchronizes inlined code (`inline`), and checks copied sources, line spans, formatting, evidence, and paths (`check all`).

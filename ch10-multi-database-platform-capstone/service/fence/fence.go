@@ -31,7 +31,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/nickstrad/sqlite-internals/internal/walship"
+	"github.com/nickstrad/walfleet/internal/walship"
 )
 
 // Envelope constants identifying slot object kinds and the wire header tag.

@@ -60,7 +60,7 @@ strace 6.8, gcc 13.3, Docker. darwin: cross-built and cross-vetted only, never r
 
 | Path | What |
 | --- | --- |
-| `go.mod`, `go.sum` | module `github.com/nickstrad/sqlite-internals`, `go 1.26.0`, requires `modernc.org/sqlite v1.60.1` (pulls `modernc.org/libc v1.77.1`) |
+| `go.mod`, `go.sum` | module `github.com/nickstrad/walfleet`, `go 1.26.0`, requires `modernc.org/sqlite v1.60.1` (pulls `modernc.org/libc v1.77.1`) |
 | `.gitignore` | adds `/_work/`, `/_src/`, `/_tools/` |
 | `sqlite/PIN` | key=value lines: release, release_date, tag, git_commit, fossil_id, source_id, driver_module, driver_version, libc_module, libc_version, git_repo |
 | `sqlite/pin.go` | package `sqlite`: `//go:embed PIN`; `ParsePin`, `Current()`, `Pin.SourceDirName()` ("sqlite-3.53.4") |
@@ -168,7 +168,7 @@ assertion (`withRawConn`); an unexpected driver type gives an error naming the c
 ### Work dir and repo root (`workdir.go`)
 
 - `RepoRoot()` walks up from the working directory to the `go.mod` whose module line is
-  `github.com/nickstrad/sqlite-internals` (so nested probe modules are skipped).
+  `github.com/nickstrad/walfleet` (so nested probe modules are skipped).
 - `WorkBase()`: `$COURSE_WORK_DIR` (absolute) or `<repo>/_work`. `WorkDir(name)` removes and
   recreates `<base>/<name>`; names must match `^[A-Za-z0-9][A-Za-z0-9._-]*$` and not contain
   `..` (so `1.2`, `ch00-smoke` are fine; `../x`, `a/b`, `.hidden` are refused).

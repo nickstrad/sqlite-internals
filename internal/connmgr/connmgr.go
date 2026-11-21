@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 var (

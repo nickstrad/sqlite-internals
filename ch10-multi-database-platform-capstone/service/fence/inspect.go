@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/walship"
+	"github.com/nickstrad/walfleet/internal/walship"
 )
 
 // Inspection summarizes a read-only audit of one database's slot chain in the

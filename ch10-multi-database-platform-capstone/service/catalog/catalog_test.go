@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 // TestClaimBumpsTheEpochAndFencesOldRecords exercises idempotent registration, concurrent handles claiming distinct epochs, stale RecordShipped rejection, unknown ids, and strict settings validation.

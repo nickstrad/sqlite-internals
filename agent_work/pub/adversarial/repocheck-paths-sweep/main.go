@@ -13,8 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/repocheck"
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/repocheck"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 func sanitize(s string) string {
@@ -403,9 +403,9 @@ func attackFenceStateEdges(workDir string) {
 func attackPublicReferenceAllowlistAndTraversal(courseBin, workDir string) {
 	// Part A: Path traversal bypass on path-prefixed entries in IsPublicReference.
 	traversals := []string{
-		"https://github.com/nickstrad/sqlite-internals/../../evil/malware",
+		"https://github.com/nickstrad/walfleet/../../evil/malware",
 		"https://github.com/sqlite/sqlite/../evil/repo",
-		"https://nickstrad.github.io/sqlite-internals/../other-site/",
+		"https://nickstrad.github.io/walfleet/../other-site/",
 		"https://gitlab.com/cznic/../evil/project",
 	}
 	var bypassed []string
@@ -415,7 +415,7 @@ func attackPublicReferenceAllowlistAndTraversal(courseBin, workDir string) {
 		}
 	}
 	report("PATH-08a",
-		"Pass dot-dot path-traversal URLs under allowlisted prefixes (e.g. github.com/nickstrad/sqlite-internals/../../evil/malware) to IsPublicReference",
+		"Pass dot-dot path-traversal URLs under allowlisted prefixes (e.g. github.com/nickstrad/walfleet/../../evil/malware) to IsPublicReference",
 		"IsPublicReference normalizes paths and returns false for all 4 traversal URLs",
 		fmt.Sprintf("bypassed=%d/4 (%v)", len(bypassed), bypassed),
 		len(bypassed) == 0)
@@ -424,8 +424,8 @@ func attackPublicReferenceAllowlistAndTraversal(courseBin, workDir string) {
 	dir := filepath.Join(workDir, "external-report")
 	initGitRepo(dir, map[string]string{
 		"README.md": "# Book\n\n" +
-			"Public: https://www.sqlite.org/wal.html https://github.com/nickstrad/sqlite-internals/blob/main/README.md " +
-			"https://nickstrad.github.io/sqlite-internals/ https://pkg.go.dev/modernc.org/sqlite https://proxy.golang.org/ https://gitlab.com/cznic/sqlite\n" +
+			"Public: https://www.sqlite.org/wal.html https://github.com/nickstrad/walfleet/blob/main/README.md " +
+			"https://nickstrad.github.io/walfleet/ https://pkg.go.dev/modernc.org/sqlite https://proxy.golang.org/ https://gitlab.com/cznic/sqlite\n" +
 			"External: https://zeta.example/a https://alpha.example/b https://alpha.example/b\n",
 		"internal/foo_test.go": "package internal\n\nvar testURL = \"https://fixture-only.example/x\"\n",
 	})

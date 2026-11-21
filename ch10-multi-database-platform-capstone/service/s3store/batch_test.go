@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/nickstrad/sqlite-internals/internal/rangefs"
+	"github.com/nickstrad/walfleet/internal/rangefs"
 )
 
 // TestWipeInBatchesDeletesMoreThanOneBatch puts 1,003 objects into live SeaweedFS and verifies WipeInBatches deletes across two S3 DeleteObjects requests.

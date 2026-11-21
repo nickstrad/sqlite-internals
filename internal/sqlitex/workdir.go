@@ -12,7 +12,7 @@ import (
 
 // ModulePath is the Go module path of the course repository, used to distinguish
 // the repository root from nested probe modules under agent_work/.
-const ModulePath = "github.com/nickstrad/sqlite-internals"
+const ModulePath = "github.com/nickstrad/walfleet"
 
 // WorkDirEnv names the environment variable that overrides the default _work/
 // base directory for experiment scratch files (used inside the lab container).

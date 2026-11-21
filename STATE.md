@@ -9,12 +9,12 @@ Plan: OUTLINE.md (revision 2). What changed from revision 1: OUTLINE-CHANGES.md.
 
 Status: **Phase 2 (build) COMPLETE** (2026-11-21). Chunk 0, chapters 1–10 and the publishing
 chunk have landed on `main` and are pushed. The book is published at
-https://nickstrad.github.io/sqlite-internals/ (built and deployed by
+https://nickstrad.github.io/walfleet/ (built and deployed by
 `.github/workflows/pages.yml`; the first deploy of the full book ran green on 2026-11-21 and the
 home page, chapter, answers and outline pages answer 200).
 
 Rulings applied (details: OUTLINE.md section 8):
-- Upstream github.com/nickstrad/sqlite-internals (public); every chunk lands on main and is pushed.
+- Upstream github.com/nickstrad/walfleet (public); every chunk lands on main and is pushed.
 - Docker for services; SeaweedFS is the capstone's S3 store. Shared `internal/` packages.
 - Cross-platform: must build and run on macOS; Linux-only tooling gated, `lab` Docker service
   as the Mac route; darwin cross-build + vet verify every chunk.
@@ -77,7 +77,7 @@ Rulings applied (details: OUTLINE.md section 8):
   the pin; five questions per chapter with answers in a separate file, no tutor packaging;
   failure-cases sections link the adversarial scripts).
 - Addendum: final publishing chunk (GitHub Pages via Actions,
-  https://nickstrad.github.io/sqlite-internals/); self-contained rule (no build-machine
+  https://nickstrad.github.io/walfleet/); self-contained rule (no build-machine
   references in anything a reader sees; sweep before publishing lands).
 
 Done:
@@ -128,7 +128,7 @@ Resume or extend: read this file, then OUTLINE.md (section 8 first) and `git log
 working record (build notes, reviews, repair reports, adversarial suites and their results) is
 under `agent_work/<chunk>/`, indexed in `agent_work/INDEX.md`. The checks that gate a change:
 `go run ./cmd/course check all`, `bash agent_work/verify/crossbuild.sh`,
-`go run ./cmd/course site -check -base /sqlite-internals/`, and the chunk's
+`go run ./cmd/course site -check -base /walfleet/`, and the chunk's
 `agent_work/<chunk>/adversarial/run-all.sh`. The orchestration scripts in `agent_work/orch/`
 record how the build machine ran the chunks; they hold paths of that machine and are not needed
 to read or run the book.

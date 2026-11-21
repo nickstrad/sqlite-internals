@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/nickstrad/sqlite-internals/internal/dbfile"
+	"github.com/nickstrad/walfleet/internal/dbfile"
 )
 
 func main() {

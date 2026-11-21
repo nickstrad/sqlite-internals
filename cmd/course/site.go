@@ -9,12 +9,12 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/repocheck"
-	"github.com/nickstrad/sqlite-internals/internal/site"
+	"github.com/nickstrad/walfleet/internal/repocheck"
+	"github.com/nickstrad/walfleet/internal/site"
 )
 
 const (
-	defaultRepoURL = "https://github.com/nickstrad/sqlite-internals"
+	defaultRepoURL = "https://github.com/nickstrad/walfleet"
 	defaultBranch  = "main"
 )
 

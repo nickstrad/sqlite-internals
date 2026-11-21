@@ -22,7 +22,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/nickstrad/sqlite-internals/internal/sqlitex"
+	"github.com/nickstrad/walfleet/internal/sqlitex"
 )
 
 // Sentinel errors returned by Catalog lookups and epoch-checked updates.

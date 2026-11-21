@@ -10,7 +10,7 @@ verified: 2026-11-20 — Linux amd64, Go 1.26, SQLite 3.53.4 via modernc.org/sql
 
 What a plain-Go reader of SQLite files must know: in WAL mode the header change counter is written only with page 1; at-rest means no -wal content and no hot journal; WITHOUT ROWID roots are index pages; SQLite accepts a partial last page.
 
-Source: the `sqlite-internals` course repo (github.com/nickstrad/sqlite-internals), chunk `ch02`. Working notes: `agent_work/ch02/build-notes.md`; review and adversarial records in the same directory.
+Source: the `sqlite-internals` course repo (github.com/nickstrad/walfleet), chunk `ch02`. Working notes: `agent_work/ch02/build-notes.md`; review and adversarial records in the same directory.
 
 ## Corrections to the outline
 
