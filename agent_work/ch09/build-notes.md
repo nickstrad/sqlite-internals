@@ -23,7 +23,11 @@ copied (as the outline says): `pager.c`, `wal.c`, `wal.h`, `btree.c`, `pragma.c`
    (backup.c:688-715), which re-copies already-copied pages (`iPage < p->iNext`) and leaves
    `iNext` alone; another connection's commit makes the source pager reset its cache
    (`pager_reset`, pager.c:1783-1787) which calls `sqlite3BackupRestart` → `iNext = 1`
-   (backup.c:728-734).
+   (backup.c:728-734). Precisely: same-connection **commits** do not restart the backup;
+   a same-connection write transaction that is **rolled back** does (WAL rollback calls
+   `sqlite3BackupRestart`, pager.c:3185). Adversarial CAP-03a measured copied 5, 10, then 5, 10
+   after a same-connection write + ROLLBACK; CAP-03b: an empty `BEGIN IMMEDIATE; COMMIT` does not
+   restart (5, 10, 15, 20). The experiment only shows commits; say "commits", not "operations".
 2. **9.1: `VACUUM INTO` of a WAL database is not E3-equal to its source under the course's E3
    definition.** `equal.LogicalPragmas` includes `journal_mode`; the `VACUUM INTO` file is a
    rollback-mode file (`journal_mode` `rollback` vs `wal`, already noted by chunk 3). Every other
@@ -33,14 +37,31 @@ copied (as the outline says): `pager.c`, `wal.c`, `wal.h`, `btree.c`, `pragma.c`
    `journal_mode`; E1 between canonical forms".
 3. **9.1: the backup API's E2 difference is bytes 27, 43, 95 here** (change counter low byte, schema
    cookie low byte, version-valid-for low byte) — within the declared ignore list 24-27, 40-43,
-   92-99, as section 4.2 says ("24, 40, 92" names the field starts).
+   92-99, as section 4.2 says ("24, 40, 92" names the field starts). **Repair round:** the
+   backup's canonical form (`VACUUM INTO` of it) is *not* E1 to the source's canonical form; they
+   differ at byte 43 only (schema cookie 2 vs 5), because backup.c:448 sets the destination's
+   cookie to its own old value + 1. So a backup API capture is E2, never "E1 after VACUUM INTO".
 4. **9.2(b): the model is portable, and is computed from the rule in the source, cross-checked by
    strace on Linux.** The outline says the model takes "the WAL bytes written after the WAL's last
    sync" from "the strace record of an uninterrupted run" — strace is Linux-only, but the brief
    requires the model half to be portable. The experiment therefore computes the cut from the
    sync rule read from `pager.c:3658-3704` and `wal.c` (below), and on Linux checks that strace's
    record of the same run gives exactly the same cut (`trace.SyncsOf`). Both agree at all three
-   levels. On a Mac the rule half runs and the strace half prints a `LINUX-ONLY:` line.
+   levels and in the fourth run added in the repair round (below). On a Mac the rule half runs
+   and the strace half prints a `LINUX-ONLY:` line.
+   **Repair round correction to the rule (adversarial CRASH-06):** the build's NORMAL rule ("cut at
+   byte 32 unless the last event was a checkpoint") was true only for this workload, where the
+   checkpoint copied every frame and the next commit restarted the WAL. When a reader stops the
+   checkpoint short of the end, the WAL does not restart and the checkpoint's own WAL sync
+   (wal.c:2277, which syncs the whole `-wal` before any database write) is the last sync: the cut
+   is the WAL's end at the checkpoint (304912 bytes in the run), not 32. And because the database
+   file is synced only when the checkpoint copied every frame (wal.c:2326-2334, `mxSafeFrame ==
+   mxFrame`), a partial checkpoint leaves unsynced database-file writes at NORMAL too — but unlike
+   OFF they are harmless: they are copies of WAL frames that were synced before they were written,
+   and recovery reads those pages from the WAL. The corrected rule: NORMAL → no cut if the last
+   event was a checkpoint; else, if a checkpoint copied frames and the WAL kept its generation
+   after it, cut at the WAL end at that checkpoint; else cut at byte 32. The database file is
+   unsynced (by rule) at OFF after any checkpoint and at any level after a partial checkpoint.
 5. **9.2(b) at `synchronous=OFF` the model does not apply at all.** With a checkpoint in the run,
    OFF leaves 44 `pwrite64`s to the database file and 306 to the `-wal` that were never synced (0
    syncs of either file in the whole run). The outline's model ("remove the WAL bytes after the
@@ -74,8 +95,15 @@ copied (as the outline says): `pager.c`, `wal.c`, `wal.h`, `btree.c`, `pragma.c`
    2199-2395, pager.c 3658-3704. `backup.c 688-734` covers three functions; SPANS.txt lists
    `backupUpdate` 688-712, `sqlite3BackupUpdate` 713-715, `sqlite3BackupRestart` 728-734 (the
    lines between are its comment). 15 more spans the notes cite are added (list in SPANS.txt).
-10. **Research report's `.backup` "database is locked" observation: not reproduced in this
-    chunk.** Source facts for Neon: the CLI's `.backup` loops `sqlite3_backup_step(p,100)` with no
+10. **Research report's `.backup` "database is locked" observation: reproduced by the adversarial
+    suite (CAP-02a/b/c), not by a course experiment.** CAP-02a: CLI `.backup` with no `.timeout`
+    racing fresh `sqlite3` writer processes (each the last connection at its close): 12 of 40 (run
+    1: 9 of 40) backups failed with `Error: database is locked`. CAP-02b: the same race with one
+    persistent idle connection kept open (so no writer is ever the last connection and
+    `sqlite3WalClose` never takes its EXCLUSIVE lock): 0 of 40. CAP-02c: an EXCLUSIVE lock held
+    deterministically makes `.backup` with no timeout and `sqlitex.Backup` fail with SQLITE_BUSY,
+    and `.timeout 5000` waits and succeeds once the lock is released. That confirms the cause
+    below. Source facts for Neon: the CLI's `.backup` loops `sqlite3_backup_step(p,100)` with no
     busy handler (docs/knowledge/determinism-and-rebuild.md §d); `sqlite3_backup_step` opens a
     read transaction on the source (backup.c:361-364) and a write transaction on the destination
     (backup.c:390), either of which returns SQLITE_BUSY without a busy handler; a closing WAL
@@ -154,7 +182,8 @@ stable evidence.
 
 - `SnapshotMeta{Position, Reason (initial|periodic|discontinuity), PageSize, Pages, UserVersion,
   StateSHA256, WAL{Generation, Frame, Checksum}, BodyBytes, BodySHA256}`; body = the database
-  image (all pages). Decoding also checks `Pages × PageSize = len(body)` and
+  image (all pages). Decoding also checks: page size a power of two in 512..65536; `Pages` > 0;
+  `Pages × PageSize = len(body)`; a non-empty WAL generation decodes to 32 bytes; and
   `StateSHA256 = sha256(body)`.
 - `SegmentMeta{FirstPosition, LastPosition, Generation, FirstFrame, LastFrame, SeedChecksum,
   LastChecksum, PageSize, BeforeSHA256, AfterSHA256, Commits[]{Position, Frame, Pages,
@@ -180,11 +209,19 @@ stable evidence.
   snapshot's state), which is the hash chain.
 
 **Frames and replay (`apply.go`).**
-- `VerifySegmentFrames(meta, frames)`: re-walks SQLite's own WAL checksum chain from
-  `SeedChecksum` (the cumulative checksum of the frame before FirstFrame, or the WAL header's
-  checksum for frame 1) with `walfile.ChecksumBytes`, checks each frame's salts equal its
-  generation's, page number ≠ 0, stored checksum = computed, and that the chain ends at
-  `LastChecksum` (`ErrChecksumChain`).
+- `VerifySegmentFrames(meta, frames)`: first validates the generation's 32-byte WAL header with
+  `walfile.Parse` (magic, page size, header checksum, format version 3007000) and that its page
+  size equals `meta.PageSize` (`ErrMalformedObject`, "segment WAL header …"); then re-walks
+  SQLite's own WAL checksum chain from `SeedChecksum` (the cumulative checksum of the frame before
+  FirstFrame, or the WAL header's checksum for frame 1) with `walfile.ChecksumBytes`, checks each
+  frame's salts equal its generation's, page number ≠ 0, stored checksum = computed, and that the
+  chain ends at `LastChecksum` (`ErrChecksumChain`). It also checks the commit frames against the
+  metadata one-to-one: every frame whose commit-size field (frame header bytes 4-7) is non-zero
+  must be the next listed commit point with `Pages` = that size, and every listed commit point
+  must be such a frame (`ErrMalformedObject`, "frame N has commit size S, which the segment's
+  commit points do not list"). So `LoadCatalog` marks a forged header or a commit point on a
+  non-commit frame as damaged, and `Plan` refuses it before any page is applied (repair round:
+  review finding 3, adversarial SHIP-03d).
 - `StandaloneWAL(meta, frames, throughFrame)`: builds a self-contained WAL file — the
   generation's real 32-byte header followed by frames FirstFrame..throughFrame with their
   checksums **re-chained from the header's checksum** (the original chain started earlier in the
@@ -212,14 +249,16 @@ stable evidence.
   (through the target's commit frame for the last one), checking the state hash after every
   segment and at the target (`ErrBrokenChain` on mismatch).
 - `Prune(ctx, store, keepFrom)`: keeps the newest snapshot ≤ keepFrom and everything after it;
-  deletes older snapshots and segments that end at or before it; returns the deleted keys
-  (test `TestPruneKeepsWhatRestoresNeed`: snapshots 2,4,6,8; prune at 7 deletes snapshots 2,4 and
+  deletes older snapshots and segments that end at or before it; returns the deleted keys (if a
+  delete fails, only the keys actually deleted before it, plus the error; test
+  `TestPruneReportsOnlyWhatItDeleted`) (test `TestPruneKeepsWhatRestoresNeed`: snapshots 2,4,6,8; prune at 7 deletes snapshots 2,4 and
   segments 3-6; positions 6-9 still restore; 5 now fails with `ErrNoSnapshot`).
 - `CopyStore(ctx, from, to)`, `WriteDatabase(path, image)` (refuses an existing file or any
   `-wal`/`-shm`/`-journal` beside it; fsyncs).
 
 **The shipper (`shipper.go`).** `Open(ctx, Config{Database, Store, Options, SnapshotEvery,
-Origin})` opens the database with the given file settings (must be WAL, else `ErrNotWAL`),
+Origin})` opens the database with the given file settings (journal mode must be WAL, compared
+case-insensitively like `sqlitex.Open`, else `ErrNotWAL`),
 forcing a pool (not a single connection), deferred transactions and `wal_autocheckpoint=0` on its
 own connections. It holds two connections: **control** and **pin**.
 
@@ -239,13 +278,22 @@ own connections. It holds two connections: **control** and **pin**.
   1. read the `-wal`, parse with `walfile.Parse` (missing or 0-byte file = no generation).
   2. classify: same header as the last shipped position → check the shipped frame still carries
      the shipped checksum and the WAL still holds at least that many committed frames
-     (`WALUnchanged`, else discontinuity). Different header → `WALNewGeneration` only if the
+     (`WALUnchanged`, else discontinuity). Special case: when there is no WAL now **and** none at
+     the last shipped position **and** the shipper has not held its pin since then (just resumed),
+     "same header" proves nothing — commits may have been made and checkpointed away and the
+     `-wal` deleted while the shipper was down. The shipper then reads every page (`ReadPages`)
+     and calls it unchanged only if they hash to the last shipped state; otherwise discontinuity
+     ("there is no WAL and the database pages differ from the last shipped state"). Before the
+     repair round this case returned unchanged and the next segment was replayed onto the stale
+     image, publishing a corrupt restore point (review finding 1; test
+     `TestResumeWithNoWALSeesOfflineCommits`). Different header → `WALNewGeneration` only if the
      shipper has held its pin continuously since the last cycle **and** (the old position had no
      WAL, or the last shipper checkpoint copied every shipped frame); otherwise
      `WALDiscontinuity`.
   3. discontinuity → take a snapshot (reason `discontinuity`, position = last + 1) and ship
-     nothing; else ship frames (last shipped + 1 .. last commit frame in the file) as one segment,
-     computing each commit point's state by replaying the segment onto the current image.
+     nothing; else ship frames (last shipped + 1 .. last commit frame in the file) as one segment:
+     first list every commit frame in them as a commit point (position, frame, pages), then
+     compute each commit point's state by replaying the segment onto the current image.
   4. end the pin, run `PRAGMA wal_checkpoint(PASSIVE)` on the pin connection, record
      `FullBackfill = !busy && log == checkpointed == frames shipped in this generation`, re-pin.
   5. if `SnapshotEvery` segments were shipped since the last snapshot, take a periodic snapshot.
@@ -254,7 +302,9 @@ own connections. It holds two connections: **control** and **pin**.
   gap in page numbers or a page of the wrong size). Under the write lock that is exactly the last
   commit in the `-wal`. A periodic snapshot must hash to the shipper's replayed state at the same
   WAL position, else `ErrMirrorDiverged` — a built-in check of the replay against SQLite's own
-  pages on every periodic snapshot.
+  pages on every periodic snapshot. (The build also compared the `-wal` position under the write
+  lock; that second check compared values just derived from the same read and could never fail,
+  so the repair round removed it — review finding 4. The page-hash check is the real one.)
 - **Why no frame can be lost while the pin is held** (the argument the design rests on; facts
   from wal.c): a checkpoint never copies past the mark of a reader holding slot ≥ 1
   (`mxSafeFrame`, wal.c:2233-2251); the pin is taken right after the shipper shipped everything
@@ -265,7 +315,12 @@ own connections. It holds two connections: **control** and **pin**.
   backfilling takes slot 0 exclusively (wal.c:2259-2260); so at most one restart can happen
   between two cycles and it loses nothing. Without the pin (the shipper stopped or crashed) none
   of this holds, hence the discontinuity rule.
-- **Resume**: `Open` on a store that already has objects loads the catalog, restores the newest
+- **Resume**: `Open` on a store that already has objects loads the catalog; if any damaged object
+  has a key position after the newest usable position, `Open` fails with `ErrBrokenChain`
+  ("the store holds a damaged object segments/… past the last usable position N") instead of
+  silently resuming at an older position and writing a second history over the damaged one
+  (repair round: adversarial SHIP-03f; test `TestResumeRefusesADamagedObjectPastTheLastPosition`).
+  Otherwise it restores the newest
   position (snapshot + segments) as the current image, takes the last WAL position from the last
   segment (or snapshot), and marks itself not continuous. If the `-wal` still has that generation
   with the shipped frame intact, shipping continues where it stopped (test
@@ -288,6 +343,15 @@ while the shipper is closed forces a discontinuity snapshot at the next position
 consistent metadata, flipped body byte, flipped byte with a recomputed body hash → caught by the
 WAL checksum chain); standalone WAL validity; prune; store semantics; key parsing; strict object
 decoding (8 malformations); the `-wal` lock test.
+Repair-round tests (`internal/walship/repair_test.go`, each fails on the build's code):
+`TestResumeWithNoWALSeesOfflineCommits` (reopen with nothing changed → unchanged, no snapshot;
+step 3 committed and the `-wal` deleted while down → discontinuity snapshot at 3 holding step 3;
+again for step 4 after a snapshot taken with no WAL; step 5 ships as a segment; positions 2-5
+restore E1); `TestResumeRefusesADamagedObjectPastTheLastPosition`;
+`TestSegmentHeaderAndCommitFramesAreVerifiedBeforeReplay` (bad header magic, bad header checksum,
+wrong commit page count, commit point on a non-commit frame — all `Damaged`);
+`TestPruneReportsOnlyWhatItDeleted`; `TestDecodeSnapshotRefusesImpossibleShapes` (0 pages, page
+size 1000 and 128, bad WAL header length, non-hex header); `TestOpenAcceptsJournalModeInAnyCase`.
 
 ## What each span does (facts read from the copied/linked source)
 
@@ -371,13 +435,17 @@ decoding (8 malformations); the `-wal` lock test.
 ## Experiment 9.1 capture-comparison
 
 Run: `go run ./ch09-backup-crash-recovery-integrity/experiments/9.1-capture-comparison`.
-Runtime ~5 s. Evidence 93 lines. Portable (no Linux-only part).
+Runtime ~5 s. Evidence 104 lines. Portable (no Linux-only part).
 
 Setup: reference files `_work/9.1/ref/step-NN.db` for steps 0-22 (one canonical build, a copy
 after each step). Comparisons: E1 `equal.CompareFiles`, E2 `equal.ComparePageFiles` (declared
 header ignore list), E3 `equal.CompareLogicalFiles`, "E3 except journal_mode" (every logical
-difference mentions `journal_mode`), "E1 after VACUUM INTO" (for a VACUUM INTO capture: its bytes
-vs `VACUUM INTO` of the reference; for others the same as E3).
+difference mentions `journal_mode`), "E1 after VACUUM INTO" (the capture's canonical form vs the
+reference's canonical form, both made by `VACUUM INTO`; for a capture that is not itself a VACUUM
+INTO output, a scratch copy of it is opened and `VACUUM INTO`'d first, so the capture is never
+modified; measured only when E3-except-journal_mode holds, else printed `no`). Before the repair
+round this column was not measured for non-VACUUM captures (it copied E3) — review nit 5; measuring
+it showed the backup API row was wrong (below).
 
 Part A (quiet database = recipe step 6, closed copy): five captures — closed-file copy, backup API
 (one step, `-1`), `VACUUM INTO`, every page via `sqlite_dbpage` inside one read transaction, file
@@ -387,25 +455,42 @@ lines `<method> vs the source: E1 … E2 … E3 … E3-except-journal_mode … E
 | method | E1 | E2 | E3 | E3 ex. journal_mode | E1 canonical |
 | --- | --- | --- | --- | --- | --- |
 | closed-file copy | yes | yes | yes | yes | yes |
-| backup API | no | yes | yes | yes | yes |
+| backup API | no | yes | yes | yes | **no** |
 | VACUUM INTO | no | no | no | yes | yes |
 | pages in a read transaction | yes | yes | yes | yes | yes |
 | file + WAL under a held transaction | yes | yes | yes | yes | yes |
 
 Then `backup API: E2 pages: equal ignoring header bytes 24-27, 40-43, 92-99 (bytes differ only at
-[27 43 95])` and `VACUUM INTO: E3 differs only in journal_mode: rollback for the copy, wal for the
+[27 43 95])`; `backup API after VACUUM INTO vs the source after VACUUM INTO: E2 pages: equal
+ignoring header bytes 24-27, 40-43, 92-99 (bytes differ only at [43])`; `schema cookie: backup 1,
+source 4` (check: the canonical forms differ only at byte 43, the schema cookie). Why: the backup
+sets the destination's schema cookie to the destination's old cookie + 1 (backup.c:448; a new
+destination file had 0, so 1), not to the source's; `VACUUM INTO` carries the cookie over (+1 in
+both, 2 vs 5), so the canonical forms keep that one-byte difference. The backup API reaches E2,
+not E1-after-VACUUM-INTO. And `VACUUM INTO: E3 differs only in journal_mode: rollback for the copy, wal for the
 source`.
 
 Part B (the same database live; writer child `procs` SQL role committing each step with
 `recipe-session`, i.e. one fresh connection per step; `wal_autocheckpoint=0`; the parent holds one
 capture connection). Each line `<method> equals recipe step K (want W): <levels>`:
 - plain copy of the live database file (child copy, no `-wal`), after the writer committed 7:
-  **equals step 6** (want 7) — a valid but stale database; its commits are in the `-wal`.
+  line `plain copy of the live file equals recipe step 6 (the writer has committed 7): E1 yes …`;
+  check: it is E1 to an **older** step (≥ 0 and < 7) — a valid but stale database; its commits
+  are in the `-wal`. (Repair round: the check now asserts the stale step and E1 explicitly — review
+  finding 2.2.)
 - pages via `sqlite_dbpage` in one read transaction; the writer commits 8 between the two halves:
   **step 7**, E1.
 - file copy, writer commits 9, `-wal` copy, all inside one read transaction (it saw 8), then WAL
   replay: **step 9**, E1 (the last commit before the `-wal` copy, ≥ the snapshot 8).
-- `VACUUM INTO`, then the writer commits 10: **step 9**, E3 except journal_mode, E1 canonical.
+- `VACUUM INTO` **while the writer child holds the write lock**: the writer runs `begin
+  immediate` and `recipe-exec 10` on its own held connection (step 10 written, uncommitted), the
+  parent runs `VACUUM INTO` (prints `VACUUM INTO finished while the writer held its write
+  transaction open`: no SQLITE_BUSY, no wait), then the writer commits. Result **step 9**, E3
+  except journal_mode, E1 canonical — the last committed state, not the uncommitted step 10.
+  (Repair round, review finding 2.3: before, the writer was idle during VACUUM INTO.)
+- Every part-B capture now has a check that it equals the wanted step at **exactly** the expected
+  level set (pages and file+WAL: all yes; VACUUM INTO: E1/E2/E3 no, E3-except-journal_mode and
+  canonical yes; backup: E1 no, E2/E3 yes, canonical no) — review finding 2.1.
 - backup API, 5 pages per step (lines `backup step N: remaining R of P, copied C; …`): step 1
   copied 5 of 100; after step 2 the backup's own connection commits step 11 (through
   `BackupWithSourceExec`), after step 3 it commits 12; copied goes 5, 10, 15, 20, 25 while
@@ -418,21 +503,23 @@ capture connection). Each line `<method> equals recipe step K (want W): <levels>
 - Summary table (method | strongest level | safe under writer | blocks the writer):
   closed-file copy E1, **no** (needs the database closed; the live copy was stale);
   backup API E2, yes (when it finishes; commits ran between steps);
-  VACUUM INTO "E3 but journal_mode; E1 canonical", yes, "no (commit right after; one statement,
-  not interleaved)"; pages in a read transaction E1, yes, no (a commit ran inside the read
+  VACUUM INTO "E3 but journal_mode; E1 canonical", yes, "no (ran while the writer held its write
+  transaction)"; pages in a read transaction E1, yes, no (a commit ran inside the read
   transaction); file + WAL under a held transaction "E1 after WAL replay", yes, no.
-- 9 checks, `CAPTURE COMPARISON OK`.
+- 15 checks, `CAPTURE COMPARISON OK`. Evidence 104 lines (writer action numbers shifted by the
+  two extra writer actions: the backup-test commits are now writer steps 7-15).
 
 How to read "blocks the writer": in WAL mode none of the methods took the write lock; for the
-three methods that hold a read transaction across the writer's commit this was shown directly.
-For VACUUM INTO and a single backup step the writer was not interleaved *inside* the one call; the
-source says both hold only a read transaction on the source (vacuum.c:270, backup.c:361-364).
+three methods that hold a read transaction across the writer's commit this was shown directly,
+and VACUUM INTO now runs while the writer holds its write transaction. For a single backup step
+the writer was not interleaved *inside* the one call; the source says it holds only a read
+transaction on the source (backup.c:361-364).
 
 ## Experiment 9.2 crash-versus-power-loss
 
 Run: `go run ./ch09-backup-crash-recovery-integrity/experiments/9.2-crash-versus-power-loss`
 (flag `-portable` runs the non-strace path on Linux, to check the Mac route). Runtime ~23 s on
-Linux (the kill sweep is ~40 traced child runs), ~3 s with `-portable`. Evidence 108 lines.
+Linux (the kill sweep is ~40 traced child runs), ~3 s with `-portable`. Evidence 126 lines.
 
 Writer child (`child-writer` mode of the same binary): `runtime.LockOSThread()`, opens the recipe
 database (built to step 3, closed) on **one** connection with the given `synchronous` and
@@ -474,10 +561,31 @@ sets a different `user_version`).
     since the last sync (the checkpoint after 7) and stays consistent; FULL loses none.
 - The rule (portable, from pager.c:3658-3704 + wal.h:25-26 + walFrames/walCheckpoint): OFF → cut
   at 0 and the database file is unsynced if a checkpoint ran; NORMAL → no cut if the last event
-  was a checkpoint, else cut at byte 32 (the last synced thing is a WAL header: the new file's, or
-  the restarted one's); FULL → no cut. Commits counted as lost are those of the final WAL
+  was a checkpoint; else, if a checkpoint copied frames and the WAL kept its generation after it,
+  cut at the WAL's end at that checkpoint (its WAL sync, wal.c:2277); else cut at byte 32 (the last
+  synced thing is a WAL header: the new file's, or the restarted one's); FULL → no cut. The
+  database file is also unsynced after a checkpoint that did not copy every frame (wal.c:2326-2334)
+  — harmless at NORMAL/FULL, see the fourth run. (Repair round; the build's rule had only the
+  byte-32 branch.) Commits counted as lost are those of the final WAL
   generation whose commit frame ends past the cut (older generations were fully checkpointed
   before the restart).
+- Each of the three runs now also prints `the checkpoint copied 74 of 74 frames; the commits after
+  it stayed in the same WAL generation: false` (repair round).
+- **Fourth run (repair round, adversarial CRASH-06): `synchronous=NORMAL with a second connection
+  holding a read transaction from step 5`.** The child (flag `-reader-from 5`) opens a second
+  connection after step 5 and holds `BEGIN` + a read; just before the checkpoint it copies the
+  database file to `r.db.before-checkpoint`. Printed: `checkpoint 7 busy=0 log=74
+  checkpointed=36`; `the checkpoint copied 36 of 74 frames; the commits after it stayed in the
+  same WAL generation: true` (check: the reader stopped the checkpoint short and the WAL did not
+  restart); process crash → step 11; strace `-wal 2 sync(s); 156 write(s) after the last one, the
+  lowest at offset 304912`, `database file 0 sync(s); 15 write(s) after the last one, the lowest
+  at offset 73728` (check: agrees with the corrected rule — cut 304912, database file unsynced);
+  power-cut model `-wal kept up to byte 304912 of 626272` → **step 7**, 4 acknowledged commits past
+  the cut; then the same model with the database file as it was before the checkpoint (none of
+  its 15 unsynced writes kept) → also **step 7**, integrity ok (check: with or without those
+  writes the model recovers the same step, because the frames they copy were synced first). What
+  a power cut can do to those 15 pages in between (torn writes) is not modelled; recovery reads
+  every page that has a frame in the WAL from the WAL, which is why both extremes agree.
 - Why truncating at the cut is the right copy even when unsynced writes overwrote older bytes:
   after a restart the new frames overwrite old-generation frames; the model drops those old bytes
   too, but recovery would stop at them anyway because their salts are the old generation's
@@ -494,7 +602,7 @@ integrity_check ok`. Examples: `kill at fsync #1 (fsync r.db-wal …)`: acknowle
 r.db-wal)`: acknowledged 3, **recovered 4** (step 4's frames were complete in the page cache when
 its commit sync was interrupted); `pwrite64 #1` is the first `-shm` allocation write (`r.db-shm
 off=4095 len=1`). 30 kill runs, every one: killed by SIGKILL, integrity ok, recovered = last
-acknowledged or that + 1, never a state outside the recipe. 47 checks in all,
+acknowledged or that + 1, never a state outside the recipe. 53 checks in all,
 `CRASH VERSUS POWER LOSS OK`.
 
 **Scope statement facts for Neon (the outline's text, still true):** the model shows one outcome
@@ -695,3 +803,14 @@ for `nCkpt` (correction 8).
   point (unit tests use close+reopen); a seeded random-offset sweep for 9.3.
 - 9.1 is the longest experiment (450 lines with blank lines); its helpers (reference files and the
   level comparison) could move to a shared package if the chapter needs it shorter.
+
+## Repair round (Opus, 2026-11-21) — summary for Neon
+
+The changes are folded into the sections above. Summary: `agent_work/ch09/REPAIR-REPORT.md`
+("Stale prose for Neon"). New facts in one place: backup API is E2 but not E1-after-VACUUM-INTO
+(schema cookie, byte 43); 9.1 VACUUM INTO runs under a held write transaction; the 9.2 NORMAL
+sync rule has a no-restart branch (cut at the WAL end at the checkpoint) and a partial checkpoint
+leaves unsynced, WAL-covered database writes (fourth model run); walship verifies segment WAL
+headers and commit frames, detects offline commits with no WAL on resume, and refuses to resume
+over a damaged object past the last usable position; CLI `.backup` "database is locked" is
+reproduced by adversarial CAP-02; a same-connection rollback restarts a backup (CAP-03a).
