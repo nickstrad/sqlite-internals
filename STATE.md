@@ -86,10 +86,10 @@ a finished part A leaves `sqlite-p2-<name>.stageA`, a finished part B `sqlite-p2
 | 9 | built (e825529, base = 6 + 3 merged); part A not started |
 | 10a, 10b | to build after 8 and 9 finish part A |
 | pub | site generator + workflow built on `chunk/pub` (5bf7893), not on main; README/home text, review, adversarial still to do; lands last after the self-contained sweep |
-| 1 closing rewrite | running in the ch01 worktree (stageB closing); lands as a follow-up merge on main |
-| 2 closing rewrite | owed on main; not started |
+| 1 closing rewrite | done (66fca8e, merged) |
+| 2 closing rewrite | running in the ch02 worktree (stageB closing) |
 
-Closing prose record (commit of each chapter's closing Neon pass): chapter 5 — 394203d (single late prose pass); chapter 7 — c645979 (closing rewrite).
+Closing prose record (commit of each chapter's closing Neon pass): chapter 5 — 394203d (single late prose pass); chapter 7 — c645979 (closing rewrite); chapter 1 — 66fca8e (retroactive closing rewrite, merged on main).
 
 Next steps, in order: land 4, 3, 6, 8 as their chains finish (each branch merges main before
 its part B); run part A for 6 and 8; closing rewrites for 1 and 2; build 10a and 10b; chain 9,
