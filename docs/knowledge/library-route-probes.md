@@ -1,6 +1,6 @@
 # Library-only Go route: two probes (outline revision, 2026-11-20)
 
-Run on vm-1 against the pin (SQLite 3.53.4). Scripts: `agent_work/probes/outline-v2/`.
+Run on the Linux amd64 test machine against the pin (SQLite 3.53.4). Scripts: `agent_work/probes/outline-v2/`.
 These back the decision in OUTLINE.md section 4.1 to use existing libraries only.
 
 ## 1. The unmodified modernc driver reaches what the kept experiments need
