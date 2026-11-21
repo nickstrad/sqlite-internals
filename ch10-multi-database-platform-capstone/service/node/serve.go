@@ -90,5 +90,5 @@ func (n *Node) handle(ctx context.Context, fields []string, apply func(context.C
 		}
 		return "ok close"
 	}
-	return fmt.Sprintf("refused %s: unknown command", command)
+	return n.handleRelocation(ctx, command, fields)
 }

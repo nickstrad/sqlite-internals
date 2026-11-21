@@ -72,13 +72,14 @@ var (
 // catalog, object store, open-database LRU capacity, persistent SQLite file
 // settings, and initializer for a brand-new database (empty store chain).
 type Config struct {
-	Name     string
-	Dir      string
-	Catalog  *catalog.Catalog
-	Store    walship.Store
-	Capacity int
-	File     sqlitex.FileSettings
-	Create   func(ctx context.Context, path string) error
+	Name         string
+	Dir          string
+	Catalog      *catalog.Catalog
+	Store        walship.Store
+	Capacity     int
+	File         sqlitex.FileSettings
+	Create       func(ctx context.Context, path string) error
+	AckBeforePut bool
 }
 
 // Ack describes an acknowledged write: the durability mode, the owning epoch,
@@ -410,6 +411,9 @@ func (n *Node) Claim(ctx context.Context, id string) (ClaimResult, error) {
 	if err := errors.Join(n.removeFile(id, ".owner"), n.removeFile(id, ".atrest")); err != nil {
 		return ClaimResult{}, err
 	}
+	if err := errors.Join(n.removeFile(id, ".sealed"), recipe.RemoveDatabase(n.sidecar(id, ".staged"))); err != nil {
+		return ClaimResult{}, err
+	}
 	epoch, err := n.config.Catalog.Claim(ctx, id, n.config.Name)
 	if err != nil {
 		return ClaimResult{}, err
@@ -520,6 +524,9 @@ func (n *Node) Write(ctx context.Context, id string, mode AckMode, apply func(co
 	if mode != LocalDurable && mode != StoreDurable {
 		return Ack{}, fmt.Errorf("node: unknown acknowledgement mode %q", mode)
 	}
+	if err := n.refuseSealed(id); err != nil {
+		return Ack{}, err
+	}
 	h, epoch, err := n.acquire(ctx, id)
 	if err != nil {
 		return Ack{}, err
@@ -533,7 +540,7 @@ func (n *Node) Write(ctx context.Context, id string, mode AckMode, apply func(co
 	if err == nil {
 		err = h.DB.QueryRowContext(ctx, "PRAGMA user_version").Scan(&ack.UserVersion)
 	}
-	if err == nil && mode == StoreDurable {
+	if err == nil && mode == StoreDurable && !n.config.AckBeforePut {
 		ack.Position, err = n.shipLocked(ctx, id, ack.UserVersion)
 	}
 	h.Release()
