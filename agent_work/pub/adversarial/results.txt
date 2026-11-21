@@ -1,5 +1,5 @@
 # Publishing chunk (pub) adversarial suite (Gemini 4 Neon)
-# Started: 2026-11-21T03:50:40Z
+# Started: 2026-11-21T03:56:57Z
 # Scratch: _work/adv-pub/
 
 ## group: site-live-and-determinism
@@ -27,7 +27,7 @@ ATTACK LINK-10a | Put literal '## Reading path' and '## Reference' headings insi
 ATTACK LINK-10b | Collide raw HTML <div id="1-overview"> with markdown heading ## 1. Overview on the same page | EXPECT site -check detects duplicate DOM id="1-overview" on a page | GOT exit=1; out=FAIL site -check: 1 problem(s) ;   ch02-beta/index.html: duplicate id "1-overview" | HELD
 ATTACK LINK-11a | Include SQL code repeating WHERE id = 'alpha' and fenced HTML showing <a href='/book/single-in-code/'> on a valid page | EXPECT site -check ignores text inside <pre><code> blocks and passes (exit 0) | GOT exit=0; out=PASS site -check: 6 page(s), 35 link(s) resolve | HELD
 ATTACK LINK-11b | Link to [broken](#alpha) on a page whose only id = 'alpha' appears inside a fenced SQL code block | EXPECT site -check rejects #alpha because text inside <pre><code> does not define a DOM anchor | GOT exit=1; out=FAIL site -check: 1 problem(s) ;   ch02-beta/index.html: missing anchor #alpha in #alpha | HELD
-# site-link-and-check finished in 4s
+# site-link-and-check finished in 2s
 
 ## group: site-markdown-edges
 ATTACK MD-01a | YAML front matter title: "SQLite's 'WAL'" (inner single quote before closing double quote) and bare note fallback to filename stem | EXPECT title preserves inner quote ('SQLite's 'WAL'') and bare note falls back to 'stem' | GOT wal <title>="SQLite&#39;s &#39;WAL&#39; · Book", stemFallbackOK=true | HELD
@@ -44,7 +44,7 @@ ATTACK MD-06 | Render GFM tables, strikethrough, task lists, autolinks, and HTML
 ATTACK MD-07a | Build a chapter with only 1 H2 heading plus answers.md | EXPECT chapter page still surfaces the sidebar Answers link and never renders answers inline | GOT hasAnswersLinkInChapterHTML=true, answersLeakedInline=false | HELD
 ATTACK MD-07b | Build a 10-chapter book (ch01..ch10) to verify Previous/Next chain & numeric order, plus missing README.md handling | EXPECT ch01..ch10 link in exact sequence with no Previous on ch01 / Next on ch10; missing README.md returns error | GOT all 10 chapters chained cleanly; missing README.md returned error: README.md is not in the file set | HELD
 ATTACK MD-07c | Build via cmd/course site with tracked ch01, untracked non-ignored ch02, tracked-but-deleted-on-disk ch03, and gitignored ch99 | EXPECT ch01 and ch02 are rendered; deleted ch03 and gitignored ch99 are excluded | GOT exit=0, ch01=true, ch02=true, ch03Absent=true, ch99Absent=true (PASS site: 3 page(s) written to /root/Software/sqlite-internals-work/pub/_work/adv-pub/site-markdown-edges/git-view-out (base /book/)) | HELD
-# site-markdown-edges finished in 3s
+# site-markdown-edges finished in 2s
 
 ## group: repocheck-paths-sweep
 ATTACK PATH-01 | Run `course check paths` on the actual repository checkout (which includes verbatim SOURCES.sha256 SQLite C copies from ch04/ch05/ch07) | EXPECT check paths passes (exit 0) on the clean repository without false-failing on unmodified pinned upstream SQLite C comments | GOT exit=0 PASS | HELD
@@ -62,4 +62,4 @@ ATTACK PATH-09a | Test tracked-but-ignored ELF binary containing /root/ (NUL at 
 ATTACK PATH-09b | Delete tracked file gone.md from working tree without git rm while README.md links to [gone](gone.md) | EXPECT course check paths detects that gone.md is missing on disk and fails the broken link | GOT exit=1; out=FAIL check paths: 1 problem(s) ;   README.md:3: relative link gone.md does not resolve in the repository (gone.md) | HELD
 # repocheck-paths-sweep finished in 3s
 
-# Total elapsed: 18s
+# Total elapsed: 15s
