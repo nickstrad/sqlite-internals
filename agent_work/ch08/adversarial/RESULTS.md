@@ -14,3 +14,9 @@ Run 1 — 2026-11-21, on the Opus build, `run-all.sh`. Raw output: `results-run1
 | ATR-02 | evict a rollback-mode DB from connmgr while a *sql.Rows cursor is still open, then attempt a write from a second process | Evict reports not-at-rest and preserves the open cursor's POSIX SHARED lock (second process gets SQLITE_BUSY both before and after) | evict_at_rest=true child_write_before=(ok=false,code=5) child_write_after_evict=(ok=true,code=0) |
 | ATR-03 | trigger Open failures on an unrecorded junk file and on a recorded DB reopen, then check connmgr.Stats() | UnverifiedOpens + VerifiedReopens == Misses (failed opens increment only OpenFailures, not UnverifiedOpens or VerifiedReopens) | misses=1 open_failures=2 unverified_opens=2 verified_reopens=1 sum=3 |
 | ATR-04 | call connmgr.Acquire(cancelledCtx, "b") when Capacity=1 holds healthy idle DB "a" | fails immediately with context.Canceled without evicting healthy DB "a" (evictions=0, open=[a]) | err=connmgr: open b: open _work/adv-ch08/atrest-and-connmgr-edge/atr04/b.db: context canceled evictions=1 open_ids=[] |
+
+Run 2 — after the Opus repair round (e9dadf2): 27 HELD, 2 BROKEN (`results-run2.txt`).
+The repair report (`../REPAIR-REPORT.md`) says for each run-1 finding whether it was fixed or answered. Still BROKEN in run 2:
+
+- IDL-03a — open 50 WAL connections each with 1000-table schema and 5 prepared statements, check 8.2's 256 KiB/conn uncounted memory margin
+- MGR-03a — run connmgr with Capacity=200 under RLIMIT_NOFILE=128 over 80 WAL DBs (all open entries idle)
