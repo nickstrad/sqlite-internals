@@ -737,11 +737,15 @@ func attackRCM03(ctx context.Context, base string) {
 	fullSyncs, fullInterleaved, fullTargets, postBytes := analyze(sqlitex.SyncFull)
 	normSyncs, normInterleaved, _, _ := analyze(sqlitex.SyncNormal)
 
-	heldA := fullSyncs == 4 && normSyncs == 3 && !fullInterleaved && !normInterleaved
+	// Narrowed claim (REPAIR-REPORT.md / build-notes.md:803-807): 4 FULL / 3 NORMAL
+	// syncs and non-interleaved writes apply only to transactions that fit in cache;
+	// spilling transactions emit extra sync cycles (>4 FULL, >3 NORMAL) and interleave
+	// journal segments with database page writes.
+	heldA := fullSyncs > 4 && normSyncs > 3 && fullSyncs > normSyncs && fullInterleaved && normInterleaved
 	report(
 		"RCM-03a",
 		"25-row UPDATE with cache_size=6 (spilling via pagerStress) at synchronous=FULL and NORMAL",
-		"per unqualified 4.1 claim: 4 syncs at FULL, 3 at NORMAL, all journal records precede first db-page",
+		"per narrowed 4.1 claim: spilling commit exceeds 4 FULL / 3 NORMAL syncs (FULL > NORMAL) and interleaves journal segments with db-page writes",
 		fmt.Sprintf("FULL: syncs=%d interleaved=%v; NORMAL: syncs=%d interleaved=%v", fullSyncs, fullInterleaved, normSyncs, normInterleaved),
 		heldA,
 	)
@@ -1037,10 +1041,13 @@ func attackRCM06(ctx context.Context, base string) {
 		}
 	}
 	var details []string
-	allExact := true
+	allLogicalOK := true
+	sawPreAtUnlink := false
+	sawPostWithSlackAtTrunc := false
+	sawExactPostAtEnd := false
 	for i, t := range sample {
 		if t.kind == "" {
-			allExact = false
+			allLogicalOK = false
 			details = append(details, fmt.Sprintf("#%d:missing", i))
 			continue
 		}
@@ -1048,7 +1055,7 @@ func attackRCM06(ctx context.Context, base string) {
 		prepareDir(kdir, prePath)
 		kres := runTraced(ctx, []string{childShrinkMode, kdir}, &trace.KillAt{Syscalls: []string{t.call.Name}, When: t.ordinal})
 		if kres.Killed != "SIGKILL" {
-			allExact = false
+			allLogicalOK = false
 			details = append(details, t.kind+":not-killed")
 			continue
 		}
@@ -1059,25 +1066,37 @@ func attackRCM06(ctx context.Context, base string) {
 		switch {
 		case err != nil || ic != "ok":
 			state = fmt.Sprintf("err(%v/%s)", err, ic)
-			allExact = false
+			allLogicalOK = false
 		case canon == preCanon && info.Size() == preInfo.Size():
 			state = fmt.Sprintf("pre(%dB)", info.Size())
+			if t.kind == "journal-unlink" {
+				sawPreAtUnlink = true
+			}
 		case canon == postCanon && info.Size() == postInfo.Size():
 			state = fmt.Sprintf("post(%dB)", info.Size())
-		case canon == postCanon:
-			// Committed (postCanon) but un-truncated file size (slack pages)!
+			if t.kind == "step-returned" {
+				sawExactPostAtEnd = true
+			}
+		case canon == postCanon && info.Size() == preInfo.Size():
+			// Committed (postCanon) with un-truncated trailing slack pages (pager.c:2155-2164).
 			state = fmt.Sprintf("post-with-slack(%dB!=%dB)", info.Size(), postInfo.Size())
-			allExact = false
+			if t.kind == "db-truncate" {
+				sawPostWithSlackAtTrunc = true
+			}
 		default:
-			allExact = false
+			allLogicalOK = false
 		}
 		details = append(details, fmt.Sprintf("%s->%s", t.kind, state))
 	}
-	held := allExact && truncIdx >= 0 && truncIdx < unlinkIdx
+	// Corrected claim (REPAIR-REPORT.md / build-notes.md:808-817): pager_end_transaction
+	// truncates a shrinking DB AFTER journal unlink (pager.c:2155-2164), so unlink precedes
+	// db-truncate, killing on db-truncate leaves logically post-step content with trailing
+	// slack pages, and logical atomicity ("never a third state") holds at every kill point.
+	held := allLogicalOK && unlinkIdx >= 0 && truncIdx > unlinkIdx && sawPreAtUnlink && sawPostWithSlackAtTrunc && sawExactPostAtEnd
 	report(
 		"RCM-06",
 		"shrinking auto_vacuum=FULL DELETE (no freelist) killed at db-page, journal-unlink, db-truncate, and step-returned",
-		"per build-notes (CommitPhaseOne truncates; no freelist => exact pre or post bytes): db-truncate precedes unlink and every kill gives exact pre or post size",
+		"per corrected build-notes (pager.c:2155-2164): unlink precedes db-truncate, kill at db-truncate leaves logical post with slack pages, logical atomicity holds everywhere",
 		fmt.Sprintf("targetIdx(unlink=%d trunc=%d) size %d->%d: %s", unlinkIdx, truncIdx, preInfo.Size(), postInfo.Size(), strings.Join(details, ", ")),
 		held,
 	)

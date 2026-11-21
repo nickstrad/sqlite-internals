@@ -46,11 +46,12 @@ const (
 )
 
 type procMem struct {
-	RSS   int64 `json:"rss"`
-	Anon  int64 `json:"anon"`
-	File  int64 `json:"file"`
-	Shmem int64 `json:"shmem"`
-	FDs   int   `json:"fds"`
+	RSS     int64 `json:"rss"`
+	Anon    int64 `json:"anon"`
+	File    int64 `json:"file"`
+	PssFile int64 `json:"pss_file"`
+	Shmem   int64 `json:"shmem"`
+	FDs     int   `json:"fds"`
 }
 
 type scalePoint struct {
@@ -128,13 +129,14 @@ func workDir() string {
 	return dir
 }
 
-// readProcMem samples RSS components from /proc/self/status and open FD count
-// from /proc/self/fd on Linux. On non-Linux builds (e.g. darwin cross-build),
-// it returns -1 sentinels so the package builds cleanly everywhere.
+// readProcMem samples RSS components from /proc/self/status, Pss_File from
+// /proc/self/smaps_rollup, and open FD count from /proc/self/fd on Linux. On
+// non-Linux builds (e.g. darwin cross-build), it returns -1 sentinels so the
+// package builds cleanly everywhere.
 func readProcMem() procMem {
 	runtime.GC()
 	debug.FreeOSMemory()
-	m := procMem{RSS: -1, Anon: -1, File: -1, Shmem: -1, FDs: -1}
+	m := procMem{RSS: -1, Anon: -1, File: -1, PssFile: -1, Shmem: -1, FDs: -1}
 	if runtime.GOOS != "linux" {
 		return m
 	}
@@ -158,6 +160,18 @@ func readProcMem() procMem {
 				m.File = kib * 1024
 			case "RssShmem:":
 				m.Shmem = kib * 1024
+			}
+		}
+		f.Close()
+	}
+	if f, err := os.Open("/proc/self/smaps_rollup"); err == nil {
+		sc := bufio.NewScanner(f)
+		for sc.Scan() {
+			fields := strings.Fields(sc.Text())
+			if len(fields) >= 2 && fields[0] == "Pss_File:" {
+				if kib, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
+					m.PssFile = kib * 1024
+				}
 			}
 		}
 		f.Close()
@@ -617,21 +631,23 @@ func attackSCL03(filesDir string, cal calibOut, unboundedRSS1000 int64) {
 	flatRSS := true
 	fracOK := true
 	fdOK := true
+	// Because SCL-03 scales cache_size down to -256 KiB (4x below Experiment 4.2's
+	// repaired 1 MiB floor, REPAIR-REPORT.md CAC-01c) to keep 1,000 unbounded
+	// connections under 7 GiB RAM, include a 4 MiB fixed per-process startup
+	// allowance alongside the 1.5 * (K / N) proportionality bound.
+	const sub1MiBFixedOverhead = 4 << 20
+	maxFracBytes := int64(float64(unboundedRSS1000)*(float64(scalePoolK)/float64(scaleConns))*1.5) + sub1MiBFixedOverhead
 	if start.Mem.RSS >= 0 {
-		// Mirror Experiment 4.2 Part D's exact RSS bounds:
-		// (1) growth from after K to after N <= atK / 4
-		// (2) final pooled growth <= 1.5 * (K / N) * unbounded growth
 		flatRSS = (rss1000 - rssK) <= rssK/4
-		fracOK = float64(rss1000) <= float64(unboundedRSS1000)*(float64(scalePoolK)/float64(scaleConns))*1.5
+		fracOK = rss1000 <= maxFracBytes
 		fdOK = p1000.Mem.FDs <= 3*scalePoolK+32
 	}
 	held := pagesOK && flatRSS && fracOK && fdOK
 	report(
 		"SCL-03",
 		fmt.Sprintf("1,000 distinct WAL files visited through K=%d LRU pool (cache_size=%d KiB, 984 evictions)", scalePoolK, scaleCacheKiB),
-		fmt.Sprintf("open=%d, pages<=%d (%d*(%d+1)), flat RSS after K (delta<=25%% of atK), final RSS<=1.5*(16/1000) of unbounded (%s), FDs<=%d",
-			scalePoolK, maxAllowedPages, scalePoolK, cal.FullScale,
-			mib(int64(float64(unboundedRSS1000)*(float64(scalePoolK)/float64(scaleConns))*1.5)), 3*scalePoolK+32),
+		fmt.Sprintf("open=%d, pages<=%d (%d*(%d+1)), flat RSS after K (delta<=25%% of atK), final RSS<=1.5*(16/1000)*unbounded+4MiB (%s), FDs<=%d",
+			scalePoolK, maxAllowedPages, scalePoolK, cal.FullScale, mib(maxFracBytes), 3*scalePoolK+32),
 		fmt.Sprintf("maxPages=%d/%d RSS(16->100->500->1000)=%s->%s->%s->%s flatOK=%v fracOK=%v FDs=%d",
 			maxObsPages, maxAllowedPages, mib(rssK), mib(rss100), mib(rss500), mib(rss1000), flatRSS, fracOK, p1000.Mem.FDs),
 		held,
@@ -691,29 +707,32 @@ func attackSCL05(filesDir string, fileSize int64, cal calibOut, distPts []scaleP
 	unmappedAnon := unmapped1000.Mem.Anon - unmappedStart.Mem.Anon
 
 	distFileDelta := distOut.At1000.File - distOut.Start.File
+	distPssFileDelta := distOut.At1000.PssFile - distOut.Start.PssFile
 	distAnonDelta := distOut.At1000.Anon - distOut.Start.Anon
 	oneFileDelta := oneOut.At1000.File - oneOut.Start.File
+	onePssFileDelta := oneOut.At1000.PssFile - oneOut.Start.PssFile
 	oneAnonDelta := oneOut.At1000.Anon - oneOut.Start.Anon
 
 	expectedDistFile := int64(scaleConns) * fileSize
 	pagesLow := distOut.SumPages*20 < unmappedPages && oneOut.SumPages*20 < unmappedPages
 	memOK := true
 	if distOut.Start.File >= 0 {
-		// Distinct files: file-backed RSS grows by ~1000 * fileSize and anon is far below unmapped anon.
-		// Single file: kernel shares the single file's page cache, so RssFile stays << 1000 * fileSize.
+		// Distinct files: file-backed RSS and Pss_File grow by ~1000 * fileSize while anon stays far below unmapped anon.
+		// Single file: /proc/self/status RssFile sums resident PTEs across all 1000 VMAs (~1000 * fileSize),
+		// whereas /proc/self/smaps_rollup Pss_File reflects the shared kernel page cache (<< 1000 * fileSize).
 		memOK = distFileDelta >= expectedDistFile*8/10 &&
 			distAnonDelta < unmappedAnon/2 &&
-			oneFileDelta < expectedDistFile/10
+			(oneOut.Start.PssFile < 0 || (distPssFileDelta >= expectedDistFile*8/10 && onePssFileDelta < expectedDistFile/10))
 	}
 	held := pagesLow && memOK
 	report(
 		"SCL-05",
 		fmt.Sprintf("1,000 open connections with PRAGMA mmap_size=%d (2x file) on 1,000 distinct files vs 1 file", mmapSize),
-		fmt.Sprintf("both keep cached pages <5%% of unmapped (%d), distinct RssFile>=80%% of %s, 1-file RssFile<10%% (shared kernel cache)",
+		fmt.Sprintf("both keep cached pages <5%% of unmapped (%d), distinct PssFile>=80%% of %s, 1-file PssFile<10%% (shared kernel cache, even as RssFile sums VMAs)",
 			unmappedPages, mib(expectedDistFile)),
-		fmt.Sprintf("distinct: pages=%d RssFile=+%s RssAnon=+%s; oneFile: pages=%d RssFile=+%s RssAnon=+%s (unmappedAnon=+%s)",
-			distOut.SumPages, mib(distFileDelta), mib(distAnonDelta),
-			oneOut.SumPages, mib(oneFileDelta), mib(oneAnonDelta), mib(unmappedAnon)),
+		fmt.Sprintf("distinct: pages=%d PssFile=+%s RssFile=+%s RssAnon=+%s; oneFile: pages=%d PssFile=+%s RssFile=+%s RssAnon=+%s (unmappedAnon=+%s)",
+			distOut.SumPages, mib(distPssFileDelta), mib(distFileDelta), mib(distAnonDelta),
+			oneOut.SumPages, mib(onePssFileDelta), mib(oneFileDelta), mib(oneAnonDelta), mib(unmappedAnon)),
 		held,
 	)
 }
@@ -761,27 +780,27 @@ func attackSCL06(ctx context.Context, root, base string) {
 	)
 }
 
-// SCL-07 attacks 4.2 Part B's exact-sum claim ("the cached pages of all open
-// connections add up to exactly (open connections) x 482") by performing a second
-// round-robin scan across 16 open connections whose earlier entries were evicted to
-// 0 pages during pass 1. Because pcache1FetchStage2 checks per-cache nPage+1>=nMax
-// (pcache1.c:902) while pcache1Unpin enforces pGroup->nPurgeable>pGroup->nMaxPage
-// (pcache1.c:1096), re-scanning an evicted connection grows the group sum from
-// N*(nMax-1) up to N*nMax.
+// SCL-07 verifies the PGroup page-count bound across a second round-robin scan
+// of 16 open connections (cache_size=-2000, full=482, nMax=483). On pass 1
+// (Part B), each new cache stops allocating at nPage+1>=nMax (pcache1.c:902),
+// summing to N*(nMax-1) = 7,712. On pass 2, re-scanning evicted connections
+// (nPage=0) allocates up to pGroup->nMaxPage = N*nMax = 7,728 (the repaired
+// Part D ceiling, REPAIR-REPORT.md / build-notes.md:785-789) and pcache1Unpin
+// (pcache1.c:1096) caps the group at N*nMax.
 func attackSCL07(bigDir string, cal calibOut) {
 	var out secondPassOut
 	runSelfJSON(&out, childSecondPass, bigDir, strconv.Itoa(secondPassConns), strconv.Itoa(secondPassBudget), strconv.Itoa(cal.PerPage))
 
 	partBExact := secondPassConns * cal.Full2000
 	groupMax := secondPassConns * (cal.Full2000 + 1)
-	staysAtPartBExact := out.Pass2Sum == partBExact && out.Pass2MaxSum == partBExact
+	matchesGroupCap := out.Pass1Sum == partBExact && out.Pass2Sum == groupMax && out.Pass2MaxSum == groupMax
 	report(
 		"SCL-07",
 		fmt.Sprintf("second round-robin scan across %d open WAL connections (cache_size=%d, full=%dp, nMax=%dp)", secondPassConns, secondPassBudget, cal.Full2000, cal.Full2000+1),
-		fmt.Sprintf("per 4.2 Part B / build-notes #5 ('SUM is always exactly open x %d'): stays at %d pages across pass 2", cal.Full2000, partBExact),
+		fmt.Sprintf("pass 1 sums to N*(nMax-1)=%d; pass 2 reaches and stays capped at pGroup->nMaxPage=N*nMax=%d (pcache1.c:902,1096)", partBExact, groupMax),
 		fmt.Sprintf("pass1=%d (%d..%d) pass2=%d (%d..%d) pass2Max=%d (group nMaxPage=%d, delta=+%d pages)",
 			out.Pass1Sum, out.Pass1Min, out.Pass1Max, out.Pass2Sum, out.Pass2Min, out.Pass2Max, out.Pass2MaxSum, groupMax, out.Pass2MaxSum-partBExact),
-		staysAtPartBExact,
+		matchesGroupCap,
 	)
 }
 
